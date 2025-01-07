@@ -1,0 +1,11 @@
+*.o
+
+
+*.py[cod]
+
+.idea/
+.ipynb_checkpoints/
+learn_from/
+
+.DS_Store
+
