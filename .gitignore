@@ -3,6 +3,8 @@
 
 *.py[cod]
 
+build/
+
 .vscode/
 .ipynb_checkpoints/
 learn_from/
