@@ -3,7 +3,7 @@
 
 *.py[cod]
 
-.idea/
+.vscode/
 .ipynb_checkpoints/
 learn_from/
 
