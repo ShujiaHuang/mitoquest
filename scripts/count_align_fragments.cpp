@@ -279,7 +279,7 @@ public:
         
         return GenomicInterval(chrom, start, end);
     }
-}
+};
 
 // Function to process reads for a specific chromosome
 void process_chromosome(const char* input_path, 
