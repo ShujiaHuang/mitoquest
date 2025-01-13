@@ -38,3 +38,16 @@ if (APPLE)
 else ()
     target_link_libraries(count_align_fragments ${COMMON_SYS_LIB} ssl crypto)
 endif()
+
+# Compile test_thread_pool.cpp
+add_executable(test_thread_pool ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_thread_pool.cpp)
+
+# Link htslib static library to the test executable
+target_link_libraries(test_thread_pool ${CMAKE_CURRENT_SOURCE_DIR}/htslib/libhts.a)
+
+# Link common system libraries
+if (APPLE)
+    target_link_libraries(test_thread_pool pthread z bz2 m lzma curl)
+else ()
+    target_link_libraries(test_thread_pool pthread z bz2 m lzma curl ssl crypto)
+endif()
