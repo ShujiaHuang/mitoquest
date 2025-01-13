@@ -48,10 +48,10 @@ struct ChromosomeData {
     uint32_t length;
     double normalized_ratio;
     double gc_content;  // record GC content for whole chromosomes
-    std::unordered_map<std::string, bool> processed_reads;
-    Statistics CN_stats;  // record the chromosome copy number stats 
+    std::unordered_set<std::string> processed_reads;
+    Statistics CN_stats;  // record the chromosome copy number stats
     
-    ChromosomeData(const std::string& n, uint32_t len) 
+    ChromosomeData(const std::string& n, uint32_t len)
         : name(n), count(0), length(len), normalized_ratio(0.0), gc_content(0.0) {}
 };
 
@@ -187,8 +187,11 @@ double calculate_interval_gc_content(faidx_t* fai, const GenomicInterval& interv
     int64_t gc_count = 0;
     int64_t total_count = 0;
 
+    std::string upper_sequence = sequence;
+    std::transform(upper_sequence.begin(), upper_sequence.end(), upper_sequence.begin(), ::toupper);
+
     for (int i = 0; i < seq_len; i++) {
-        char base = std::toupper(sequence[i]);
+        char base = upper_sequence[i];
         if (base == 'G' || base == 'C') {
             gc_count++;
         }
@@ -250,19 +253,12 @@ public:
             interval_gc.second = gc;
         };
 
-        // Process intervals in parallel
+        // Process all intervals in parallel
         for (auto& interval_gc : intervals_gc) {
             threads.emplace_back(gc_worker, std::ref(interval_gc));
-            
-            if (threads.size() >= std::thread::hardware_concurrency()) {
-                for (auto& t : threads) {
-                    t.join();
-                }
-                threads.clear();
-            }
         }
 
-        // Wait for remaining threads
+        // Wait for all threads to complete
         for (auto& t : threads) {
             t.join();
         }
@@ -348,7 +344,7 @@ void process_chromosome(const char* input_path,
             if (record->core.flag & BAM_FREAD1) {
                 if (chrom_data.processed_reads.find(read_name) == chrom_data.processed_reads.end()) {
                     chrom_data.count++;
-                    chrom_data.processed_reads[read_name] = true;
+                    chrom_data.processed_reads.insert(read_name);
                 }
             }
         }
@@ -376,15 +372,20 @@ void calculate_normalized_ratios(std::vector<ChromosomeData>& chromosomes) {
         chrom.normalized_ratio = fragment_ratio / length_ratio;
     }
 
-    // Calculate ratio of each chromosome's normalized ratio to each autosomal
+    double sum_autosomal_normalized_ratios = 0.0;
+    for (const auto& chrom : chromosomes) {
+        if (is_autosomal(chrom.name)) {
+            sum_autosomal_normalized_ratios += chrom.normalized_ratio;
+        }
+    }
+
+    // Calculate ratio of each chromosome's normalized ratio to the average autosomal normalized ratio
     for (auto& chrom : chromosomes) {
         double copy_w = is_mitochondrial(chrom.name) ? 2.0 : 1.0;
-        std::vector<double> ratio_ratios;  // Store ratios of normalized ratios
-        for (auto& chrtmp : chromosomes) {
-            // Ignore non Autosomal
+        std::vector<double> ratio_ratios;
+        for (const auto& chrtmp : chromosomes) {
             if (is_autosomal(chrtmp.name)) {
                 ratio_ratios.push_back(copy_w * chrom.normalized_ratio / chrtmp.normalized_ratio);
-// std::cout << chrtmp.name << " : " << chrom.normalized_ratio << "\t" << chrtmp.normacatlized_ratio << "\t" << chrom.normalized_ratio / chrtmp.normalized_ratio << "\n";
             }
         }
         chrom.CN_stats = calculate_statistics(ratio_ratios);
