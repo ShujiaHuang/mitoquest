@@ -378,12 +378,12 @@ void calculate_normalized_ratios(std::vector<ChromosomeData>& chromosomes) {
 
     // Calculate ratio of each chromosome's normalized ratio to each autosomal
     for (auto& chrom : chromosomes) {
-        double copy_r = is_mitochondrial(chrom.name) ? 2.0 : 1.0;
+        double copy_w = is_mitochondrial(chrom.name) ? 2.0 : 1.0;
         std::vector<double> ratio_ratios;  // Store ratios of normalized ratios
         for (auto& chrtmp : chromosomes) {
             // Ignore non Autosomal
             if (is_autosomal(chrtmp.name)) {
-                ratio_ratios.push_back(copy_r * chrom.normalized_ratio / chrtmp.normalized_ratio);
+                ratio_ratios.push_back(copy_w * chrom.normalized_ratio / chrtmp.normalized_ratio);
 // std::cout << chrtmp.name << " : " << chrom.normalized_ratio << "\t" << chrtmp.normacatlized_ratio << "\t" << chrom.normalized_ratio / chrtmp.normalized_ratio << "\n";
             }
         }
