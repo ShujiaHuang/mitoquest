@@ -62,6 +62,10 @@ bool is_autosomal(const std::string& chrom_name) {
     return std::regex_match(chrom_name, autosomal_regex);
 }
 
+bool is_mitochondrial(const std::string& chrom_name) {
+    return chrom_name == "chrM" || chrom_name == "MT" || chrom_name == "M";
+}
+
 // Function to calculate mean
 double calculate_mean(const std::vector<double>& values) {
     if (values.empty()) return 0.0;
@@ -374,11 +378,12 @@ void calculate_normalized_ratios(std::vector<ChromosomeData>& chromosomes) {
 
     // Calculate ratio of each chromosome's normalized ratio to each autosomal
     for (auto& chrom : chromosomes) {
+        double copy_r = is_mitochondrial(chrom.name) ? 2.0 : 1.0;
         std::vector<double> ratio_ratios;  // Store ratios of normalized ratios
         for (auto& chrtmp : chromosomes) {
             // Ignore non Autosomal
             if (is_autosomal(chrtmp.name)) {
-                ratio_ratios.push_back(chrom.normalized_ratio / chrtmp.normalized_ratio);
+                ratio_ratios.push_back(copy_r * chrom.normalized_ratio / chrtmp.normalized_ratio);
 // std::cout << chrtmp.name << " : " << chrom.normalized_ratio << "\t" << chrtmp.normacatlized_ratio << "\t" << chrom.normalized_ratio / chrtmp.normalized_ratio << "\n";
             }
         }
