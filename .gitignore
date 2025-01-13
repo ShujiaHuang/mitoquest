@@ -1,13 +1,11 @@
 *.o
-
-
 *.py[cod]
 
+bin/
+!bin/*.sh
 build/
+learn_from/
 
 .vscode/
 .ipynb_checkpoints/
-learn_from/
-
 .DS_Store
-
