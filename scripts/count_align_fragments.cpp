@@ -372,13 +372,6 @@ void calculate_normalized_ratios(std::vector<ChromosomeData>& chromosomes) {
         chrom.normalized_ratio = fragment_ratio / length_ratio;
     }
 
-    double sum_autosomal_normalized_ratios = 0.0;
-    for (const auto& chrom : chromosomes) {
-        if (is_autosomal(chrom.name)) {
-            sum_autosomal_normalized_ratios += chrom.normalized_ratio;
-        }
-    }
-
     // Calculate ratio of each chromosome's normalized ratio to the average autosomal normalized ratio
     for (auto& chrom : chromosomes) {
         double copy_w = is_mitochondrial(chrom.name) ? 2.0 : 1.0;
