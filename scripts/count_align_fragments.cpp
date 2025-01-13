@@ -491,6 +491,7 @@ int main(int argc, char *argv[]) {
         }
     }
 
+    // Join any remaining threads
     for (auto& thread : threads) {
         if (thread.joinable()) {
             thread.join();
