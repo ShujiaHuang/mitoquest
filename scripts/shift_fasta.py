@@ -42,8 +42,9 @@ def main():
     parser.add_argument('-s', '--shift', type=int, required=True,
                         help='Number of bases to shift')
     parser.add_argument('-w', '--width', type=int, default=70,
-                        help='Number of bases per line in output file (default: 70)')
-   
+                        help='Number of bases per line in output file '
+                             '(default: 70)')
+                             
     # Parse command line arguments
     args = parser.parse_args()
 
