@@ -229,7 +229,7 @@ public:
         int64_t length = faidx_seq_len(fai, chrom_name.c_str());
         if (length < 0) {
             thread_safe_output("Error: Could not get length for chromosome " + 
-                             chrom_name + "\n");
+                               chrom_name + "\n");
             return -1.0;
         }
         
