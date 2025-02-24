@@ -18,26 +18,40 @@ add_custom_target(
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/htslib
 )
 
-include_directories(${CMAKE_CURRENT_SOURCE_DIR}/htslib)
+# Include directories
+include_directories(${CMAKE_CURRENT_SOURCE_DIR}/htslib)  # include the header of htslib
+include_directories(${CMAKE_CURRENT_SOURCE_DIR}/src)     # include the header of hmtk
 
-# Find all source codes
-file(GLOB SRC_CAF ${CMAKE_CURRENT_SOURCE_DIR}/scripts/count_align_fragments.cpp)
+# Compile hmtk - main executable
+file(GLOB SRC_MT ${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp ${CMAKE_CURRENT_SOURCE_DIR}/src/io/*.cpp)
+add_executable(hmtk ${SRC_MT})
 
-# Create executable
-add_executable(count_align_fragments ${SRC_CAF})
+# Link htslib static library
+target_link_libraries(hmtk ${CMAKE_CURRENT_SOURCE_DIR}/htslib/libhts.a)
+
+set(COMMON_SYS_LIB pthread z bz2 m lzma curl)
+if (APPLE)
+    target_link_libraries(hmtk ${COMMON_SYS_LIB})
+else ()
+    target_link_libraries(hmtk ${COMMON_SYS_LIB} ssl crypto)
+endif()
+
+
+############################################################################################################
+# Compile count_align_fragments.cpp
+add_executable(count_align_fragments ${CMAKE_CURRENT_SOURCE_DIR}/scripts/count_align_fragments.cpp)
 
 # Ensure htslib is built before the main executable
 add_dependencies(count_align_fragments Buildhts)
 
 # Link htslib static library
 target_link_libraries(count_align_fragments ${CMAKE_CURRENT_SOURCE_DIR}/htslib/libhts.a)
-
-set(COMMON_SYS_LIB pthread z bz2 m lzma curl)
 if (APPLE)
     target_link_libraries(count_align_fragments ${COMMON_SYS_LIB})
 else ()
     target_link_libraries(count_align_fragments ${COMMON_SYS_LIB} ssl crypto)
 endif()
+
 
 # Compile test_thread_pool.cpp
 add_executable(test_thread_pool ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_thread_pool.cpp)
