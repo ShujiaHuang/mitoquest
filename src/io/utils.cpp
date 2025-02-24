@@ -5,11 +5,7 @@
  * @date 2021-08-18
  * 
  */
-#include <unistd.h>
-#include <filesystem>  // Available since C++17
-
 #include "utils.h"
-
 
 namespace ngslib {
 
@@ -76,6 +72,27 @@ namespace ngslib {
         }
 
         return lmf.string();
+    }
+
+    std::vector<std::string> get_firstcolumn_from_file(const std::string fn) {
+
+        std::ifstream i_fn(fn.c_str());
+        if (!i_fn) {
+            std::cerr << "[ERROR] Cannot open file: " + fn << std::endl;
+            exit(1);
+        }
+    
+        std::vector<std::string> first_column;
+        std::string skip, first_col_str;
+        while (1) {
+            i_fn >> first_col_str;
+            if (i_fn.eof()) break;
+            std::getline(i_fn, skip, '\n');  // skip the rest information of line.
+            first_column.push_back(first_col_str);
+        }
+        i_fn.close();
+    
+        return first_column;
     }
 
     void split(const std::string &in_str, std::vector<std::string> &out, const char *delim, bool is_append) {

@@ -25,15 +25,15 @@ class MtVariantCaller {
 public:
     struct Config {
         std::string reference_file;
-        std::vector<std::string> bam_files; // input multiple BAM files
-        std::string calling_regions;        // calling regions
-        std::string output_file;            // output VCF file
+        std::vector<std::string> bam_files;  // input multiple BAM files
+        std::string calling_regions;         // calling regions
+        std::string output_file;             // output VCF file
 
-        int min_mapq = 0;   // a mapping quality score less than this value will be filtered
+        int min_mapq  = 0;   // a mapping quality score less than this value will be filtered
         int min_baseq = 20;  // a base quality score less than this value will be filtered
         float heteroplasmy_threshold = 0.2;
         int thread_count = 1;
-        int chunk_size = 1000;                // Process this many bases per thread
+        int chunk_size   = 1000;              // Process this many bases per thread
         bool filename_has_samplename = false; // use filename as sample name
     };
 

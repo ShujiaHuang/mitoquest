@@ -14,21 +14,22 @@
 #include "mt_variant_caller.h"
 
 void print_usage(const MtVariantCaller::Config &config) {
-    std::cout << "Usage: mtvariantcaller [options]\n"
+    std::cout << "Usage: hmtk [options] -R ref.fa -o output.vcf.gz -b in1.bam [-b in2.bam ...]\n"
               << "Required options:\n"
               << "  -R, --reference FILE     Reference FASTA file\n"
               << "  -b, --bam FILE           Input BAM file\n"
               << "  -o, --output FILE        Output VCF file\n\n"
 
               << "Optional options:\n"
+              << "  -L, --bam-list FILE      list of input BAM/CRAM filenames, one per line.\n"
               << "  -r, --regions REG[,...]  Comma separated list of regions in which to call variants (default: entire genome).\n"
-              << "                           REG format: chr:start-end (e.g.: chr1:1-1000,chrM)\n"
-              << "  -q, --min-MQ INT         skip alignments with mapQ smaller than INT (default: "    << config.min_mapq << ")\n"
+              << "                           REG format: chr:start-end (e.g.: chrM or chrM:1-1000,chrM:8000-8200)\n"
+              << "  -q, --min-MQ INT         skip alignments with mapQ smaller than INT (default: "    << config.min_mapq  << ")\n"
               << "  -Q, --min-BQ INT         skip bases with base quality smaller than INT (default: " << config.min_baseq << ")\n"
               << "  -t, --threads INT        Number of threads (default: "      << config.thread_count << ")\n"
               << "  -j, --threshold FLOAT    Heteroplasmy threshold (default: " << config.heteroplasmy_threshold << ")\n"
               << "  -c, --chunk INT          Chunk size for parallel processing (default: " << config.chunk_size << ")\n"
-              << "  -h, --help               Print this help message\n";
+              << "  -h, --help               Print this help message\n\n";
 }
 
 int main(int argc, char* argv[]) {
@@ -47,6 +48,7 @@ int main(int argc, char* argv[]) {
         {"bam",       required_argument, 0, 'b'},
         {"output",    required_argument, 0, 'o'},
 
+        {"bam-list",  optional_argument, 0, 'L'},
         {"regions",   optional_argument, 0, 'r'},
         {"min-MQ",    optional_argument, 0, 'q'},
         {"min-BQ",    optional_argument, 0, 'Q'},
@@ -60,12 +62,22 @@ int main(int argc, char* argv[]) {
     };
 
     int opt;
-    while ((opt = getopt_long(argc, argv, "R:b:o:r:q:Q:t:j:c:h", MT_CMDLINE_LOPTS, NULL)) != -1) {
+    std::vector<std::string> bam_filelist;
+    while ((opt = getopt_long(argc, argv, "R:b:L:o:r:q:Q:t:j:c:h", MT_CMDLINE_LOPTS, NULL)) != -1) {
         switch (opt) {
             case 'R': config.reference_file = optarg;                    break;
             case 'b': config.bam_files.push_back(optarg);                break;
             case 'o': config.output_file = optarg;                       break;
 
+            case 'L': 
+                bam_filelist = ngslib::get_firstcolumn_from_file(optarg);
+                config.bam_files.insert(
+                    config.bam_files.end(), 
+                    bam_filelist.begin(), 
+                    bam_filelist.end()
+                );
+                break;
+            case 'r': config.calling_regions = optarg;                   break;
             case 'q': config.min_mapq  = std::atoi(optarg);              break;
             case 'Q': config.min_baseq = std::atoi(optarg);              break;
             case 't': config.thread_count = std::atoi(optarg);           break;

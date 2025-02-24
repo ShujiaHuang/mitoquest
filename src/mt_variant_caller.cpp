@@ -2,7 +2,6 @@
 
 // MtVariantCaller implementation
 MtVariantCaller::MtVariantCaller(const Config& config) : _config(config) {
-
     // load fasta
     reference = _config.reference_file;
 
@@ -11,12 +10,29 @@ MtVariantCaller::MtVariantCaller(const Config& config) : _config(config) {
 
     // keep the order of '_samples_id' as the same as input bamfiles
     _get_sample_id_from_bam();
-
-
 }
 
 MtVariantCaller::~MtVariantCaller() {
     // 析构函数的实现，如果不需要特殊操作，可以为空
+}
+
+bool MtVariantCaller::run() {
+
+    clock_t cpu_start_time = clock();
+    time_t real_start_time = time(0);
+
+    bool is_success = _caller_process();
+
+    // Time information
+    time_t now = time(0);
+    std::string ct(ctime(&now));
+    ct.pop_back();
+    std::cout << "[INFO] " + ct + ". Done for Variant calling, "
+              << difftime(now, real_start_time) << " (CPU time: "
+              << (double)(clock() - cpu_start_time) / CLOCKS_PER_SEC << ") seconds elapsed."
+              << std::endl;
+
+    return is_success;
 }
 
 void MtVariantCaller::_get_sample_id_from_bam() {
@@ -152,25 +168,6 @@ void MtVariantCaller::print_calling_interval() {
     return;
 }
 
-bool MtVariantCaller::run() {
-
-    clock_t cpu_start_time = clock();
-    time_t real_start_time = time(0);
-
-    bool is_success = _caller_process();
-
-    // Time information
-    time_t now = time(0);
-    std::string ct(ctime(&now));
-    ct.pop_back();
-    std::cout << "[INFO] " + ct + ". Done for Variant calling, "
-              << difftime(now, real_start_time) << " (CPU time: "
-              << (double)(clock() - cpu_start_time) / CLOCKS_PER_SEC << ") seconds elapsed."
-              << std::endl;
-
-    return is_success;
-}
-
 bool MtVariantCaller::_caller_process() {
 
     // Get filepath and stem name
@@ -204,8 +201,9 @@ bool MtVariantCaller::_caller_process() {
     merge_file_by_line(sub_vcf_files, _config.output_file, header, true);
 
     const tbx_conf_t bf_tbx_conf = {1, 1, 2, 0, '#', 0};  // {preset, seq col, beg col, end col, header-char, skip-line}
-    if ((ngslib::suffix_name(_config.output_file) == ".gz") &&          // create index
-        tbx_index_build(_config.output_file.c_str(), 0, &bf_tbx_conf)) { // file suffix is ".tbi"
+    if ((ngslib::suffix_name(_config.output_file) == ".gz") &&           // create index
+        tbx_index_build(_config.output_file.c_str(), 0, &bf_tbx_conf))   // file suffix is ".tbi"
+    {
         throw std::runtime_error("tbx_index_build failed: Is the file bgzip-compressed? "
                                  "Check this file: " + _config.output_file + "\n");
     }

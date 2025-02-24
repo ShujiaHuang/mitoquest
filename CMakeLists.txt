@@ -28,7 +28,6 @@ add_executable(hmtk ${SRC_MT})
 
 # Link htslib static library
 target_link_libraries(hmtk ${CMAKE_CURRENT_SOURCE_DIR}/htslib/libhts.a)
-
 set(COMMON_SYS_LIB pthread z bz2 m lzma curl)
 if (APPLE)
     target_link_libraries(hmtk ${COMMON_SYS_LIB})
@@ -37,11 +36,13 @@ else ()
 endif()
 
 
-############################################################################################################
+####################################################################################################
+####### Compile the test and other executables scripts
+####################################################################################################
 # Compile count_align_fragments.cpp
 add_executable(count_align_fragments ${CMAKE_CURRENT_SOURCE_DIR}/scripts/count_align_fragments.cpp)
 
-# Ensure htslib is built before the main executable
+# Ensure htslib is built before the following executable
 add_dependencies(count_align_fragments Buildhts)
 
 # Link htslib static library
