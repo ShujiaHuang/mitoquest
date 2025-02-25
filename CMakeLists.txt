@@ -1,17 +1,21 @@
+# Set the minimum version of CMake that can be used
 cmake_minimum_required (VERSION 3.12.0)
-
-# Project information
-project (HMTK VERSION 1.2.0 LANGUAGES CXX)
 
 # Set the C++ standard required for the project
 set(CMAKE_CXX_STANDARD 17)  # C++ 17
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Set the project name
+project (HMTK VERSION 1.2.0 LANGUAGES CXX)
+
 # Set compiler flags
+# -O3: optimization level 3
+# -fPIC: generate position-independent code
+# -Wl,-no_compact_unwind: disable compact unwind information
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3 -fPIC -Wl,-no_compact_unwind")
 set(EXECUTABLE_OUTPUT_PATH ${CMAKE_CURRENT_SOURCE_DIR}/bin)
 
-# Compile htslib
+# Ensure htslib is built before the main executable
 add_custom_target(
     Buildhts ALL
     COMMAND autoreconf -i && ./configure --disable-shared && make
@@ -23,17 +27,25 @@ include_directories(${CMAKE_CURRENT_SOURCE_DIR}/htslib)  # include the header of
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/src)     # include the header of hmtk
 
 # Compile hmtk - main executable
+# Add all the source files in the src directory
 file(GLOB SRC_MT ${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp ${CMAKE_CURRENT_SOURCE_DIR}/src/io/*.cpp)
 add_executable(hmtk ${SRC_MT})
 
-# Link htslib static library
+# This is necessary to ensure that the htslib library is built before the main executable
+add_dependencies(hmtk Buildhts)
+
+# Link the htslib static library
 target_link_libraries(hmtk ${CMAKE_CURRENT_SOURCE_DIR}/htslib/libhts.a)
+
+# Link common system libraries
 set(COMMON_SYS_LIB pthread z bz2 m lzma curl)
 if (APPLE)
     target_link_libraries(hmtk ${COMMON_SYS_LIB})
 else ()
     target_link_libraries(hmtk ${COMMON_SYS_LIB} ssl crypto)
 endif()
+
+
 
 
 ####################################################################################################
@@ -53,9 +65,9 @@ else ()
     target_link_libraries(count_align_fragments ${COMMON_SYS_LIB} ssl crypto)
 endif()
 
-
 # Compile test_thread_pool.cpp
 add_executable(test_thread_pool ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_thread_pool.cpp)
+add_dependencies(test_thread_pool Buildhts)
 
 # Link htslib static library to the test executable
 target_link_libraries(test_thread_pool ${CMAKE_CURRENT_SOURCE_DIR}/htslib/libhts.a)
