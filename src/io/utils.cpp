@@ -74,7 +74,7 @@ namespace ngslib {
         return lmf.string();
     }
 
-    std::vector<std::string> get_firstcolumn_from_file(const std::string fn) {
+    std::vector<std::string> get_firstcolumn_from_file(const std::string &fn) {
 
         std::ifstream i_fn(fn.c_str());
         if (!i_fn) {

@@ -76,7 +76,7 @@ namespace ngslib {
      * @return std::vector<std::string> 
      * 
      */
-    std::vector<std::string> get_firstcolumn_from_file(const std::string fn);
+    std::vector<std::string> get_firstcolumn_from_file(const std::string &fn);
 
     template<typename T>
     std::string join(const std::vector<T> &input, const std::string delim="\t") {

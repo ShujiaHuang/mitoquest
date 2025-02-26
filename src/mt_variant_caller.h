@@ -12,11 +12,10 @@
 #include <vector>
 #include <ctime>  // clock, time_t
 
-#include "external/thread_pool.h"
-
 #include "io/fasta.h"
 #include "io/bam.h"
 #include "io/utils.h"
+#include "external/thread_pool.h"
 #include "mt_caller_utils.h"
 
 static const bool IS_DELETE_CACHE = true;
@@ -34,6 +33,8 @@ public:
         float heteroplasmy_threshold = 0.2;
         int thread_count = 1;
         int chunk_size   = 1000;              // Process this many bases per thread
+        bool pairs_map_only    = false;       // only use the paired reads which mapped to the same chromosome
+        bool proper_pairs_only = false;       // only use properly paired reads
         bool filename_has_samplename = false; // use filename as sample name
     };
 
@@ -76,7 +77,7 @@ private:
         // 注意这个赋值顺序要和结构体定义的顺序一致
         AlignBase() : base(""), base_qual(0), rp(0), mapq(0), map_strand('.') {};
         AlignBase(const std::string& b, int bq, int rp, int mq, char ms) 
-            : base(b), base_qual(bq), rp(rp), mapq(mq), map_strand(ms) {}
+            : base(b), base_qual(bq), rp(rp), mapq(mq), map_strand(ms) {};
     };
 
     struct Variant {

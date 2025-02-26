@@ -185,7 +185,8 @@ bool MtVariantCaller::_caller_process() {
     std::vector<std::string> sub_vcf_files;
     for (size_t i(0); i < _calling_intervals.size(); ++i) {
 
-
+        // 这里要考虑如何按样本进行 pileup，需要做一个函数，在函数里按样本进行多线程 (应先构造 mtPileup 的 class)
+        // 需要先读 mtVariantCaller.py 里的代码，看看是怎么做的
 
         // Call variants in parallel
         std::string regstr = _calling_intervals[i].ref_id + "_" +
@@ -193,7 +194,6 @@ bool MtVariantCaller::_caller_process() {
                              std::to_string(_calling_intervals[i].end);
         std::string sub_vcf_fn = cache_outdir + "/" + stem_bn + "." + regstr + ".vcf.gz";
         sub_vcf_files.push_back(sub_vcf_fn);
-
     }
 
     // Merge VCF
