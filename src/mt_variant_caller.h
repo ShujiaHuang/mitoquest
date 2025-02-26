@@ -52,45 +52,6 @@ private:
     MtVariantCaller(const MtVariantCaller&) = delete;
     MtVariantCaller& operator=(const MtVariantCaller&) = delete;
 
-    struct GenomeRegion {
-        std::string ref_id;
-        uint32_t start;
-        uint32_t end;
-
-        GenomeRegion() : ref_id(""), start(0), end(0) {};
-        GenomeRegion(const std::string& rid, uint32_t s, uint32_t e) : ref_id(rid), start(s), end(e) {
-            if (start > end) {
-                throw std::invalid_argument("[ERROR] start postion is larger than end position in "
-                                            "GenomeRegion: " + ref_id + ":" + 
-                                            std::to_string(start) + "-" + std::to_string(end));
-            }
-        };
-    };
-
-    struct AlignBase {
-        std::string base;
-        int base_qual;    // base quality
-        int rp;           // base position in read
-        int mapq;         // mapping quality
-        char map_strand;  // mapping reference strand, should be one of '-', '+' or '.'
-
-        // 注意这个赋值顺序要和结构体定义的顺序一致
-        AlignBase() : base(""), base_qual(0), rp(0), mapq(0), map_strand('.') {};
-        AlignBase(const std::string& b, int bq, int rp, int mq, char ms) 
-            : base(b), base_qual(bq), rp(rp), mapq(mq), map_strand(ms) {};
-    };
-
-    struct Variant {
-        std::string ref_id;
-        uint32_t ref_pos;
-        std::string ref_base;   // reference base
-        std::string alt_base;   // alternative base
-
-        float frequency;        // frequency of non-reference base
-        int quality;
-        int depth;
-    };
-
     // Member variables
     Config _config;
     std::vector<std::string> _samples_id;          // sample ID of all alignment files (BAM/CRAM/SAM)
@@ -100,11 +61,21 @@ private:
     void _get_calling_interval();  // load the calling region from input
     void _get_sample_id_from_bam();
     GenomeRegion _make_genome_region(std::string gregion);
-    bool _caller_process();  // main process function
 
-    // bool _pileup(const GenomeRegion& region);
-    // void _pileup_worker(const GenomeRegion& region, const ngslib::Bam& bam, const std::string& sample_id);
+    bool _caller_process();  // main process function
+    bool _fetch_base_in_region(const GenomeRegion genome_region,
+                               PosMapVector &batchsamples_posinfomap_vector);
 
 };
+
+PosMap fetch_base_in_sample(const std::string sample_bf, 
+    const std::string &fa_seq,
+    const GenomeRegion gr,
+    const MtVariantCaller::Config &config);
+
+void seek_position(const std::string &fa_seq,   // must be the whole chromosome sequence
+    const std::vector<ngslib::BamRecord> &sample_map_reads,
+    const GenomeRegion gr,
+    PosMap &sample_posinfo_map);
 
 #endif // _MT_VARIANT_CALLER_H_

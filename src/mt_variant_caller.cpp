@@ -13,7 +13,7 @@ MtVariantCaller::MtVariantCaller(const Config& config) : _config(config) {
 }
 
 MtVariantCaller::~MtVariantCaller() {
-    // 析构函数的实现，如果不需要特殊操作，可以为空
+    // 析构函数的实现，如果不需要特殊操作，则为空
 }
 
 bool MtVariantCaller::run() {
@@ -40,8 +40,8 @@ void MtVariantCaller::_get_sample_id_from_bam() {
 
     // Loading sample ID in BAM/CRMA files from RG tag.
     if (_config.filename_has_samplename)
-        std::cout << "[INFO] BaseVar'll load samples id from filename directly, becuase you set "
-                     "--filename-has-samplename.\n";
+        std::cout << "[INFO] load samples id from filename directly, becuase you set "
+                     "--filename-has-samplename\n";
 
     std::string samplename, filename;
     size_t si;
@@ -111,12 +111,6 @@ void MtVariantCaller::_get_calling_interval() {
     _calling_intervals.clear();
     // split region into small pieces by chunk_size
     for (size_t i(0); i < regions.size(); ++i) {
-        if (regions[i].end < regions[i].start) {
-            throw std::invalid_argument("[ERROR] start postion is larger than end position in "
-                                        "-r/--regions " + regions[i].ref_id + ":" +
-                                        std::to_string(regions[i].start) + "-" + std::to_string(regions[i].end));
-        }
-
         uint32_t total_length = regions[i].end - regions[i].start + 1;
         for (uint32_t j(0); j < total_length; j += _config.chunk_size) {
             uint32_t start = regions[i].start + j;
@@ -124,10 +118,11 @@ void MtVariantCaller::_get_calling_interval() {
             _calling_intervals.push_back(GenomeRegion(regions[i].ref_id, start, end));
         }
     }
+
     return;
 }
 
-MtVariantCaller::GenomeRegion MtVariantCaller::_make_genome_region(std::string gregion) {
+GenomeRegion MtVariantCaller::_make_genome_region(std::string gregion) {
 
     // Genome Region, 1-based
     std::string ref_id;
@@ -184,9 +179,17 @@ bool MtVariantCaller::_caller_process() {
     bool is_success = true;
     std::vector<std::string> sub_vcf_files;
     for (size_t i(0); i < _calling_intervals.size(); ++i) {
-
         // 这里要考虑如何按样本进行 pileup，需要做一个函数，在函数里按样本进行多线程 (应先构造 mtPileup 的 class)
-        // 需要先读 mtVariantCaller.py 里的代码，看看是怎么做的
+        // 记录每个样本在每个位点上的 pileup 信息
+        PosMapVector samples_posmapinfo_v;
+        samples_posmapinfo_v.reserve(_samples_id.size() + 1);  // reserve the memory before push_back
+        bool is_empty = _fetch_base_in_region(_calling_intervals[i], samples_posmapinfo_v);
+
+        if (is_empty) {
+            std::cerr << "[WARNING] No reads in region: " << _calling_intervals[i].ref_id << ":"
+                      << _calling_intervals[i].start << "-" << _calling_intervals[i].end << "\n";
+            continue;
+        }
 
         // Call variants in parallel
         std::string regstr = _calling_intervals[i].ref_id + "_" +
@@ -201,13 +204,191 @@ bool MtVariantCaller::_caller_process() {
     merge_file_by_line(sub_vcf_files, _config.output_file, header, true);
 
     const tbx_conf_t bf_tbx_conf = {1, 1, 2, 0, '#', 0};  // {preset, seq col, beg col, end col, header-char, skip-line}
-    if ((ngslib::suffix_name(_config.output_file) == ".gz") &&           // create index
-        tbx_index_build(_config.output_file.c_str(), 0, &bf_tbx_conf))   // file suffix is ".tbi"
+    if ((ngslib::suffix_name(_config.output_file) == ".gz") &&          // create index
+        tbx_index_build(_config.output_file.c_str(), 0, &bf_tbx_conf))  // file suffix is ".tbi"
     {
         throw std::runtime_error("tbx_index_build failed: Is the file bgzip-compressed? "
                                  "Check this file: " + _config.output_file + "\n");
     }
 
     return is_success;
+}
+
+bool MtVariantCaller::_fetch_base_in_region(const GenomeRegion gr, PosMapVector &samples_posmapinfo_v) {
+    // The expend size of region, 100bp is enough.
+    static const uint32_t REG_EXPEND_SIZE = 100;
+    uint32_t exp_reg_start = gr.start > REG_EXPEND_SIZE ? gr.start - REG_EXPEND_SIZE : 1;
+    uint32_t exp_reg_end   = gr.end + REG_EXPEND_SIZE;
+    std::string exp_regstr = gr.ref_id + ":" + std::to_string(exp_reg_start) + "-" + std::to_string(exp_reg_end);
+
+    std::string fa_seq = this->reference[gr.ref_id];  // use the whole sequence of ``ref_id`` for simply
+    ThreadPool thread_pool(this->_config.thread_count);  // set multiple-thread
+
+    std::vector<std::future<PosMap>> map_results;
+    // Loop all alignment files
+    for(size_t i(0); i < this->_config.bam_files.size(); ++i) {
+        map_results.push_back(thread_pool.submit(fetch_base_in_sample, this->_config.bam_files[i],                                      
+                                                 std::cref(fa_seq), gr, std::cref(this->_config)));
+    }
+
+    samples_posmapinfo_v.clear(); // clear the vector before push_back
+    bool is_empty = true;
+    for (auto && p: map_results) { // Run and make sure all processes are finished
+        // 一般来说，只有当 valid() 返回 true 的时候才调用 get() 去获取结果，这也是 C++ 文档推荐的操作。
+        if (p.valid()) {
+            // get() 调用会改变其共享状态，不再可用，也就是说 get() 只能被调用一次，多次调用会触发异常。
+            // 如果想要在多个线程中多次获取产出值需要使用 shared_future。
+            PosMap pm = p.get();
+            samples_posmapinfo_v.push_back(pm);
+
+            if (!pm.empty()) is_empty = false;
+        }
+    }
+
+    if (samples_posmapinfo_v.size() != this->_config.bam_files.size())
+        throw std::runtime_error("[_fetch_base_in_region] 'samples_posmapinfo_v.size()' "
+                                 "should be the same as '_config.bam_files.size()'");
+    return is_empty;  // no cover reads in 'GenomeRegion' if empty.
+}
+
+// Seek the base information of each sample in the region.
+PosMap fetch_base_in_sample(const std::string sample_bf, 
+                            const std::string &fa_seq,
+                            const GenomeRegion gr,
+                            const MtVariantCaller::Config &config) {
+    // The expend size of region, 100bp is enough.
+    static const uint32_t REG_EXTEND_SIZE = 100;
+    uint32_t extend_start     = gr.start > REG_EXTEND_SIZE ? gr.start - REG_EXTEND_SIZE : 1;
+    uint32_t extend_end       = gr.end + REG_EXTEND_SIZE;
+    std::string extend_regstr = gr.ref_id + ":" + std::to_string(extend_start) + "-" + std::to_string(extend_end);
+
+    // 位点信息存入该变量, 且由于是按区间读取比对数据，key 值无需再包含 ref_id，因为已经不言自明。
+    PosMap sample_posinfo_map;       // key: position, value: alignment information
+    ngslib::Bam bf(sample_bf, "r");  // open bamfile in reading mode (one sample, one bamfile)
+    if (bf.fetch(extend_regstr)) {   // Set 'bf' only fetch alignment reads in 'exp_regstr'.
+        hts_pos_t map_ref_start, map_ref_end;  // hts_pos_t is uint64_t
+        std::vector<ngslib::BamRecord> sample_target_reads; 
+        ngslib::BamRecord al;  // alignment read
+        while (bf.next(al) >= 0) {  // -1 => hit the end of alignement file.
+            if (al.mapq() < config.min_mapq || al.is_duplicate() || al.is_qc_fail() ||
+                (al.is_paired() && config.proper_pairs_only && !al.is_proper_pair()))
+            {
+                continue;
+            }
+
+            if (al.is_paired() && config.pairs_map_only) {
+                std::string tid_name      = al.tid_name(bf.header());
+                std::string mate_tid_name = al.mate_tid_name(bf.header());
+                if (tid_name != mate_tid_name) continue;
+            }
+
+            map_ref_start = al.map_ref_start_pos() + 1;  // al.map_ref_start_pos() is 0-based, convert to 1-based
+            map_ref_end   = al.map_ref_end_pos();        // al.map_ref_end_pos() is 1-based
+
+            // Only fetch reads which in [reg_start, reg_end]
+            if (gr.start > map_ref_end) continue;
+            if (gr.end < map_ref_start) break;
+            sample_target_reads.push_back(al);  // record the proper reads of sample
+        }
+
+        if (sample_target_reads.size() > 0) {
+            // get alignment information of [i] sample.
+            seek_position(fa_seq, sample_target_reads, gr, sample_posinfo_map);
+        }
+    }
+
+    return sample_posinfo_map;
+}
+
+void seek_position(const std::string &fa_seq,   // must be the whole chromosome sequence
+                   const std::vector<ngslib::BamRecord> &sample_map_reads,
+                   const GenomeRegion gr,
+                   PosMap &sample_posinfo_map)  // key: position, value: alignment information
+{
+    if (!sample_posinfo_map.empty())
+        throw std::runtime_error("[seek_position] 'sample_posinfo_map' must be empty.");
+
+    // A vector of: (cigar_op, read position, reference position, read base, read_qual, reference base)
+    std::vector<ngslib::ReadAlignedPair> aligned_pairs;
+    // PosMap align_base_info;  // key: position, value: alignment information
+    for(size_t i(0); i < sample_map_reads.size(); ++i) {
+
+        AlignBase ab;
+        ab.map_strand = sample_map_reads[i].map_strand();  // '*', '-' or '+'
+        ab.mapq = sample_map_reads[i].mapq();
+
+        char mean_qqual_char = int(sample_map_reads[i].mean_qqual()) + 33; // 33 is the offset of base QUAL
+        std::string ref_bases;
+        uint32_t map_ref_pos;
+
+        aligned_pairs = sample_map_reads[i].get_aligned_pairs(fa_seq);
+        for (size_t i(0); i < aligned_pairs.size(); ++i) {
+            // Todo: data of 'align_base_info' and 'aligned_pairs[i]' is similar, 
+            // just use 'aligned_pairs[i]' to replace 'align_base_info'?
+            map_ref_pos = aligned_pairs[i].ref_pos + 1;  // ref_pos is 0-based, convert to 1-based;
+
+            if (gr.start > map_ref_pos) continue;
+            if (gr.end < map_ref_pos) break;
+
+            // 'BAM_XXX' are macros for CIGAR, which defined in 'htslib/sam.h'
+            if (aligned_pairs[i].op == BAM_CMATCH ||  /* CIGAR: M */ 
+                aligned_pairs[i].op == BAM_CEQUAL ||  /* CIGAR: = */
+                aligned_pairs[i].op == BAM_CDIFF)     /* CIGAR: X */
+            {
+                // One character
+                ref_bases    = aligned_pairs[i].ref_base[0];
+                ab.base      = aligned_pairs[i].read_base[0];
+                ab.base_qual = aligned_pairs[i].read_qual[0];
+            } else if (aligned_pairs[i].op == BAM_CINS) {  /* CIGAR: I */
+                if (!aligned_pairs[i].ref_base.empty()) {
+                    std::cerr << sample_map_reads[i] << "\n";
+                    throw std::runtime_error("[ERROR] We got reference base in insertion region.");
+                }
+
+                // roll back one position to the left side of insertion break point.
+                --map_ref_pos;
+                ref_bases    = fa_seq[aligned_pairs[i].ref_pos-1]; // break point's ref base
+                ab.base      = fa_seq[aligned_pairs[i].ref_pos-1] + aligned_pairs[i].read_base;
+                ab.base_qual = mean_qqual_char;  // set to be mean quality of the whole read
+            } else if (aligned_pairs[i].op == BAM_CDEL) {  /* CIGAR: D */
+                if (!aligned_pairs[i].read_base.empty()) {
+                    std::cerr << sample_map_reads[i] << "\n";
+                    throw std::runtime_error("[ERROR] We got read bases in deletion region.");
+                }
+
+                // roll back one position to the left side of deletion break point.
+                --map_ref_pos;
+                ref_bases    = fa_seq[aligned_pairs[i].ref_pos-1] + aligned_pairs[i].ref_base;
+                ab.base      = fa_seq[aligned_pairs[i].ref_pos-1]; // break point's ref base
+                ab.base_qual = mean_qqual_char;  // set to be mean quality of the whole read
+            } else { 
+                // Skip for other kind of CIGAR symbals.
+                continue;
+            }
+
+            // qpos is 0-based, conver to 1-based to set the rank of base on read.
+            ab.rp = aligned_pairs[i].qpos + 1;
+
+            // 以这个 ref_pos 为 key，将所有的 read_bases 信息存入 map 中，多个突变共享同个 ref_pos，
+            Ref2BaseMap ref2base_map;
+            std::string kk = ref_bases + ":" + ab.base;
+            if (sample_posinfo_map.find(map_ref_pos) == sample_posinfo_map.end()) {
+                // if the position is not in the map, insert it.
+                AlignInfo pos_align_info(gr.ref_id, map_ref_pos, ref_bases);
+                ref2base_map.insert({kk, pos_align_info});
+                sample_posinfo_map.insert({map_ref_pos, ref2base_map});
+
+            } else if (sample_posinfo_map[map_ref_pos].find(kk) == sample_posinfo_map[map_ref_pos].end()) {
+                // if the position is in the map, but the base is not in the map, insert it.
+                AlignInfo pos_align_info(gr.ref_id, map_ref_pos, ref_bases);
+                ref2base_map.insert({kk, pos_align_info});
+                sample_posinfo_map[map_ref_pos].insert({kk, pos_align_info});
+            } 
+            // insert the base information of the read into the map.
+            sample_posinfo_map[map_ref_pos][kk].read_bases.push_back(ab);
+        }
+    }
+
+    return;
 }
 
