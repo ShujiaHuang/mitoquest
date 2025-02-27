@@ -1,11 +1,9 @@
 /**
  * @file mt_caller_utils.h
- * @author your name (you@domain.com)
- * @brief 
- * @version 0.1
- * @date 2025-02-24
+ * @brief  Utilities for mtDNA variant caller 
  * 
- * @copyright Copyright (c) 2025
+ * @author Shujia Huang (hshujia@qq.com)
+ * @date 2025-02-24
  * 
  */
 #ifndef _MT_CALLER_UTILS_H_
@@ -18,8 +16,9 @@
 
 #include "io/fasta.h"
 #include "io/utils.h"
-
 #include "external/robin_hood.h"  // robin_hood::unordered_map
+
+// define data types for variant calling
 
 struct GenomeRegion {
     std::string ref_id;
@@ -49,7 +48,7 @@ struct AlignInfo {
     std::string ref_id;
     uint32_t    ref_pos;
     std::string ref_base; // reference base
-    std::vector<AlignBase> read_bases;  // mapped read bases
+    std::vector<AlignBase> read_bases;  // all mapped bases on this position
 
     AlignInfo() : ref_id(""), ref_pos(0), ref_base("") {};
     AlignInfo(const std::string& rid, uint32_t pos, const std::string& rb) 
@@ -57,9 +56,9 @@ struct AlignInfo {
 
 };
 
-typedef robin_hood::unordered_map<std::string, AlignInfo> Ref2BaseMap;
-typedef robin_hood::unordered_map<uint32_t, Ref2BaseMap> PosMap;  // give a short name for this type
-typedef std::vector<PosMap> PosMapVector;  // record the alignment information for each position in a region
+typedef robin_hood::unordered_map<std::string, AlignInfo> MutBaseMap; // Mutation type. key: ref_base + read_base (e.g. 'A:T'), value: AlignInfo
+typedef robin_hood::unordered_map<uint32_t, MutBaseMap> PosMap;       // key: ref_pos, value: Ref2BaseMap
+typedef std::vector<PosMap> PosMapVector; // record the alignment information for each position in a region
 
  std::string vcf_header_define(const std::string &ref_file_path, const std::vector<std::string> &samples);
  void merge_file_by_line(const std::vector<std::string> &infiles, const std::string &outfile,
