@@ -50,21 +50,21 @@ int main(int argc, char* argv[]) {
     config.chunk_size              = 1000;
 
     static const struct option MT_CMDLINE_LOPTS[] = {
-        {"reference",   required_argument, 0, 'R'},
-        {"output",      required_argument, 0, 'o'},
+        {"reference",          required_argument, 0, 'R'},
+        {"output",             required_argument, 0, 'o'},
 
-        {"bam-list",    optional_argument, 0, 'b'},
-        {"regions",     optional_argument, 0, 'r'},
-        {"min-MQ",      optional_argument, 0, 'q'},
-        {"min-BQ",      optional_argument, 0, 'Q'},
-        {"threads",     optional_argument, 0, 't'},
-        {"threshold",   optional_argument, 0, 'j'},
-        {"chunk",       optional_argument, 0, 'c'},
+        {"bam-list",           optional_argument, 0, 'b'},
+        {"regions",            optional_argument, 0, 'r'},
+        {"min-MQ",             optional_argument, 0, 'q'},
+        {"min-BQ",             optional_argument, 0, 'Q'},
+        {"threads",            optional_argument, 0, 't'},
+        {"threshold",          optional_argument, 0, 'j'},
+        {"chunk",              optional_argument, 0, 'c'},
 
-        {"pairs-map-only",          no_argument, 0,    'p'}, // 小写 p
-        {"proper-pairs-only",       no_argument, 0,    'P'},
-        {"filename-has-samplename", no_argument, NULL, '1'},
-        {"help",                    no_argument, 0,    'h'},
+        {"pairs-map-only",          no_argument, 0, 'p'}, // 小写 p
+        {"proper-pairs-only",       no_argument, 0, 'P'},
+        {"filename-has-samplename", no_argument, 0, '1'},
+        {"help",                    no_argument, 0, 'h'},
 
         // must set this value, to get the correct value from getopt_long
         {0, 0, 0, 0}

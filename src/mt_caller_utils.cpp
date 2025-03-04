@@ -1,5 +1,103 @@
 #include "mt_caller_utils.h"
 
+int get_total_depth(const AlignInfo &align_infor) {
+    int depth(0);
+    for (auto &ab: align_infor.align_bases) {
+        depth += ab.read_base.size();
+    }  
+
+    return depth;
+}
+
+double ref_vs_alt_ranksumtest(const char ref_base, 
+                              const std::string alt_bases_string,
+                              const std::vector<char> &bases,
+                              const std::vector<int> &values)  // values 和 bases 的值是配对的，一一对应 
+{
+    std::vector<double> ref, alt;
+    ref.reserve(values.size());  // change capacity and save time
+    alt.reserve(values.size());  // change capacity and save time
+
+    for (size_t i = 0; i < bases.size(); i++) {
+        if (bases[i] == ref_base) {
+            ref.push_back(values[i]);
+        } else if (alt_bases_string.find(bases[i]) != std::string::npos) {
+            alt.push_back(values[i]);
+        }
+    }
+    
+    double p_phred_scale_value;
+    if (ref.size() > 0 && alt.size() > 0) { // not empty
+        double p_value = wilcoxon_ranksum_test(ref, alt);
+        p_phred_scale_value = -10 * log10(p_value);
+        if (std::isinf(p_phred_scale_value)) {
+            p_phred_scale_value = 10000;
+        }
+    } else {
+        // set a big enough phred-scale value if only get REF or ALT base on this postion.
+        p_phred_scale_value = 10000;
+    }
+    return p_phred_scale_value;
+}
+
+double ref_vs_alt_ranksumtest(const char ref_base, 
+                              const std::string alt_bases_string,
+                              const std::vector<char> &bases,
+                              const std::vector<char> &values) 
+{
+    std::vector<int> v(values.begin(), values.end()); 
+    return ref_vs_alt_ranksumtest(ref_base, alt_bases_string, bases, v);
+}
+
+StrandBiasInfo strand_bias(const char ref_base, 
+                           const std::string alt_bases_string,
+                           const std::vector<char> &bases,
+                           const std::vector<char> &strands)  // strands 和 bases 是配对的，一一对应 
+{
+    int ref_fwd = 0, ref_rev = 0;
+    int alt_fwd = 0, alt_rev = 0;
+
+    for (size_t i(0); i < bases.size(); ++i) {
+        if (strands[i] == '+') {
+            if (bases[i] == ref_base) {
+                ++ref_fwd;
+            } else if (alt_bases_string.find(bases[i]) != std::string::npos) {
+                ++alt_fwd;
+            }
+
+        } else if (strands[i] == '-') {
+            if (bases[i] == ref_base) {
+                ++ref_rev;
+            } else if (alt_bases_string.find(bases[i]) != std::string::npos) {
+                ++alt_rev;
+            }
+
+        } else {
+            throw std::runtime_error("[ERROR] Get strange strand symbol: " + ngslib::tostring(strands[i]));
+        }
+    }
+
+    // 如果是'全 Ref' 或者是 '全 ALT' 怎么办？
+    double fs = -10 * log10(fisher_exact_test(ref_fwd, ref_rev, alt_fwd, alt_rev));
+    if (std::isinf(fs)) {
+        fs = 10000;
+    } else if (fs == 0) {
+        fs = 0.0;
+    }
+
+    // Strand bias estimated by the Symmetric Odds Ratio test
+    // https://software.broadinstitute.org/gatk/documentation/tooldocs/current/org_broadinstitute_gatk_tools_walkers_annotator_StrandOddsRatio.php
+    double sor = (ref_rev * alt_fwd > 0) ? (double)(ref_fwd * alt_rev) / (double)(ref_rev * alt_fwd): 10000;
+
+    StrandBiasInfo sbi;
+    sbi.ref_fwd = ref_fwd; sbi.ref_rev = ref_rev; 
+    sbi.alt_fwd = alt_fwd; sbi.alt_rev = alt_rev;
+    sbi.fs  = fs; 
+    sbi.sor = sor;
+
+    return sbi;
+}
+
 std::string vcf_header_define(const std::string &ref_file_path, const std::vector<std::string> &samples) {
     std::vector<std::string> header = {
         "##fileformat=VCFv4.2",

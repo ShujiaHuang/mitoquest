@@ -10,3 +10,8 @@ g++ -O3 -fPIC test_threadpool.cpp -I ../src -o test_threadpool && ./test_threadp
 
 g++ -O3 -fPIC test_utils.cpp ../src/io/utils.cpp -I ../src -o test_utils && ./test_utils && rm -f test_utils
 
+g++ -O3 -fPIC test_threadpool2.cpp -o test
+
+g++ -O3 -fPIC test_algorithm.cpp ../htslib/libhts.a -I ../htslib -I ../src -o test_algorithm && ./test_algorithm && rm -f test_algorithm
+
+gcc -O3 -Wall -I ../src -std=c++11 -lstdc++ -o test_combinations test_combinations.cpp && ./test_combinations && rm -f test_combinations

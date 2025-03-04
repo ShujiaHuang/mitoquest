@@ -128,6 +128,7 @@ std::pair<double, double> calculate_confidence_interval(int x, int n, double con
     
     double p = static_cast<double>(x) / n;  // Sample proportion
     double lower = 0.0, upper = 0.0;
+    
     // Choose method based on the sample size: n
     if (n >= 40) {  // Use Agresti-Coull for larger sample sizes
         // Agresti-Coull interval calculation
@@ -247,12 +248,12 @@ double wilcoxon_ranksum_test(const std::vector<double>& sample1, const std::vect
 
 /**
  * @brief Calculate the posterior probability of individual allele at each site as
- *        the four A/C/G/T bases.
+ *        the bases.
  * 
- * @param obs_allele_freq        1 x 4 matrix.
- * @param ind_allele_likelihood  n x 4 matrix. n is sample size
- * @param ind_allele_post_prob   n x 4 matrix. allele posterior probabilty for each sample.
- * @param marginal_likelihood    n x 1 matrix. maginal likelihood for each sample.
+ * @param obs_allele_freq        1 x _UNIQ_BASES.size() matrix.
+ * @param ind_allele_likelihood  n x _UNIQ_BASES.size() matrix. n is sample size
+ * @param ind_allele_post_prob   n x _UNIQ_BASES.size() matrix. allele posterior probabilty for each sample.
+ * @param marginal_likelihood    n x _UNIQ_BASES.size() matrix. maginal likelihood for each sample.
  * 
  */
 void e_step(const std::vector<double> &obs_allele_freq,
@@ -269,12 +270,12 @@ void e_step(const std::vector<double> &obs_allele_freq,
     // reset the raw value to be 0
     marginal_likelihood = std::vector<double>(n_sample, 0);
     for (size_t i(0); i < n_sample; ++i) {
-        for (size_t j = 0; j < n_allele; j++) {  // for [A, C, G, T]
+        for (size_t j = 0; j < n_allele; j++) {  // for _UNIQ_BASES
             likelihood[i][j] = ind_allele_likelihood[i][j] * obs_allele_freq[j];
             marginal_likelihood[i] += likelihood[i][j];
         }
 
-        // Computed the posterior probability of A/C/G/T for each individual, change the value inplace.
+        // Computed the posterior probability of _UNIQ_BASES, change the value inplace.
         for (size_t j(0); j < n_allele; ++j) { 
             // reset the posterior value
             ind_allele_post_prob[i][j] = likelihood[i][j] / marginal_likelihood[i];
@@ -287,12 +288,12 @@ void e_step(const std::vector<double> &obs_allele_freq,
 /**
  * @brief Update observed allele frequency inplace.
  * 
- * @param ind_allele_post_prob 2d-array, n x 4 matrix.
- * @param obs_allele_freq      1d-array, 1 x 4. update the allele frequence inplace and return. 
+ * @param ind_allele_post_prob 2d-array, n x _UNIQ_BASES.size() matrix.
+ * @param obs_allele_freq      1d-array, 1 x _UNIQ_BASES.size(). update the allele frequence inplace and return. 
  * 
  */
 void m_step(const std::vector<std::vector<double>> &ind_allele_post_prob, std::vector<double> &obs_allele_freq) {
-    size_t n_sample = ind_allele_post_prob.size();
+    size_t n_sample = ind_allele_post_prob.size();  // depth
     size_t n_allele = ind_allele_post_prob[0].size();
 
     // Reset data
@@ -317,8 +318,8 @@ void m_step(const std::vector<std::vector<double>> &ind_allele_post_prob, std::v
  *                 process. default 0.001.
  * 
  */
-void EM(const std::vector<std::vector<double>> &ind_allele_likelihood, // n x 4 matrix, do not change the raw value.
-        std::vector<double> &obs_allele_freq,          // retuen value, 1 x 4, expect allele frequence, it'll be update inplace here.
+void EM(const std::vector<std::vector<double>> &ind_allele_likelihood, // n x _UNIQ_BASES.size() matrix, do not change the raw value.
+        std::vector<double> &obs_allele_freq,          // retuen value, 1 x _UNIQ_BASES.size(), expect allele frequence, it'll be update inplace here.
         std::vector<double> &log_marginal_likelihood,  // return value
         int iter_num=100, const float epsilon=0.001)
 {
