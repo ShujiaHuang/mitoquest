@@ -174,29 +174,27 @@ bool MtVariantCaller::_caller_process() {
     std::string cache_outdir = outdir + "/cache_" + stem_bn;
     ngslib::safe_mkdir(cache_outdir);
 
-    // Variant calling
     // 以区间为单位进行变异检测, 每个区间里先按照样本调用多线程，然后合并样本，多线程遍历位点并行处理
     bool is_success = true;
     std::vector<std::string> sub_vcf_files;
-    for (size_t i(0); i < _calling_intervals.size(); ++i) {
+
+    for (auto &gr: _calling_intervals) {
         // 按样本进行 pileup，在函数里按样本进行多线程，记录每个样本在每个位点上的 pileup 信息
-        PosMapVector samples_posmapinfo_v;
-        samples_posmapinfo_v.reserve(_samples_id.size() + 1);  // reserve the memory before push_back
-        bool is_empty = _fetch_base_in_region(_calling_intervals[i], samples_posmapinfo_v);
+        std::vector<PosVariantMap> samples_pileup_v;
+        samples_pileup_v.reserve(_samples_id.size() + 1);  // reserve the memory before push_back
+        bool is_empty = _fetch_base_in_region(gr, samples_pileup_v);
         if (is_empty) {
-            std::cerr << "[WARNING] No reads in region: "   << _calling_intervals[i].ref_id << ":"
-                      << _calling_intervals[i].start << "-" << _calling_intervals[i].end    << "\n";
+            std::cerr << "[WARNING] No reads in region: " << gr.ref_id << ":"
+                      << gr.start << "-" << gr.end << "\n";
             continue;
         }
 
-
         //////////////////////////////////////////////
         // Call variants in parallel
-        std::string regstr = _calling_intervals[i].ref_id + "_" +
-                             std::to_string(_calling_intervals[i].start) + "_" +
-                             std::to_string(_calling_intervals[i].end);
+        std::string regstr = gr.ref_id + "_" + std::to_string(gr.start) + "_" + std::to_string(gr.end);
         std::string sub_vcf_fn = cache_outdir + "/" + stem_bn + "." + regstr + ".vcf.gz";
         sub_vcf_files.push_back(sub_vcf_fn);
+
     }
 
     // Merge VCF
@@ -214,47 +212,56 @@ bool MtVariantCaller::_caller_process() {
     return is_success;
 }
 
-bool MtVariantCaller::_fetch_base_in_region(const GenomeRegion gr, PosMapVector &samples_posmapinfo_v) {
-    // The expend size of region, 100bp is enough
-    static const uint32_t REG_EXPEND_SIZE = 100;
-    uint32_t exp_reg_start = gr.start > REG_EXPEND_SIZE ? gr.start - REG_EXPEND_SIZE : 1;
-    uint32_t exp_reg_end   = gr.end + REG_EXPEND_SIZE;
-    std::string exp_regstr = gr.ref_id + ":" + std::to_string(exp_reg_start) + "-" + std::to_string(exp_reg_end);
+bool MtVariantCaller::_fetch_base_in_region(const GenomeRegion gr, std::vector<PosVariantMap> &samples_pileup_v) {
 
-    std::string fa_seq = this->reference[gr.ref_id];     // use the whole sequence of ``ref_id`` for simply
     ThreadPool thread_pool(this->_config.thread_count);  // set multiple-thread
 
-    std::vector<std::future<PosMap>> pos_map_results;
+    std::vector<std::future<PosVariantMap>> pileup_results;
+    std::string fa_seq = this->reference[gr.ref_id];     // use the whole sequence of ``ref_id`` for simply
     // Loop all alignment files
     for(size_t i(0); i < this->_config.bam_files.size(); ++i) {
-        pos_map_results.push_back(thread_pool.submit(call_variant_in_sample, this->_config.bam_files[i],                                      
-                                                     std::cref(fa_seq), gr, std::cref(this->_config)));
+        pileup_results.push_back(thread_pool.submit(call_pileup_in_sample, 
+                                                    this->_config.bam_files[i],                                      
+                                                    std::cref(fa_seq), 
+                                                    gr, 
+                                                    std::cref(this->_config)));
     }
 
-    samples_posmapinfo_v.clear(); // clear the vector before push_back
+    samples_pileup_v.clear(); // clear the vector before push_back
     bool is_empty = true;
-    for (auto && p: pos_map_results) { // Run and make sure all processes are finished
+    for (auto && p: pileup_results) { // Run and make sure all processes are finished
         // 一般来说，只有当 valid() 返回 true 的时候才调用 get() 去获取结果，这也是 C++ 文档推荐的操作。
         if (p.valid()) {
             // get() 调用会改变其共享状态，不再可用，也就是说 get() 只能被调用一次，多次调用会触发异常。
-            PosMap pm = p.get();
-            samples_posmapinfo_v.push_back(pm);
+            PosVariantMap pm = p.get();
+            samples_pileup_v.push_back(pm);
 
             if (!pm.empty()) is_empty = false;
         }
     }
 
-    if (samples_posmapinfo_v.size() != this->_config.bam_files.size())
-        throw std::runtime_error("[_fetch_base_in_region] 'samples_posmapinfo_v.size()' "
+    if (samples_pileup_v.size() != this->_config.bam_files.size())
+        throw std::runtime_error("[_fetch_base_in_region] 'samples_pileup_v.size()' "
                                  "should be the same as '_config.bam_files.size()'");
     return is_empty;  // no cover reads in 'GenomeRegion' if empty.
 }
 
+bool MtVariantCaller::_variant_discovery(const GenomeRegion genome_region, const std::vector<PosVariantMap> &samples_pileup_v, const std::string out_vcf_fn) {
+
+    // 1. integrate the variant information of all samples in the region
+    // 2. call the variant by the integrated information
+    // 3. output the variant information to the VCF file
+    bool is_success = false;
+    
+    return is_success;
+}
+
 // Seek the base information of each sample in the region.
-PosMap call_variant_in_sample(const std::string sample_bam_fn, 
-                              const std::string &fa_seq,
-                              const GenomeRegion gr,
-                              const MtVariantCaller::Config &config) {
+PosVariantMap call_pileup_in_sample(const std::string sample_bam_fn, 
+                                    const std::string &fa_seq,
+                                    const GenomeRegion gr,
+                                    const MtVariantCaller::Config &config) 
+{
     // The expend size of region, 100bp is enough.
     static const uint32_t REG_EXTEND_SIZE = 100;
     uint32_t extend_start     = gr.start > REG_EXTEND_SIZE ? gr.start - REG_EXTEND_SIZE : 1;
@@ -299,13 +306,17 @@ PosMap call_variant_in_sample(const std::string sample_bam_fn,
         }
     }
 
-    // 信息抽提：先计算并返回每个样本在该区间里的突变信息，若不如此处理，内存吃不消
+    // 信息抽提：先计算并返回每个样本在该区间里每一个位点的潜在突变信息（类似 pileup or gvcf），若不如此处理，内存吃不消
     // 这样做的好处还可为多样本 joint-calling 奠下可能. 
+    // key: position, value: variant information, 由于是按区间抽提，key 值无需再包含 ref_id，因为已经不言自明 
+    PosVariantMap sample_pileup_map;
     for (auto &pos_align_info: sample_posinfo_map) {
-        VariantInfo vi = variant_caller_unit(pos_align_info.second, config.heteroplasmy_threshold);
+        VariantInfo vi = basetype_caller_unit(pos_align_info.second, config.heteroplasmy_threshold);
+        sample_pileup_map.insert({pos_align_info.first, vi}); // key: position, value: variant information
     }
 
-    return sample_posinfo_map;
+    // return the variant information for all the ref_pos of the sample in the region, no matter its a variant or not.
+    return sample_pileup_map;
 }
 
 void seek_position(const std::string &fa_seq,   // must be the whole chromosome sequence
@@ -353,6 +364,9 @@ void seek_position(const std::string &fa_seq,   // must be the whole chromosome 
                 ab.ref_base  = fa_seq[aligned_pairs[i].ref_pos-1]; // break point's ref base
                 ab.read_base = fa_seq[aligned_pairs[i].ref_pos-1] + aligned_pairs[i].read_base;
 
+                // Need to convert the read_base to upper case if it is a insertion in case of the ref is lower case.
+                std::transform(ab.read_base.begin(), ab.read_base.end(), ab.read_base.begin(), ::toupper);
+
                 // mean quality of the whole insertion sequence
                 double total_score = 0;
                 for (size_t i = 0; i < aligned_pairs[i].read_base.size(); ++i)
@@ -370,14 +384,17 @@ void seek_position(const std::string &fa_seq,   // must be the whole chromosome 
                 --map_ref_pos;
                 ab.ref_base  = fa_seq[aligned_pairs[i].ref_pos-1] + aligned_pairs[i].ref_base;
                 ab.read_base = fa_seq[aligned_pairs[i].ref_pos-1]; // break point's ref base
+
+                // Need to convert the read_base to upper case if it is a deletion in case of the ref is lower case.
+                std::transform(ab.read_base.begin(), ab.read_base.end(), ab.read_base.begin(), ::toupper);
+
                 // set to be mean quality of the whole read if deletion
-                ab.base_qual = uint8_t(al.mean_qqual()) + 33; // 33 is the offset of base QUAL; 
+                ab.base_qual = uint8_t(al.mean_qqual()) + 33; // 33 is the offset of base QUAL;
 
             } else { 
                 // Skip other kinds of CIGAR symbals.
                 continue;
             }
-
             // qpos is 0-based, conver to 1-based to set the rank of base on read.
             ab.rpr = aligned_pairs[i].qpos + 1;
 
@@ -396,30 +413,56 @@ void seek_position(const std::string &fa_seq,   // must be the whole chromosome 
     return;
 }
 
-VariantInfo variant_caller_unit(const AlignInfo &pos_align_info, double min_af) {
+VariantInfo basetype_caller_unit(const AlignInfo &pos_align_info, double min_af) {
 
-    BatchInfo smp_bi;
-    smp_bi.ref_id  = pos_align_info.ref_id;
-    smp_bi.ref_pos = pos_align_info.ref_pos;
+    BaseType::BatchInfo smp_bi(pos_align_info.ref_id, pos_align_info.ref_pos);
     for (auto &ab: pos_align_info.align_bases) {
         smp_bi.ref_bases.push_back(ab.ref_base);
         smp_bi.mapqs.push_back(ab.mapq);
         smp_bi.map_strands.push_back(ab.map_strand);
 
+        smp_bi.base_pos_ranks.push_back(ab.rpr);
         smp_bi.align_bases.push_back(ab.read_base);
         smp_bi.align_base_quals.push_back(ab.base_qual);
-        smp_bi.base_pos_ranks.push_back(ab.rpr);
     }
 
-    std::transform(smp_bi.align_bases.begin(), smp_bi.align_bases.end(), smp_bi.align_bases.begin(), ::toupper);
     BaseType bt(&smp_bi, min_af);
     bt.lrt();  // use likelihood ratio test to detect candidate variant
 
-    return get_variant(bt, &smp_bi);
+    return get_pileup(bt, &smp_bi);
 }
 
-VariantInfo get_variant(const BaseType &bt, const BatchInfo *smp_bi) {
-    VariantInfo vi;
+VariantInfo get_pileup(const BaseType &bt, const BaseType::BatchInfo *smp_bi) {
+
+    VariantInfo vi(bt.get_ref_id(), bt.get_ref_pos(), bt.get_total_depth());
+    for (size_t i(0); i < bt.get_active_bases().size(); ++i) {
+        std::string b = bt.get_active_bases()[i];
+        std::string ref_base = bt.get_bases2ref().at(b);
+
+        vi.ref_bases.push_back(ref_base);
+        vi.alt_bases.push_back(b);
+        vi.depths.push_back(bt.get_base_depth(b));
+        vi.freqs.push_back(bt.get_lrt_af(b));
+
+        std::string upper_ref_base(ref_base);
+        std::transform(upper_ref_base.begin(), upper_ref_base.end(), upper_ref_base.begin(), ::toupper);
+
+        if (b == upper_ref_base) {
+            vi.var_types.push_back("REF");
+        } else if (b.size() == 1 && ref_base.size() == 1) {
+            vi.var_types.push_back("SNV");
+        } else if (b.size() > ref_base.size()) {
+            vi.var_types.push_back("INS");
+        } else if (b.size() < ref_base.size()) {
+            vi.var_types.push_back("DEL");
+        } else {
+            vi.var_types.push_back("MNV");
+        }
+
+        vi.strand_bias.push_back(strand_bias(upper_ref_base, b, smp_bi->align_bases, smp_bi->map_strands));
+
+        // Todo: Add confidence interval for the variant for each alt base
+    }
 
     return vi;
 }

@@ -13,15 +13,13 @@
 #include <ctime>  // clock, time_t
 
 #include "basetype.h"
-#include "mt_caller_utils.h"
-
 #include "io/fasta.h"
 #include "io/bam.h"
 #include "external/thread_pool.h"
 
+#include "mt_caller_utils.h"
+
 static const bool IS_DELETE_CACHE = true;
-
-
 
 class MtVariantCaller {
 public:
@@ -65,31 +63,32 @@ private:
     GenomeRegion _make_genome_region(std::string gregion);
 
     bool _caller_process();  // main process function
-    bool _fetch_base_in_region(const GenomeRegion genome_region,
-                               PosMapVector &batchsamples_posinfomap_vector);
+    bool _fetch_base_in_region(const GenomeRegion genome_region, std::vector<PosVariantMap> &samples_pileup_v);
 
+    // integrate the variant information of all samples in the region
+    bool _variant_discovery(const GenomeRegion genome_region, const std::vector<PosVariantMap> &samples_pileup_v, const std::string out_vcf_fn);
 };
 
-PosMap call_variant_in_sample(const std::string sample_bam_fn, 
-                              const std::string &fa_seq,
-                              const GenomeRegion gr,
-                              const MtVariantCaller::Config &config);
+PosVariantMap call_pileup_in_sample(const std::string sample_bam_fn, 
+                                    const std::string &fa_seq,
+                                    const GenomeRegion gr,
+                                    const MtVariantCaller::Config &config);
 
 void seek_position(const std::string &fa_seq,   // must be the whole chromosome sequence
                    const std::vector<ngslib::BamRecord> &sample_map_reads,
                    const GenomeRegion gr,
                    PosMap &sample_posinfo_map);
 
-VariantInfo variant_caller_unit(const AlignInfo &pos_align_info, double min_af);
+VariantInfo basetype_caller_unit(const AlignInfo &pos_align_info, double min_af);
 
 /**
- * @brief Get the variant object
+ * @brief Get the Pileup object
  * 
  * @param bt BaseType
- * @param smp_bi BatchInfo 
+ * @param smp_bi BaseType::BatchInfo 
  * @return VariantInfo 
  */
-VariantInfo get_variant(const BaseType &bt, const BatchInfo *smp_bi);
+VariantInfo get_pileup(const BaseType &bt, const BaseType::BatchInfo *smp_bi);
 
 #endif // _MT_VARIANT_CALLER_H_
 

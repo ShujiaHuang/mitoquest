@@ -57,13 +57,12 @@ struct AlignInfo {
 };
 
 typedef robin_hood::unordered_map<uint32_t, AlignInfo> PosMap;  // key: ref_pos, value: AlignInfo
-typedef std::vector<PosMap> PosMapVector; // record the alignment information for each position in a region
 
 typedef struct {
     int ref_fwd, ref_rev;
     int alt_fwd, alt_rev;
-    double fs;
-    double sor;
+    double fs;   // Phred-scaled p-value using Fisher's exact test to detect strand bias
+    double sor;  // Strand bias estimated by the Symmetric Odds Ratio test
 } StrandBiasInfo;
 
 struct VariantInfo {
@@ -79,11 +78,27 @@ struct VariantInfo {
     std::vector<StrandBiasInfo> strand_bias;
 
     VariantInfo() : ref_id(""), ref_pos(0), total_depth(0) {};
-    VariantInfo(const std::string& rid, uint32_t pos) : ref_id(rid), ref_pos(pos), total_depth(0) {};
+    VariantInfo(const std::string& rid, uint32_t pos, int dp) : ref_id(rid), ref_pos(pos), total_depth(dp) {};
 };
+typedef robin_hood::unordered_map<uint32_t, VariantInfo> PosVariantMap;  // key: ref_pos, value: VariantInfo
+typedef robin_hood::unordered_map<std::string, std::vector<VariantInfo>> SampleVariantMap;  // key: sample_id, value: VariantInfo
 
 // get the total depth for a reference position
 int get_total_depth(const AlignInfo &align_infor);
+
+/**
+ * @brief calculate the strand bias for a reference and alternative base
+ * 
+ * @param ref_base 
+ * @param alt_bases_string 
+ * @param bases 
+ * @param strands 
+ * @return StrandBiasInfo 
+ */
+StrandBiasInfo strand_bias(const std::string &ref_base, 
+                           const std::string &alt_bases_string,
+                           const std::vector<std::string> &bases,
+                           const std::vector<char> &strands);
 
 /**
  * @brief Mann-Whitney-Wilcoxon Rank Sum Test for REF and ALT array.
@@ -107,11 +122,6 @@ double ref_vs_alt_ranksumtest(const char ref_base,
                               const std::string alt_bases_string,
                               const std::vector<char> &bases,
                               const std::vector<char> &values);
-
-StrandBiasInfo strand_bias(const char ref_base, 
-                           const std::string alt_bases_string,
-                           const std::vector<char> &bases,
-                           const std::vector<char> &strands);
 
 std::string vcf_header_define(const std::string &ref_file_path, const std::vector<std::string> &samples);
 void merge_file_by_line(const std::vector<std::string> &infiles, const std::string &outfile,

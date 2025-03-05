@@ -35,11 +35,9 @@ BaseType::BaseType(const BatchInfo *smp_bi, double min_af) {
     _min_af  = min_af;
     _ref_id  = smp_bi->ref_id;
     _ref_pos = smp_bi->ref_pos;
-    _gvar_bases.clear();
 
     _allele_likelihood.reserve(smp_bi->align_bases.size());
     _qual_pvalue.reserve(smp_bi->align_bases.size());
-
     for (size_t i(0); i < smp_bi->align_bases.size(); ++i) {
 
         if (_bases2ref.find(smp_bi->align_bases[i]) == _bases2ref.end()) {
@@ -192,6 +190,9 @@ void BaseType::lrt(const std::vector<std::string> &specific_bases) {
         }
     }
 
+    // Set the active bases and their frequency
+    this->_gvar_bases.clear();
+    this->_af_by_lrt.clear();
     for (auto b: active_bases) {
         this->_gvar_bases.push_back(b);
         this->_af_by_lrt[b] = active_bases_freq[_B_IDX[b]];

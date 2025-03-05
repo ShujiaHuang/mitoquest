@@ -38,14 +38,13 @@ void print_usage(const MtVariantCaller::Config &config) {
 int main(int argc, char* argv[]) {
     
     MtVariantCaller::Config config;
-
     // Set default values
     config.min_mapq                = 0;
     config.min_baseq               = 20;
     config.pairs_map_only          = false;
     config.proper_pairs_only       = false;
     config.filename_has_samplename = false;
-    config.heteroplasmy_threshold  = 0.2;
+    config.heteroplasmy_threshold  = 0.01;
     config.thread_count            = 1;
     config.chunk_size              = 1000;
 
