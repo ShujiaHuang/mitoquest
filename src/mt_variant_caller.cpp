@@ -531,7 +531,6 @@ VariantInfo get_pileup(const BaseType &bt, const BaseType::BatchInfo *smp_bi) {
 
         std::pair<double, double> ci = calculate_confidence_interval(bt.get_base_depth(b), bt.get_total_depth());
         vi.ci.push_back(ci);
-
         vi.strand_bias.push_back(strand_bias(upper_ref_base, b, smp_bi->align_bases, smp_bi->map_strands));
     }
 
@@ -618,7 +617,7 @@ VCFRecord call_variant_in_pos(std::vector<VariantInfo> vi) {
             vcf_record.qual = sample_var.qual;
         }
 
-        // Re-find ALTs present in this sample in right order according to 'vcf_record.alt'
+        // Re-order ALTs present in this sample according to 'vcf_record.alt'
         std::vector<size_t> gt_indices; // Genotype indices
         std::vector<std::string> sample_alts;
         std::vector<int>    allele_depths;
@@ -642,8 +641,7 @@ VCFRecord call_variant_in_pos(std::vector<VariantInfo> vi) {
                     gt_indices.push_back(alt_to_gti[alt]);
                     allele_depths.push_back(sample_var.depths[j]);
                     allele_freqs.push_back(sample_var.freqs[j]);
-                    ci_strings.push_back(format_double(sample_var.ci[j].first) + "," + 
-                                         format_double(sample_var.ci[j].second));
+                    ci_strings.push_back(format_double(sample_var.ci[j].first) + "," + format_double(sample_var.ci[j].second));
                     sb_strings.push_back(std::to_string(sample_var.strand_bias[j].ref_fwd) + "," + 
                                          std::to_string(sample_var.strand_bias[j].ref_rev) + "," + 
                                          std::to_string(sample_var.strand_bias[j].alt_fwd) + "," + 

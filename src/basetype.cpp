@@ -37,7 +37,7 @@ BaseType::BaseType(const BatchInfo *smp_bi, double min_af) {
     _ref_pos = smp_bi->ref_pos;
 
     _allele_likelihood.reserve(smp_bi->align_bases.size());
-    _qual_pvalue.reserve(smp_bi->align_bases.size());
+    // _qual_pvalue.reserve(smp_bi->align_bases.size());
     _total_depth = 0;
     for (size_t i(0); i < smp_bi->align_bases.size(); ++i) {
 
@@ -46,7 +46,7 @@ BaseType::BaseType(const BatchInfo *smp_bi, double min_af) {
         }
 
         double epsilon = exp((smp_bi->align_base_quals[i] - 33) * MLN10TO10); // base error probability
-        _qual_pvalue.push_back(1.0 - epsilon);
+        // _qual_pvalue.push_back(1.0 - epsilon);
         if (smp_bi->align_bases[i][0] != 'N' && smp_bi->align_bases[i][0] != 'n') { 
             // ignore all the 'N' bases
             _total_depth++;
@@ -77,12 +77,13 @@ BaseType::BaseType(const BaseType &b) {
     this->_min_af      = b._min_af;
     this->_var_qual    = b._var_qual;
     this->_af_by_lrt   = b._af_by_lrt;
-    this->_qual_pvalue = b._qual_pvalue;
+    // this->_qual_pvalue = b._qual_pvalue;
     this->_allele_likelihood = b._allele_likelihood;
 
     this->_depth       = b._depth;
     this->_total_depth = b._total_depth;
     this->_B_IDX       = b._B_IDX;
+    this->_bases2ref   = b._bases2ref;
 }
 
 std::vector<double> BaseType::_set_initial_freq(const std::vector<std::string> &bases) {
@@ -182,14 +183,14 @@ void BaseType::lrt(const std::vector<std::string> &specific_bases) {
         double r = this->_depth[active_bases[0]] / (double)(this->_total_depth);
         if ((active_bases.size() == 1) && (this->_total_depth > 10) && (r > 0.5)) {
             // Hard code for 'mono-allelelic' when depth > 10 and r > 0.5
-            this->_var_qual = 5000.0;
+            this->_var_qual = 5000;
         } else {
             // 'chi2_test' may return nan, which is caused by 'chi_sqrt_value' <= 0 and means p value is 1.0.
             double chi_prob = chi2_test(chi_sqrt_value, 1);  // Python: chi_prob = chi2.sf(chi_sqrt_value, 1)
             if (std::isnan(chi_prob)) 
                 chi_prob = 1.0;
 
-            this->_var_qual = (chi_prob) ? -10 * log10(chi_prob) : 10000.0;
+            this->_var_qual = (chi_prob) ? -10 * log10(chi_prob) : 10000;
             // _var_qual will been setted as -0.0 instand of 0.0 if it's 0, because of the phred-scale formular
             if (this->_var_qual == -0.0) this->_var_qual = 0.0;
         }
