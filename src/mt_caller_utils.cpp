@@ -118,9 +118,9 @@ std::string vcf_header_define(const std::string &ref_file_path, const std::vecto
         "##FORMAT=<ID=SOR,Number=A,Type=Float,Description=\"Strand bias estimated by the Symmetric Odds Ratio test\">",
         "##FORMAT=<ID=VT,Number=1,Type=String,Description=\"Variant type: REF, SNV, INS, DEL, or MNV\">",
 
-        "##INFO=<ID=AF,Number=A,Type=Float,Description=\"An ordered, comma delimited list of allele frequencies base\">",
-        "##INFO=<ID=AC,Number=A,Type=Integer,Description=\"An ordered, comma delimited allele count in genotypes\">",
-        "##INFO=<ID=AN,Number=1,Type=Integer,Description=\"Total number of alleles in called genotypes\">",
+        "##INFO=<ID=AF,Number=A,Type=Float,Description=\"An ordered, comma delimited list of non-reference allele frequencies\">",
+        "##INFO=<ID=AC,Number=A,Type=Integer,Description=\"An ordered, comma delimited list of non-reference allele count in genotypes\">",
+        "##INFO=<ID=AN,Number=1,Type=Integer,Description=\"Total number of ref and non-ref allele in called genotypes\">",
     };  // initial by common information of header
 
     ngslib::Fasta fa = ref_file_path;

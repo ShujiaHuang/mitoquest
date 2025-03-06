@@ -30,7 +30,7 @@ public:
         std::string output_file;             // output VCF file
 
         int min_mapq  = 0;   // a mapping quality score less than this value will be filtered
-        int min_baseq = 20;  // a base quality score less than this value will be filtered
+        // int min_baseq = 20;  // a base quality score less than this value will be filtered (按照我的模型，这个参数没什么必要)
         float heteroplasmy_threshold = 0.01;
         int thread_count = 1;
         int chunk_size   = 1000;              // Process this many bases per thread

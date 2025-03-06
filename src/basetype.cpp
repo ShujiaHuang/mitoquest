@@ -183,7 +183,7 @@ void BaseType::lrt(const std::vector<std::string> &specific_bases) {
         double r = this->_depth[active_bases[0]] / (double)(this->_total_depth);
         if ((active_bases.size() == 1) && (this->_total_depth > 10) && (r > 0.5)) {
             // Hard code for 'mono-allelelic' when depth > 10 and r > 0.5
-            this->_var_qual = 5000;
+            this->_var_qual = 10000;
         } else {
             // 'chi2_test' may return nan, which is caused by 'chi_sqrt_value' <= 0 and means p value is 1.0.
             double chi_prob = chi2_test(chi_sqrt_value, 1);  // Python: chi_prob = chi2.sf(chi_sqrt_value, 1)

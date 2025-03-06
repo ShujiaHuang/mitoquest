@@ -45,8 +45,7 @@ struct AlignBase {
     std::string ref_base;
     std::string read_base; // read base (could be a base or indels sequence)
     char base_qual;   // read base quality, get mean quality of seq if it is indels
-    int rpr;          // read position rank, the first base is 1, record the leftmost position for indels 
-
+    int rpr;          // read position rank, the first base is 1, record the leftmost position for indels sequence
     int mapq;         // mapping quality
     char map_strand;  // mapping reference strand, should be one of '-', '+' or '*'
 };
@@ -143,7 +142,7 @@ struct VCFRecord {
            << id    << "\t"
            << ref   << "\t"
            << (alt.empty() ? "." : ngslib::join(alt, ",")) << "\t"
-           << (qual < 0 ? "." : std::to_string(qual))      << "\t"
+           << (qual <= 0 ? "." : std::to_string(qual))     << "\t"
            << filter << "\t"
            << info;
 
@@ -157,7 +156,6 @@ struct VCFRecord {
 
         return ss.str();
     }
-
 };
 
 // 最多只保留小数点后 3 位

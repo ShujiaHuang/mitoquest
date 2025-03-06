@@ -23,8 +23,8 @@ void print_usage(const MtVariantCaller::Config &config) {
               << "  -b, --bam-list FILE        list of input BAM/CRAM filenames, one per line.\n"
               << "  -r, --regions REG[,...]    Comma separated list of regions in which to process (default: entire genome).\n"
               << "                             REG format: chr:start-end (e.g.: chrM or chrM:1-1000,chrM:8000-8200)\n"
-              << "  -q, --min-MQ INT           skip alignments with mapQ smaller than INT (default: "    << config.min_mapq  << ")\n"
-              << "  -Q, --min-BQ INT           skip bases with base quality smaller than INT (default: " << config.min_baseq << ")\n"
+              << "  -q, --min-MQ INT           skip alignments with mapQ smaller than INT (default: " << config.min_mapq  << ")\n"
+            //   << "  -Q, --min-BQ INT           skip bases with base quality smaller than INT (default: " << config.min_baseq << ")\n"
               << "  -p, --pairs-map-only       Only use the paired reads which mapped to the some chromosome.\n"
               << "  -P, --proper-pairs-only    Only use properly paired reads.\n"
               << "  --filename-has-samplename  If the name of bamfile is something like 'SampleID.xxxx.bam', set this\n"
@@ -40,7 +40,7 @@ int main(int argc, char* argv[]) {
     MtVariantCaller::Config config;
     // Set default values
     config.min_mapq                = 0;
-    config.min_baseq               = 20;
+    // config.min_baseq               = 20;
     config.pairs_map_only          = false;
     config.proper_pairs_only       = false;
     config.filename_has_samplename = false;
@@ -55,7 +55,7 @@ int main(int argc, char* argv[]) {
         {"bam-list",           optional_argument, 0, 'b'},
         {"regions",            optional_argument, 0, 'r'},
         {"min-MQ",             optional_argument, 0, 'q'},
-        {"min-BQ",             optional_argument, 0, 'Q'},
+        // {"min-BQ",             optional_argument, 0, 'Q'},
         {"threads",            optional_argument, 0, 't'},
         {"threshold",          optional_argument, 0, 'j'},
         {"chunk",              optional_argument, 0, 'c'},
@@ -71,7 +71,7 @@ int main(int argc, char* argv[]) {
 
     int opt;
     std::vector<std::string> bam_filelist;
-    while ((opt = getopt_long(argc, argv, "f:b:o:r:q:Q:c:j:t:pPh", MT_CMDLINE_LOPTS, NULL)) != -1) {
+    while ((opt = getopt_long(argc, argv, "f:b:o:r:q:c:j:t:pPh", MT_CMDLINE_LOPTS, NULL)) != -1) {
         switch (opt) {
             case 'f': config.reference_file = optarg;                    break;
             case 'o': config.output_file    = optarg;                    break;
@@ -86,7 +86,7 @@ int main(int argc, char* argv[]) {
 
             case 'r': config.calling_regions         = optarg;            break;
             case 'q': config.min_mapq                = std::atoi(optarg); break;
-            case 'Q': config.min_baseq               = std::atoi(optarg); break;
+            // case 'Q': config.min_baseq               = std::atoi(optarg); break;
             case 'p': config.pairs_map_only          = true;              break;
             case 'P': config.proper_pairs_only       = true;              break;
             case '1': config.filename_has_samplename = true;              break;

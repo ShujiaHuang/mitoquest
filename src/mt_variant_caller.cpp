@@ -4,7 +4,6 @@
 MtVariantCaller::MtVariantCaller(const Config& config) : _config(config) {
     // load fasta
     reference = _config.reference_file;
-
     _get_calling_interval(); // _print_calling_interval();
 
     // keep the order of '_samples_id' as the same as input bamfiles
@@ -28,8 +27,8 @@ bool MtVariantCaller::run() {
     ct.pop_back();
     std::cout << "[INFO] " + ct + ". Done for Variant calling, "
               << difftime(now, real_start_time) << " (CPU time: "
-              << (double)(clock() - cpu_start_time) / CLOCKS_PER_SEC << ") seconds elapsed."
-              << std::endl;
+              << std::round((clock() - cpu_start_time) / CLOCKS_PER_SEC) 
+              << ") seconds elapsed.\n" << std::endl;
 
     return is_success;
 }
@@ -592,15 +591,15 @@ VCFRecord call_variant_in_pos(std::vector<VariantInfo> vi) {
         return VCFRecord(); // Return empty record if no variants
     }
 
-    std::map<std::string, int> ac; // Allele counts in samples' GT
-    double an = 0;                 // Total allele number in called GT
-
     // Set ALT field: Unique and sorted ALT sequences by length and then by ASCII
     vcf_record.alt = ngslib::get_unique_strings(std::vector<std::string>(unique_alts.begin(), unique_alts.end()));
-    std::map<std::string, size_t> alt_to_gti; // ALT to genotype index
-    alt_to_gti[shared_ref] = 0;
+
+    std::map<std::string, int> ac; // only record ref and non-ref allele counts (AC)
+    double an = 0;                 // Total allele number in called GT
+
+    std::vector<std::string> ref_alt_order = {shared_ref};
     for (size_t i = 0; i < vcf_record.alt.size(); i++) {
-        alt_to_gti[vcf_record.alt[i]] = i+1;
+        ref_alt_order.push_back(vcf_record.alt[i]);
         ac[vcf_record.alt[i]] = 0; // Initialize AC
     }
 
@@ -613,7 +612,7 @@ VCFRecord call_variant_in_pos(std::vector<VariantInfo> vi) {
         const auto& sample_var = vi[sample_idx];
 
         // record the biggest qual value
-        if (sample_var.qual > vcf_record.qual) {
+        if (sample_var.qual > vcf_record.qual && sample_var.qual != 10000) {
             vcf_record.qual = sample_var.qual;
         }
 
@@ -629,8 +628,10 @@ VCFRecord call_variant_in_pos(std::vector<VariantInfo> vi) {
         std::vector<std::string> sor_strings;
         std::vector<std::string> var_types;
 
-        // Collect and format sample information    
-        for (const auto& alt : vcf_record.alt) {
+        // Collect and format sample information 
+        for (size_t gti = 0; gti < ref_alt_order.size(); gti++) {  // gti == 0 represents the REF GT for mtDNA
+            const auto& alt = ref_alt_order[gti];
+
             for (size_t j = 0; j < sample_var.alt_bases.size(); j++) {
                 if (sample_var.alt_bases[j] == alt) {
 
@@ -638,7 +639,7 @@ VCFRecord call_variant_in_pos(std::vector<VariantInfo> vi) {
                     ac[alt] += 1;
 
                     sample_alts.push_back(alt);
-                    gt_indices.push_back(alt_to_gti[alt]);
+                    gt_indices.push_back(gti);
                     allele_depths.push_back(sample_var.depths[j]);
                     allele_freqs.push_back(sample_var.freqs[j]);
                     ci_strings.push_back(format_double(sample_var.ci[j].first) + "," + format_double(sample_var.ci[j].second));
@@ -646,28 +647,29 @@ VCFRecord call_variant_in_pos(std::vector<VariantInfo> vi) {
                                          std::to_string(sample_var.strand_bias[j].ref_rev) + "," + 
                                          std::to_string(sample_var.strand_bias[j].alt_fwd) + "," + 
                                          std::to_string(sample_var.strand_bias[j].alt_rev));
-                    fs_strings.push_back(std::to_string((int)std::round(sample_var.strand_bias[j].fs)));  // it's a phred-scale score
-                    sor_strings.push_back(format_double(sample_var.strand_bias[j].sor));
+                    fs_strings.push_back(sample_var.strand_bias[j].fs != 10000 ? 
+                                         format_double(sample_var.strand_bias[j].fs) : "10000"); // it's a phred-scale score
+                    sor_strings.push_back(sample_var.strand_bias[j].sor != 10000 ? 
+                                          format_double(sample_var.strand_bias[j].sor) : "10000");
                     var_types.push_back(sample_var.var_types[j]);
                 }
             }
         }
 
         bool alt_found = sample_alts.size() > 0;
-        std::string gt = alt_found ? ngslib::join(gt_indices, "/") : ".";  // set generate genotype (GT)
-
-        std::string sample_info = gt + ":" +                                     // GT, genotype
-                                  std::to_string(int(sample_var.qual)) + ":" +   // GQ, genotype quality
-                                  std::to_string(sample_var.total_depth);        // DP, total depth
+        std::string gt = alt_found ? ngslib::join(gt_indices, "/") : ".";       // set generate genotype (GT)
+        std::string sample_info = gt + ":" +                                    // GT, genotype
+                                  std::to_string(int(sample_var.qual)) + ":" +  // GQ, genotype quality
+                                  std::to_string(sample_var.total_depth);       // DP, total depth
         if (alt_found) {
             sample_info += ":";
-            sample_info += ngslib::join(allele_depths, ",") + ":" +              // AD, allele depth
-                           ngslib::join(allele_freqs, ",")  + ":" +              // HF, allele frequency
-                           ngslib::join(ci_strings, "|")    + ":" +              // CI, confidence interval
-                           ngslib::join(sb_strings, "|")    + ":" +              // SB, strand bias
-                           ngslib::join(fs_strings, "|")    + ":" +              // FS, Fisher strand bias
-                           ngslib::join(sor_strings, "|")   + ":" +              // SOR, Strand odds ratio
-                           ngslib::join(var_types, ",");                         // VT, Variant type
+            sample_info += ngslib::join(allele_depths, ",") + ":" +             // AD, allele depth
+                           ngslib::join(allele_freqs, ",")  + ":" +             // HF, allele frequency
+                           ngslib::join(ci_strings, "|")    + ":" +             // CI, confidence interval
+                           ngslib::join(sb_strings, "|")    + ":" +             // SB, strand bias
+                           ngslib::join(fs_strings, "|")    + ":" +             // FS, Fisher strand bias
+                           ngslib::join(sor_strings, "|")   + ":" +             // SOR, Strand odds ratio
+                           ngslib::join(var_types, ",");                        // VT, Variant type
         }
         vcf_record.samples.push_back(sample_info);
     }
@@ -675,9 +677,9 @@ VCFRecord call_variant_in_pos(std::vector<VariantInfo> vi) {
     // Set INFO field
     std::vector<int> ac_v;
     std::vector<std::string> af;
-    for (const auto& alt : vcf_record.alt) {
+    for (const auto& alt : vcf_record.alt) { // Only record the counts (AC) and frequencies (AF) of non-ref allele in INFO field
         ac_v.push_back(ac[alt]);
-        af.push_back(format_double(ac[alt] / an));
+        af.push_back(format_double(ac[alt] / an)); 
     }
     vcf_record.info = "AF=" + ngslib::join(af, ",") + ";AC=" + ngslib::join(ac_v, ",") + ";AN=" + std::to_string(int(an));
 
