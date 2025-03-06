@@ -31,7 +31,7 @@ public:
 
         int min_mapq  = 0;   // a mapping quality score less than this value will be filtered
         int min_baseq = 20;  // a base quality score less than this value will be filtered
-        float heteroplasmy_threshold = 0.2;
+        float heteroplasmy_threshold = 0.01;
         int thread_count = 1;
         int chunk_size   = 1000;              // Process this many bases per thread
         bool pairs_map_only    = false;       // only use the paired reads which mapped to the same chromosome
@@ -89,6 +89,8 @@ VariantInfo basetype_caller_unit(const AlignInfo &pos_align_info, double min_af)
  * @return VariantInfo 
  */
 VariantInfo get_pileup(const BaseType &bt, const BaseType::BatchInfo *smp_bi);
+
+VCFRecord call_variant_in_pos(std::vector<VariantInfo> variant_infos);
 
 #endif // _MT_VARIANT_CALLER_H_
 

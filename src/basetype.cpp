@@ -26,7 +26,7 @@ BaseType::BaseType(const BatchInfo *smp_bi, double min_af) {
      */
     std::vector<std::string> tmp_bases(smp_bi->align_bases);
     tmp_bases.insert(tmp_bases.end(), BASIC_BASES.begin(), BASIC_BASES.end());
-    _UNIQ_BASES = _get_unique_strings(tmp_bases);
+    _UNIQ_BASES = ngslib::get_unique_strings(tmp_bases);
     for (size_t i(0); i < _UNIQ_BASES.size(); ++i) {
         _B_IDX[_UNIQ_BASES[i]] = i;  // set string of UNIQ_BASES map to array index
         _depth[_UNIQ_BASES[i]] = 0;  // inital the base depth to 0.
@@ -38,6 +38,7 @@ BaseType::BaseType(const BatchInfo *smp_bi, double min_af) {
 
     _allele_likelihood.reserve(smp_bi->align_bases.size());
     _qual_pvalue.reserve(smp_bi->align_bases.size());
+    _total_depth = 0;
     for (size_t i(0); i < smp_bi->align_bases.size(); ++i) {
 
         if (_bases2ref.find(smp_bi->align_bases[i]) == _bases2ref.end()) {
@@ -99,29 +100,6 @@ std::vector<double> BaseType::_set_initial_freq(const std::vector<std::string> &
     }
 
     return obs_allele_freq;  // 1 x _UNIQ_BASES.size() vector. The allele frequence for _UNIQ_BASES
-}
-
-std::vector<std::string> BaseType::_get_unique_strings(const std::vector<std::string>& strings) {
-    // get unique strings
-    robin_hood::unordered_set<std::string> unique_set(strings.begin(), strings.end());
-
-    // convert unordered_set to vector
-    std::vector<std::string> unique_strings(unique_set.begin(), unique_set.end());
-    
-    // sort by length and then by ASCII
-    std::sort(unique_strings.begin(), unique_strings.end(), 
-        // lambda function for sorting: sort by length and then by ASCII
-        [](const std::string& a, const std::string& b) {
-            // if length is different, sort by length
-            if (a.length() != b.length()) {
-                return a.length() < b.length();
-            }
-            // otherwise, sort by ASCII
-            return a < b;
-        }
-    );
-    
-    return unique_strings;
 }
 
 BaseType::AA BaseType::_f(const std::vector<std::string> &bases, int n) {

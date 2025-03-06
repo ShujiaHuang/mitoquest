@@ -5,8 +5,7 @@ MtVariantCaller::MtVariantCaller(const Config& config) : _config(config) {
     // load fasta
     reference = _config.reference_file;
 
-    _get_calling_interval();
-    _print_calling_interval();
+    _get_calling_interval(); // _print_calling_interval();
 
     // keep the order of '_samples_id' as the same as input bamfiles
     _get_sample_id_from_bam();
@@ -42,6 +41,8 @@ void MtVariantCaller::_get_sample_id_from_bam() {
     if (_config.filename_has_samplename)
         std::cout << "[INFO] load samples id from filename directly, becuase you set "
                      "--filename-has-samplename\n";
+
+    _samples_id.clear();
 
     std::string samplename, filename;
     size_t si;
@@ -170,7 +171,7 @@ bool MtVariantCaller::_caller_process() {
     size_t si = _bname.find(".vcf");
     std::string stem_bn = (si > 0 && si != std::string::npos) ? _bname.substr(0, si) : _bname;
 
-    std::string outdir = ngslib::dirname(_config.output_file);
+    std::string outdir = ngslib::dirname(ngslib::abspath(_config.output_file));
     std::string cache_outdir = outdir + "/cache_" + stem_bn;
     ngslib::safe_mkdir(cache_outdir);
 
@@ -182,6 +183,8 @@ bool MtVariantCaller::_caller_process() {
         // 按样本进行 pileup，在函数里按样本进行多线程，记录每个样本在每个位点上的 pileup 信息
         std::vector<PosVariantMap> samples_pileup_v;
         samples_pileup_v.reserve(_samples_id.size() + 1);  // reserve the memory before push_back
+
+        //////////////////////////////////////////////
         bool is_empty = _fetch_base_in_region(gr, samples_pileup_v);
         if (is_empty) {
             std::cerr << "[WARNING] No reads in region: " << gr.ref_id << ":"
@@ -195,11 +198,16 @@ bool MtVariantCaller::_caller_process() {
         std::string sub_vcf_fn = cache_outdir + "/" + stem_bn + "." + regstr + ".vcf.gz";
         sub_vcf_files.push_back(sub_vcf_fn);
 
+        is_empty = _variant_discovery(gr, samples_pileup_v, sub_vcf_fn);
+        if (is_empty) {
+            std::cout << "[INFO] No variants in region: " << gr.ref_id << ":"
+                      << gr.start << "-" << gr.end << "\n";
+        }
     }
 
     // Merge VCF
     std::string header = vcf_header_define(_config.reference_file, _samples_id);
-    merge_file_by_line(sub_vcf_files, _config.output_file, header, true);
+    merge_file_by_line(sub_vcf_files, _config.output_file, header, IS_DELETE_CACHE);
 
     const tbx_conf_t bf_tbx_conf = {1, 1, 2, 0, '#', 0};  // {preset, seq col, beg col, end col, header-char, skip-line}
     if ((ngslib::suffix_name(_config.output_file) == ".gz") &&          // create index
@@ -207,6 +215,14 @@ bool MtVariantCaller::_caller_process() {
     {
         throw std::runtime_error("tbx_index_build failed: Is the file bgzip-compressed? "
                                  "Check this file: " + _config.output_file + "\n");
+    }
+
+    if (IS_DELETE_CACHE) {
+        for (auto fn: sub_vcf_files) {
+            ngslib::safe_remove(fn);
+        }
+
+        ngslib::safe_remove(cache_outdir);
     }
 
     return is_success;
@@ -219,12 +235,14 @@ bool MtVariantCaller::_fetch_base_in_region(const GenomeRegion gr, std::vector<P
     std::vector<std::future<PosVariantMap>> pileup_results;
     std::string fa_seq = this->reference[gr.ref_id];     // use the whole sequence of ``ref_id`` for simply
     // Loop all alignment files
-    for(size_t i(0); i < this->_config.bam_files.size(); ++i) {
-        pileup_results.push_back(thread_pool.submit(call_pileup_in_sample, 
-                                                    this->_config.bam_files[i],                                      
-                                                    std::cref(fa_seq), 
-                                                    gr, 
-                                                    std::cref(this->_config)));
+    for(size_t i(0); i < this->_config.bam_files.size(); ++i) { // The same order as this->_samples_id
+        pileup_results.emplace_back(
+            thread_pool.submit(call_pileup_in_sample, 
+                               this->_config.bam_files[i], 
+                               std::cref(fa_seq), 
+                               gr,
+                               std::cref(this->_config))
+        );
     }
 
     samples_pileup_v.clear(); // clear the vector before push_back
@@ -240,20 +258,71 @@ bool MtVariantCaller::_fetch_base_in_region(const GenomeRegion gr, std::vector<P
         }
     }
 
-    if (samples_pileup_v.size() != this->_config.bam_files.size())
+    if (samples_pileup_v.size() != this->_samples_id.size())
         throw std::runtime_error("[_fetch_base_in_region] 'samples_pileup_v.size()' "
                                  "should be the same as '_config.bam_files.size()'");
     return is_empty;  // no cover reads in 'GenomeRegion' if empty.
 }
 
-bool MtVariantCaller::_variant_discovery(const GenomeRegion genome_region, const std::vector<PosVariantMap> &samples_pileup_v, const std::string out_vcf_fn) {
-
+bool MtVariantCaller::_variant_discovery(const GenomeRegion gr, const std::vector<PosVariantMap> &samples_pileup_v, const std::string out_vcf_fn) {
     // 1. integrate the variant information of all samples in the region
     // 2. call the variant by the integrated information
     // 3. output the variant information to the VCF file
-    bool is_success = false;
+    ThreadPool thread_pool(this->_config.thread_count);  // set multiple-thread
+    std::vector<std::future<VCFRecord>> results;
+
+    for (uint32_t pos(gr.start); pos < gr.end + 1; ++pos) {
+        std::vector<VariantInfo> vvi;
+        vvi.reserve(samples_pileup_v.size()); // reserve the memory before push_back
+
+        // get the variant information of all samples in the position
+        PosVariantMap::const_iterator smp_pos_it;
+        bool is_empty = true;
+        for (size_t i(0); i < samples_pileup_v.size(); ++i) {
+
+            smp_pos_it = samples_pileup_v[i].find(pos);
+            if (smp_pos_it != samples_pileup_v[i].end()) {
+                vvi.push_back(smp_pos_it->second);
+                if (is_empty) is_empty = false;
+            } else {
+                VariantInfo vi(gr.ref_id, pos, 0, 0); // empty VariantInfo
+                vvi.push_back(vi);
+            }
+        }
+
+        // ignore the position which no reads cover of all samples
+        if (!is_empty) { 
+            // performance multi-thread here
+            results.emplace_back(thread_pool.submit(call_variant_in_pos, vvi));  // return VCFRecord
+        }
+    }
+
+    BGZF *out_vcf_fp = bgzf_open(out_vcf_fn.c_str(), "w");
+    if (out_vcf_fp == NULL) {
+        throw std::runtime_error("[ERROR] Cannot open file: " + out_vcf_fn);
+    }
+
+    bool is_empty = true;
+    for (auto && p: results) { // Run and make sure all processes are finished
+        if (p.valid()) {
+            VCFRecord vcf_record = p.get();
+
+            // write to a file
+            if (vcf_record.is_valid()) {
+                if (is_empty) is_empty = false;
+
+                std::string vcf_str = vcf_record.to_string() + "\n";
+                if (bgzf_write(out_vcf_fp, vcf_str.c_str(), vcf_str.length()) != vcf_str.length()) {
+                    throw std::runtime_error("[ERROR] fail to write data");
+                }
+            }
+        }
+    }
     
-    return is_success;
+    int is_cl = bgzf_close(out_vcf_fp);
+    if (is_cl < 0) throw std::runtime_error("[ERROR] " + out_vcf_fn + " fail close.");
+    
+    return is_empty;  // no variant in the region if empty.
 }
 
 // Seek the base information of each sample in the region.
@@ -307,12 +376,13 @@ PosVariantMap call_pileup_in_sample(const std::string sample_bam_fn,
     }
 
     // 信息抽提：先计算并返回每个样本在该区间里每一个位点的潜在突变信息（类似 pileup or gvcf），若不如此处理，内存吃不消
-    // 这样做的好处还可为多样本 joint-calling 奠下可能. 
-    // key: position, value: variant information, 由于是按区间抽提，key 值无需再包含 ref_id，因为已经不言自明 
+    // 这样做的好处还可为多样本 joint-calling 打下基础.
     PosVariantMap sample_pileup_map;
     for (auto &pos_align_info: sample_posinfo_map) {
         VariantInfo vi = basetype_caller_unit(pos_align_info.second, config.heteroplasmy_threshold);
-        sample_pileup_map.insert({pos_align_info.first, vi}); // key: position, value: variant information
+
+        // key: position, value: variant information, 由于是按区间抽提，key 值无需再包含 ref_id，因为已经不言自明 
+        sample_pileup_map.insert({pos_align_info.first, vi});
     }
 
     // return the variant information for all the ref_pos of the sample in the region, no matter its a variant or not.
@@ -434,7 +504,7 @@ VariantInfo basetype_caller_unit(const AlignInfo &pos_align_info, double min_af)
 
 VariantInfo get_pileup(const BaseType &bt, const BaseType::BatchInfo *smp_bi) {
 
-    VariantInfo vi(bt.get_ref_id(), bt.get_ref_pos(), bt.get_total_depth());
+    VariantInfo vi(bt.get_ref_id(), bt.get_ref_pos(), bt.get_total_depth(), bt.get_var_qual());
     for (size_t i(0); i < bt.get_active_bases().size(); ++i) {
         std::string b = bt.get_active_bases()[i];
         std::string ref_base = bt.get_bases2ref().at(b);
@@ -459,10 +529,159 @@ VariantInfo get_pileup(const BaseType &bt, const BaseType::BatchInfo *smp_bi) {
             vi.var_types.push_back("MNV");
         }
 
-        vi.strand_bias.push_back(strand_bias(upper_ref_base, b, smp_bi->align_bases, smp_bi->map_strands));
+        std::pair<double, double> ci = calculate_confidence_interval(bt.get_base_depth(b), bt.get_total_depth());
+        vi.ci.push_back(ci);
 
-        // Todo: Add confidence interval for the variant for each alt base
+        vi.strand_bias.push_back(strand_bias(upper_ref_base, b, smp_bi->align_bases, smp_bi->map_strands));
     }
 
+// std::cout << "*****: " << smp_bi->ref_id << "\t" << smp_bi->ref_pos << "\t" 
+//           << ngslib::join(smp_bi->ref_bases, ",") << "\t" << ngslib::join(smp_bi->align_bases, ",") << "\t: " 
+//           << ngslib::join(bt.get_active_bases(), "-") << "\t" 
+//           << ngslib::join(vi.ref_bases, ",") << "\t" << ngslib::join(vi.alt_bases) << "\t" 
+//           << ngslib::join(vi.depths, ",") << "\t" << ngslib::join(vi.freqs, ",") << "\t" << vi.total_depth << "-" << bt.get_total_depth() << "\n";
     return vi;
+}
+
+VCFRecord call_variant_in_pos(std::vector<VariantInfo> vi) {
+    // 1. call the variant by the integrated information
+    // 2. output the variant information to the VCF file
+    if (vi.empty()) {
+        return VCFRecord(); // Return empty record if no variants
+    }
+
+    VCFRecord vcf_record;
+    const auto& first_var = vi[0];  // Use first variant info as reference
+    
+    // Set basic VCF fields
+    vcf_record.chrom = first_var.ref_id;
+    vcf_record.pos = first_var.ref_pos;
+    
+    // First pass: collect all REF sequences and find the longest one
+    std::string shared_ref;  // The final REF to use in VCF
+    for (size_t i = 0; i < vi.size(); i++) {
+        for (const auto& ref : vi[i].ref_bases) {
+            if (ref.length() > shared_ref.length()) {
+                shared_ref = ref;
+            }
+        }
+    }
+
+    // Set the shared REF
+    vcf_record.ref = shared_ref; // Set the original shared REF sequence
+    std::transform(shared_ref.begin(), shared_ref.end(), shared_ref.begin(), ::toupper); // Convert to upper case
+
+    // Second pass: collect and normalize ALT sequences
+    std::set<std::string> unique_alts;
+    for (size_t i = 0; i < vi.size(); i++) { // Loop all samples in the position, and collect the ALT information
+        for (size_t j = 0; j < vi[i].alt_bases.size(); j++) {
+            std::string alt = vi[i].alt_bases[j];
+            std::string ref = vi[i].ref_bases[j];
+            std::transform(ref.begin(), ref.end(), ref.begin(), ::toupper); // Convert to upper case
+            
+            // Normalize ALT sequence
+            if (ref != shared_ref && shared_ref.length() > ref.length()) {
+                alt += shared_ref.substr(ref.length());
+                vi[i].alt_bases[j] = alt; // Update the ALT sequence
+            }
+            unique_alts.insert(alt);
+        }
+    }
+    unique_alts.erase(shared_ref); // Remove REF from ALTs
+
+    if (unique_alts.empty()) {
+        return VCFRecord(); // Return empty record if no variants
+    }
+
+    std::map<std::string, int> ac; // Allele counts in samples' GT
+    double an = 0;                 // Total allele number in called GT
+
+    // Set ALT field: Unique and sorted ALT sequences by length and then by ASCII
+    vcf_record.alt = ngslib::get_unique_strings(std::vector<std::string>(unique_alts.begin(), unique_alts.end()));
+    std::map<std::string, size_t> alt_to_gti; // ALT to genotype index
+    alt_to_gti[shared_ref] = 0;
+    for (size_t i = 0; i < vcf_record.alt.size(); i++) {
+        alt_to_gti[vcf_record.alt[i]] = i+1;
+        ac[vcf_record.alt[i]] = 0; // Initialize AC
+    }
+
+    // Set QUAL field: The biggest QUAL value of all samples
+    vcf_record.qual = 0;
+    
+    // Process sample information
+    vcf_record.format = "GT:GQ:DP:AD:HF:CI:SB:FS:SOR:VT";
+    for (size_t sample_idx = 0; sample_idx < vi.size(); sample_idx++) {
+        const auto& sample_var = vi[sample_idx];
+
+        // record the biggest qual value
+        if (sample_var.qual > vcf_record.qual) {
+            vcf_record.qual = sample_var.qual;
+        }
+
+        // Re-find ALTs present in this sample in right order according to 'vcf_record.alt'
+        std::vector<size_t> gt_indices; // Genotype indices
+        std::vector<std::string> sample_alts;
+        std::vector<int>    allele_depths;
+        std::vector<double> allele_freqs;
+
+        std::vector<std::string> ci_strings;
+        std::vector<std::string> sb_strings;
+        std::vector<std::string> fs_strings;
+        std::vector<std::string> sor_strings;
+        std::vector<std::string> var_types;
+
+        // Collect and format sample information    
+        for (const auto& alt : vcf_record.alt) {
+            for (size_t j = 0; j < sample_var.alt_bases.size(); j++) {
+                if (sample_var.alt_bases[j] == alt) {
+
+                    an += 1;
+                    ac[alt] += 1;
+
+                    sample_alts.push_back(alt);
+                    gt_indices.push_back(alt_to_gti[alt]);
+                    allele_depths.push_back(sample_var.depths[j]);
+                    allele_freqs.push_back(sample_var.freqs[j]);
+                    ci_strings.push_back(format_double(sample_var.ci[j].first) + "," + 
+                                         format_double(sample_var.ci[j].second));
+                    sb_strings.push_back(std::to_string(sample_var.strand_bias[j].ref_fwd) + "," + 
+                                         std::to_string(sample_var.strand_bias[j].ref_rev) + "," + 
+                                         std::to_string(sample_var.strand_bias[j].alt_fwd) + "," + 
+                                         std::to_string(sample_var.strand_bias[j].alt_rev));
+                    fs_strings.push_back(std::to_string((int)std::round(sample_var.strand_bias[j].fs)));  // it's a phred-scale score
+                    sor_strings.push_back(format_double(sample_var.strand_bias[j].sor));
+                    var_types.push_back(sample_var.var_types[j]);
+                }
+            }
+        }
+
+        bool alt_found = sample_alts.size() > 0;
+        std::string gt = alt_found ? ngslib::join(gt_indices, "/") : ".";  // set generate genotype (GT)
+
+        std::string sample_info = gt + ":" +                                     // GT, genotype
+                                  std::to_string(int(sample_var.qual)) + ":" +   // GQ, genotype quality
+                                  std::to_string(sample_var.total_depth);        // DP, total depth
+        if (alt_found) {
+            sample_info += ":";
+            sample_info += ngslib::join(allele_depths, ",") + ":" +              // AD, allele depth
+                           ngslib::join(allele_freqs, ",")  + ":" +              // HF, allele frequency
+                           ngslib::join(ci_strings, "|")    + ":" +              // CI, confidence interval
+                           ngslib::join(sb_strings, "|")    + ":" +              // SB, strand bias
+                           ngslib::join(fs_strings, "|")    + ":" +              // FS, Fisher strand bias
+                           ngslib::join(sor_strings, "|")   + ":" +              // SOR, Strand odds ratio
+                           ngslib::join(var_types, ",");                         // VT, Variant type
+        }
+        vcf_record.samples.push_back(sample_info);
+    }
+    
+    // Set INFO field
+    std::vector<int> ac_v;
+    std::vector<std::string> af;
+    for (const auto& alt : vcf_record.alt) {
+        ac_v.push_back(ac[alt]);
+        af.push_back(format_double(ac[alt] / an));
+    }
+    vcf_record.info = "AF=" + ngslib::join(af, ",") + ";AC=" + ngslib::join(ac_v, ",") + ";AN=" + std::to_string(int(an));
+
+    return vcf_record;
 }

@@ -1,5 +1,11 @@
 #include "mt_caller_utils.h"
 
+std::string format_double(double value, int precision) {
+    std::stringstream ss;
+    ss << std::fixed << std::setprecision(precision) << value;
+    return ss.str();
+}
+
 int get_total_depth(const AlignInfo &align_infor) {
     int depth(0);
     for (auto &ab: align_infor.align_bases) {
@@ -101,22 +107,20 @@ double ref_vs_alt_ranksumtest(const char ref_base,
 std::string vcf_header_define(const std::string &ref_file_path, const std::vector<std::string> &samples) {
     std::vector<std::string> header = {
         "##fileformat=VCFv4.2",
-        // "##FILTER=<ID=LowQual,Description=\"Low quality (QUAL < 60)\">",
         "##FORMAT=<ID=GT,Number=1,Type=String,Description=\"Genotype\">",
-        "##FORMAT=<ID=AB,Number=1,Type=String,Description=\"Allele Base\">",
-        "##FORMAT=<ID=SO,Number=1,Type=String,Description=\"Strand orientation of the mapping base. Marked as + or -\">",
-        "##FORMAT=<ID=BP,Number=1,Type=String,Description=\"Base Probability which calculate by base quality\">",
-        "##INFO=<ID=AF,Number=A,Type=Float,Description=\"An ordered, comma delimited list of allele frequencies base on LRT algorithm\">",
-        "##INFO=<ID=AC,Number=A,Type=Integer,Description=\"An ordered, comma delimited allele depth in CMDB\">",
-        "##INFO=<ID=DP,Number=A,Type=Integer,Description=\"Total Depth in CMDB\">",
-        "##INFO=<ID=SB_REF,Number=A,Type=Integer,Description=\"Read number support REF: Forward,Reverse\">",
-        "##INFO=<ID=SB_ALT,Number=A,Type=Integer,Description=\"Read number support ALT: Forward,Reverse\">",
-        "##INFO=<ID=FS,Number=1,Type=Float,Description=\"Phred-scaled p-value using Fisher's exact test to detect strand bias\">",
-        "##INFO=<ID=BaseQRankSum,Number=1,Type=Float,Description=\"Phred-score from Wilcoxon rank sum test of Alt Vs. Ref base qualities\">",
-        "##INFO=<ID=SOR,Number=1,Type=Float,Description=\"Symmetric Odds Ratio of 2x2 contingency table to detect strand bias\">",
-        "##INFO=<ID=MQRankSum,Number=1,Type=Float,Description=\"Phred-score From Wilcoxon rank sum test of Alt vs. Ref read mapping qualities\">",
-        "##INFO=<ID=ReadPosRankSum,Number=1,Type=Float,Description=\"Phred-score from Wilcoxon rank sum test of Alt vs. Ref read position bias\">",
-        "##INFO=<ID=QD,Number=1,Type=Float,Description=\"Variant Confidence Quality by Depth\">"
+        "##FORMAT=<ID=GQ,Number=1,Type=Integer,Description=\"Genotype Quality\">",
+        "##FORMAT=<ID=DP,Number=1,Type=Integer,Description=\"Total read depth on the REF position\">",
+        "##FORMAT=<ID=AD,Number=R,Type=Integer,Description=\"Allelic depths for the ref and alt alleles in the order listed\">",
+        "##FORMAT=<ID=HF,Number=A,Type=Float,Description=\"Heteroplasmy fraction for the ref and alt alleles in the order listed\">",
+        "##FORMAT=<ID=CI,Number=1,Type=String,Description=\"An ordered, '|' delimited list of the 95\% confidence interval around the estimated heteroplasmy fraction for the ref and alt alleles in the order listed. format: ci_low,ci_up|ci_low,ci_up|...\">",
+        "##FORMAT=<ID=SB,Number=1,Type=String,Description=\"Read number of mapping strand orientation for ref and alt alleles in the order listed: ref_fwd,ref_rev,alt_fwd,alt_rev|...\">",
+        "##FORMAT=<ID=FS,Number=A,Type=Float,Description=\"Phred-scaled p-value using Fisher's exact test to detect strand bias\">",
+        "##FORMAT=<ID=SOR,Number=A,Type=Float,Description=\"Strand bias estimated by the Symmetric Odds Ratio test\">",
+        "##FORMAT=<ID=VT,Number=1,Type=String,Description=\"Variant type: REF, SNV, INS, DEL, or MNV\">",
+
+        "##INFO=<ID=AF,Number=A,Type=Float,Description=\"An ordered, comma delimited list of allele frequencies base\">",
+        "##INFO=<ID=AC,Number=A,Type=Integer,Description=\"An ordered, comma delimited allele count in genotypes\">",
+        "##INFO=<ID=AN,Number=1,Type=Integer,Description=\"Total number of alleles in called genotypes\">",
     };  // initial by common information of header
 
     ngslib::Fasta fa = ref_file_path;

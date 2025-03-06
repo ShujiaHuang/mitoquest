@@ -12,6 +12,7 @@
 #include <string>
 #include <cstring>    // use the 'strlen' function
 #include <vector>
+#include <set>
 #include <iterator>
 #include <cstdint>    // uint32_t
 
@@ -68,6 +69,14 @@ namespace ngslib {
      * 
      */
     std::string get_last_modification_file(std::string directory_path);
+
+    /**
+     * @brief Get the unique strings vector: sort by length and then by ASCII
+     * 
+     * @param strings 
+     * @return std::vector<std::string> 
+     */
+    std::vector<std::string> get_unique_strings(const std::vector<std::string>& strings);
 
     /**
      * @brief Get the first column from a file, this is used for getting filename from input filelist.

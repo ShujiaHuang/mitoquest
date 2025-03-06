@@ -20,7 +20,6 @@
 #include "io/utils.h"              // join()
 
 #include "external/combinations.h"
-#include "external/robin_hood.h"  // robin_hood::unordered_set
 
 static const std::vector<std::string> BASIC_BASES = {"A", "C", "G", "T"}; // 预定义这个值，限定 UNIQ_BASES 数组中至少有这四个碱基
 static const int LRT_THRESHOLD  = 24;                    // 24 corresponding to a chi-pvalue of 10^-6
@@ -64,14 +63,6 @@ private:
     
     // init the base likelihood by input bases
     std::vector<double> _set_initial_freq(const std::vector<std::string> &bases);
-
-    /**
-     * @brief Get the unique strings vector: sort by length and then by ASCII
-     * 
-     * @param strings 
-     * @return std::vector<std::string> 
-     */
-    std::vector<std::string> _get_unique_strings(const std::vector<std::string>& strings);
 
     /**
      * @brief Calculate population likelihood for all the combination of bases

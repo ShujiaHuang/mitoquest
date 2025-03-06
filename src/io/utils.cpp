@@ -74,6 +74,29 @@ namespace ngslib {
         return lmf.string();
     }
 
+    std::vector<std::string> get_unique_strings(const std::vector<std::string>& strings) {
+        // get unique strings
+        std::set<std::string> unique_set(strings.begin(), strings.end());
+    
+        // convert set to vector
+        std::vector<std::string> unique_strings(unique_set.begin(), unique_set.end());
+        
+        // sort by length and then by ASCII
+        std::sort(unique_strings.begin(), unique_strings.end(), 
+            // lambda function for sorting: sort by length and then by ASCII
+            [](const std::string& a, const std::string& b) {
+                // if length is different, sort by length
+                if (a.length() != b.length()) {
+                    return a.length() < b.length();
+                }
+                // otherwise, sort by ASCII
+                return a < b;
+            }
+        );
+        
+        return unique_strings;
+    }
+
     std::vector<std::string> get_firstcolumn_from_file(const std::string &fn) {
 
         std::ifstream i_fn(fn.c_str());
