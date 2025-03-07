@@ -7,9 +7,13 @@
 
 #include <iostream>
 #include <string>
+#include <stdexcept>
 
 #include <htslib/sam.h>
+#include <htslib/hts.h>
 
+#include "hts_utils.h"
+#include "utils.h"
 
 namespace ngslib {
 
@@ -53,7 +57,7 @@ namespace ngslib {
         /** Read the header from a BAM compressed file.
          * This function works on SAM, BAM and CRAM files.
          */
-        explicit BamHeader(const std::string &fn);
+        explicit BamHeader(const std::string &fn, std::string ref_fn = "");
 
         // Create BamHeader from a exist header, rarely use.
         BamHeader(const sam_hdr_t *hdr) { _h = sam_hdr_dup(hdr); }

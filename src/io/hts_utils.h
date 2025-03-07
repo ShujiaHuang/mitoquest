@@ -14,22 +14,22 @@
 
 #include <htslib/hts.h>
 
-namespace hts {
+namespace ngslib { // hts
     enum class Format {
-        unknown = htsExactFormat::unknown_format,
-        binary_format = htsExactFormat::binary_format,
-        text_format   = htsExactFormat::text_format,
-        sam  = htsExactFormat::sam,
-        bam  = htsExactFormat::bam,
-        bai  = htsExactFormat::bai,
-        cram = htsExactFormat::cram,
-        crai = htsExactFormat::crai,
-        vcf  = htsExactFormat::vcf,
-        bcf  = htsExactFormat::bcf,
-        csi  = htsExactFormat::csi,
-        gzi  = htsExactFormat::gzi,
-        tbi  = htsExactFormat::tbi,
-        bed  = htsExactFormat::bed
+        binary  = htsExactFormat::binary_format,
+        text    = htsExactFormat::text_format,
+        sam     = htsExactFormat::sam,
+        bam     = htsExactFormat::bam,
+        bai     = htsExactFormat::bai,
+        cram    = htsExactFormat::cram,
+        crai    = htsExactFormat::crai,
+        vcf     = htsExactFormat::vcf,
+        bcf     = htsExactFormat::bcf,
+        csi     = htsExactFormat::csi,
+        gzi     = htsExactFormat::gzi,
+        tbi     = htsExactFormat::tbi,
+        bed     = htsExactFormat::bed,
+        unknown = htsExactFormat::unknown_format
     };
 
     // Helper function to get format from filename

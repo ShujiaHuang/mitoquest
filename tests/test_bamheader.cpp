@@ -15,7 +15,7 @@ int main() {
     BamHeader bh0;
     BamHeader bh1(fn1);
     // BamHeader bh2 = fn2; // Not allow
-    BamHeader bh2 = BamHeader("data/range.cram");
+    BamHeader bh2 = BamHeader("data/range.cram", "data/ce.fa.gz");
 
     // sam_hdr_t assign to BamHeader.
     BamHeader bh3(bh2.h());

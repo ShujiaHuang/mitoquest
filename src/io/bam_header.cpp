@@ -1,8 +1,4 @@
-#include <stdexcept>
-
-#include <htslib/hts.h>
 #include "bam_header.h"
-#include "utils.h"
 
 namespace ngslib {
 
@@ -10,13 +6,33 @@ namespace ngslib {
         _h = sam_hdr_read(fp);
     }
 
-    BamHeader::BamHeader(const std::string &fn) {
+    BamHeader::BamHeader(const std::string &fn, std::string ref_fn) {
 
         if (!is_readable(fn)) {
             throw std::runtime_error("_bam_header::BamHeader: " + fn + " not found.");
         }
 
-        samFile *fp = hts_open(fn.c_str(), "r");
+        // Open BAM/CRAM file
+        samFile* fp = NULL;
+        if (is_cram(fn)) {
+            if (ref_fn.empty()) {
+                throw std::runtime_error("[bam_header.cpp::BamHeader] Reference file is required for CRAM file: " + fn);
+            }
+
+            fp = sam_open_format(fn.c_str(), "r", NULL);
+            if (fp) {
+                if (hts_set_fai_filename(fp, ref_fn.c_str()) != 0) {
+                    throw std::runtime_error("[bam_header.cpp::BamHeader] Fail to set reference file: " + ref_fn);
+                }
+            }
+        } else {
+            fp = sam_open(fn.c_str(), "r");
+        }
+        
+        if (!fp) {
+            throw std::runtime_error("[bam_header.cpp::BamHeader] Fail to open file: " + fn);
+        }
+
         _h = sam_hdr_read(fp);  // get a BAM header pointer on success, NULL on failure.
         sam_close(fp);
     }
