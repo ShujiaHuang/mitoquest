@@ -31,14 +31,15 @@ int main() {
 
     start = clock();  
 
+    std::string fa  = "data/ce.fa.gz";
     const char *fn1 = "data/range.cram";
     std::string fn2 = "data/range.bam";
     std::string fn3 = "data/xx_minimal.sam";
 
     Bam b0;
-    Bam b1(fn1, "r");
-    // Bam b2(fn2, "r");
-    Bam b2("data/range.bam", "r");
+    Bam b1(fn1, "r", fa);
+    Bam b2(fn2, "r");
+    // Bam b2("data/range.bam", "r", "data/ce.fa.gz");
     const Bam *b3; b3 = &b1;
     b0 = b1;
 std::cout << b0.header() << "\n";
@@ -46,7 +47,7 @@ std::cout << b0.header() << "\n";
 std::vector<Bam> bb;  
 bb.reserve(5); //  capacity changed
 for(size_t i(0); i < 2; ++i) {
-    bb.push_back(Bam(fn1, "r"));
+    bb.push_back(Bam(fn1, "r", fa));
     std::cout << i << " - " << bb[i] << "\n";
 }
 std::cout << "bb size: " << bb.size() << " 0 - " << bb[0] << "\n";

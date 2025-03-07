@@ -1,20 +1,33 @@
-#include <stdexcept>
-
-#include <htslib/hts.h>
 #include "bam.h"
-#include "utils.h"
 
 
 namespace ngslib {
 
-    void Bam::_open(const std::string &fn, const std::string mode) {
-
+    void Bam::_open(const std::string &fn, const std::string mode, const std::string ref_fn) {
         if ((mode[0] == 'r') && (!is_readable(fn))) {
             throw std::runtime_error("[bam.cpp::Bam:_open] file not found - " + fn);
         }
 
         // Open a SAM/BAM/CRAM file and return samFile file pointer.
-        _fp = sam_open(fn.c_str(), mode.c_str()); 
+        if (is_cram(fn)) {
+
+            if (ref_fn.empty()) {
+                throw std::runtime_error("[bam.cpp::Bam:_open] Reference file is required for CRAM file: " + fn);
+            }
+
+            _fp = sam_open_format(fn.c_str(), "r", NULL);
+            if (_fp) {
+                if (hts_set_fai_filename(_fp, ref_fn.c_str()) != 0) {
+                    sam_close(_fp);
+                    throw std::runtime_error("[bam.cpp::Bam:_open] Fail to set reference file: " + ref_fn);
+                }
+            }
+            
+            _reference_path = ref_fn;
+
+        } else {
+            _fp = sam_open(fn.c_str(), mode.c_str()); 
+        }
 
         if (!_fp) {
             throw std::runtime_error("[bam.cpp::Bam:_open] file open failure.");
@@ -22,20 +35,24 @@ namespace ngslib {
 
         _fname = fn;
         _mode = mode;
-        _itr = NULL,
+        _itr = NULL;
         _idx = NULL;
-        _io_status = 0;  // Everything is fine.
+
+        // Check index
+        this->index_load();
+        _io_status = 0;  // reset, 0 means everything is fine.
+
         return;
     }
 
     // copy constructor
     Bam::Bam(const Bam &b) : _itr(NULL), _idx(NULL) {
-        _open(b._fname, b._mode);  // reopen the bamfile
+        _open(b._fname, b._mode, b._reference_path);  // reopen the bamfile
     }
 
     Bam &Bam::operator=(const Bam &b) {
         destroy();
-        _open(b._fname, b._mode);  // reopen the bamfile
+        _open(b._fname, b._mode, b._reference_path);  // reopen the bamfile
         return *this;
     }
 
@@ -73,9 +90,9 @@ namespace ngslib {
 
         _idx = sam_index_load(_fp, _fname.c_str());
         if (!_idx) {
-            throw std::runtime_error("[bam.cpp::Bam:index_load] Failed to load BAM/CRAM index "
-                                     "file or the index file is not available. Rebuild it by "
-                                     "using samtools index please.");
+            this->destroy();
+            throw std::runtime_error("[bam.cpp::Bam:index_load] Unable to load index file, please "
+                                     "ensure index has been created (.bai/.crai) for " + _fname);
         }
     }
 

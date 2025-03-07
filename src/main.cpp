@@ -36,17 +36,22 @@ void print_usage(const MtVariantCaller::Config &config) {
 }
 
 int main(int argc, char* argv[]) {
+    // Save the complete command line with quotes for arguments containing spaces
+    std::string cmdline = argv[0];  // start with program name
+    for (int i = 1; i < argc; ++i) {
+        cmdline += " " + std::string(argv[i]);
+    }
     
     MtVariantCaller::Config config;
     // Set default values
     config.min_mapq                = 0;
     // config.min_baseq               = 20;
-    config.pairs_map_only          = false;
-    config.proper_pairs_only       = false;
-    config.filename_has_samplename = false;
     config.heteroplasmy_threshold  = 0.01;
     config.thread_count            = 1;
     config.chunk_size              = 1000;
+    config.pairs_map_only          = false;
+    config.proper_pairs_only       = false;
+    config.filename_has_samplename = false;
 
     static const struct option MT_CMDLINE_LOPTS[] = {
         {"reference",          required_argument, 0, 'R'},
@@ -107,8 +112,14 @@ int main(int argc, char* argv[]) {
     }
 
     /* Make sure we set valid arguments */
-    if (config.reference_file.empty() || config.bam_files.empty() || config.output_file.empty()) {
-        std::cerr << "Error: Missing required arguments\n";
+    if (config.reference_file.empty() || config.output_file.empty()) {
+        std::cerr << "Error: Missing required arguments. \n\n";
+        print_usage(config);
+        return 1;
+    }
+
+    if (config.bam_files.empty()) {
+        std::cerr << "Error: Missing required BAM/CRAM files.\n\n";
         print_usage(config);
         return 1;
     }
@@ -132,6 +143,9 @@ int main(int argc, char* argv[]) {
         std::cerr << "Error: Chunk size must be at least 100\n";
         return 1;
     }
+
+    // Output the commandline options
+    std::cout << "Commandline options:\n\n" << cmdline << "\n" << std::endl;
 
     try {
         MtVariantCaller caller(config);

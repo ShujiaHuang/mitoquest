@@ -24,19 +24,19 @@ static const bool IS_DELETE_CACHE = true;
 class MtVariantCaller {
 public:
     struct Config {
-        std::string reference_file;          // input reference fasta file
-        std::vector<std::string> bam_files;  // input BAM files
-        std::string calling_regions;         // input calling regions
-        std::string output_file;             // output VCF file
+        std::string reference_file;         // input reference fasta file
+        std::vector<std::string> bam_files; // input BAM files
+        std::string calling_regions;        // input calling regions
+        std::string output_file;            // output VCF file
 
-        int min_mapq  = 0;   // a mapping quality score less than this value will be filtered
-        // int min_baseq = 20;  // a base quality score less than this value will be filtered (按照我的模型，这个参数没什么必要)
-        float heteroplasmy_threshold = 0.01;
-        int thread_count = 1;
-        int chunk_size   = 1000;              // Process this many bases per thread
-        bool pairs_map_only    = false;       // only use the paired reads which mapped to the same chromosome
-        bool proper_pairs_only = false;       // only use properly paired reads
-        bool filename_has_samplename = false; // use filename as sample name
+        int min_mapq;                       // a mapping quality score less than this value will be filtered
+        // int min_baseq;  // a base quality score less than this value will be filtered (按照我的模型，这个参数没什么必要)
+        float heteroplasmy_threshold;
+        int thread_count;
+        int chunk_size;               // Process this many bases per thread
+        bool pairs_map_only;          // only use the paired reads which mapped to the same chromosome
+        bool proper_pairs_only;       // only use properly paired reads
+        bool filename_has_samplename; // use filename as sample name
     };
     ngslib::Fasta reference;  // reference fasta object
 

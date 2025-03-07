@@ -1,9 +1,4 @@
-#include <stdexcept>
-#include <sstream>
-
-#include <htslib/hts.h>
 #include "bam_record.h"
-#include "utils.h"
 
 
 namespace ngslib {

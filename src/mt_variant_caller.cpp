@@ -15,7 +15,6 @@ MtVariantCaller::~MtVariantCaller() {
 }
 
 bool MtVariantCaller::run() {
-
     clock_t cpu_start_time = clock();
     time_t real_start_time = time(0);
 
@@ -25,7 +24,7 @@ bool MtVariantCaller::run() {
     time_t now = time(0);
     std::string ct(ctime(&now));
     ct.pop_back();
-    std::cout << "[INFO] " + ct + ". Done for Variant calling, "
+    std::cout << "\n[INFO] " + ct + ". Done for Variant calling, "
               << difftime(now, real_start_time) << " (CPU time: "
               << std::round((clock() - cpu_start_time) / CLOCKS_PER_SEC) 
               << ") seconds elapsed.\n" << std::endl;
@@ -57,7 +56,7 @@ void MtVariantCaller::_get_sample_id_from_bam() {
             samplename = si > 0 && si != std::string::npos ? filename.substr(0, si) : filename;
         } else {
             // Get sampleID from BAM header, a bit time-consuming.
-            ngslib::BamHeader bh(_config.bam_files[i]);
+            ngslib::BamHeader bh(_config.bam_files[i], _config.reference_file);
             samplename = bh.get_sample_name();
         }
 
@@ -337,9 +336,9 @@ PosVariantMap call_pileup_in_sample(const std::string sample_bam_fn,
     std::string extend_regstr = gr.ref_id + ":" + std::to_string(extend_start) + "-" + std::to_string(extend_end);
 
     // 位点信息存入该变量, 且由于是按区间读取比对数据，key 值无需再包含 ref_id，因为已经不言自明
-    PosMap sample_posinfo_map;           // key: position, value: alignment information
-    ngslib::Bam bf(sample_bam_fn, "r");  // open bamfile in reading mode (one sample, one bamfile)
-    if (bf.fetch(extend_regstr)) {       // Set 'bf' only fetch alignment reads in 'exp_regstr'.
+    PosMap sample_posinfo_map; // key: position, value: alignment information
+    ngslib::Bam bf(sample_bam_fn, "r", config.reference_file); // open bamfile in reading mode (one sample per bamfile)
+    if (bf.fetch(extend_regstr)) { // Set 'bf' only fetch alignment reads in 'exp_regstr'.
         hts_pos_t map_ref_start, map_ref_end;  // hts_pos_t is uint64_t
         std::vector<ngslib::BamRecord> sample_target_reads; 
         ngslib::BamRecord al;  // alignment read

@@ -38,10 +38,10 @@ namespace ngslib {
          * @field ref_count   reference count
          * @note The text and l_text fields are included for backwards compatibility.
 
-         These fields may be set to NULL and zero respectively as a side-effect
-         of calling some header API functions.  New code that needs to access the
-         header text should use the sam_hdr_str() and sam_hdr_length() functions
-         instead of these fields.
+         * These fields may be set to NULL and zero respectively as a side-effect of calling 
+         * some header API functions. New code that needs to access the header text should 
+         * use the sam_hdr_str() and sam_hdr_length() functions instead of these fields.
+         * 
          */
         sam_hdr_t *_h;   // `bam_hdr_t` is an old name of `sam_hdr_t`, do not use it.
 
@@ -57,7 +57,7 @@ namespace ngslib {
         /** Read the header from a BAM compressed file.
          * This function works on SAM, BAM and CRAM files.
          */
-        explicit BamHeader(const std::string &fn, std::string ref_fn = "");
+        explicit BamHeader(const std::string &fn, const std::string ref_fn = "");
 
         // Create BamHeader from a exist header, rarely use.
         BamHeader(const sam_hdr_t *hdr) { _h = sam_hdr_dup(hdr); }

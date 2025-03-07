@@ -6,7 +6,7 @@ namespace ngslib {
         _h = sam_hdr_read(fp);
     }
 
-    BamHeader::BamHeader(const std::string &fn, std::string ref_fn) {
+    BamHeader::BamHeader(const std::string &fn, const std::string ref_fn) {
 
         if (!is_readable(fn)) {
             throw std::runtime_error("_bam_header::BamHeader: " + fn + " not found.");
@@ -22,6 +22,7 @@ namespace ngslib {
             fp = sam_open_format(fn.c_str(), "r", NULL);
             if (fp) {
                 if (hts_set_fai_filename(fp, ref_fn.c_str()) != 0) {
+                    sam_close(fp);
                     throw std::runtime_error("[bam_header.cpp::BamHeader] Fail to set reference file: " + ref_fn);
                 }
             }

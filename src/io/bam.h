@@ -8,9 +8,14 @@
 #include <iostream>
 #include <string>
 #include <memory>
+#include <stdexcept>
 
+#include <htslib/hts.h>
+
+#include "hts_utils.h"
 #include "bam_header.h"
 #include "bam_record.h"
+#include "utils.h"
 
 namespace ngslib {
 
@@ -20,6 +25,7 @@ namespace ngslib {
         std::string _fname;  // input file name
         std::string _mode;   // Mode matching / [rwa][bcefFguxz0-9]* /
         int _io_status;      // I/O status code in read() and next() function
+        std::string _reference_path; // only for cram 
 
         samFile *_fp;        // samFile file pointer, samFile is as the same as htsFile in sam.h
         hts_idx_t *_idx;     // BAM or CRAM index pointer.
@@ -59,18 +65,18 @@ namespace ngslib {
               [rw]z  .. compressed VCF
               [rw]   .. uncompressed VCF
         */
-        void _open(const std::string &fn, const std::string mode);
+        void _open(const std::string &fn, const std::string mode, const std::string ref_fn = "");
 
         // Bam(const Bam &b) = delete;             // reject using copy constructor (C++11 style).
         // Bam &operator=(const Bam &b) = delete;  // reject using copy/assignment operator (C++11 style).
 
     public:
         Bam() : _fp(NULL), _itr(NULL), _idx(NULL), _io_status(-1) {}
-        explicit Bam(const std::string &fn, const std::string mode = "r") : 
+        explicit Bam(const std::string &fn, const std::string mode = "r", const std::string ref_fn = ""): 
             _fp(NULL), _itr(NULL), _idx(NULL), _io_status(-1) 
         {
             // @mode could only matching one of [rwa]
-            _open(fn, mode);  
+            _open(fn, mode, ref_fn);  
         }
 
         // copy constructor

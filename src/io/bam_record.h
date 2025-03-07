@@ -9,9 +9,14 @@
 #include <string>
 #include <vector>
 #include <tuple>
+#include <stdexcept>
+#include <sstream>
 
 #include <htslib/sam.h>
+#include <htslib/hts.h>
+
 #include "bam_header.h"
+#include "utils.h"
 
 
 namespace ngslib {
@@ -442,7 +447,6 @@ namespace ngslib {
         void set_qc_fail() {
             if (is_mapped()) _b->core.flag |= BAM_FQCFAIL;
         }
-
     };  // class BamRecord
 
 }  // namespace ngslib

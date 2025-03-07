@@ -43,8 +43,8 @@ StrandBiasInfo strand_bias(const std::string &ref_base,
         }
     }
 
-    // 如果是'全 Ref' 或者是 '全 ALT' 怎么办？
     double fs = -10 * log10(fisher_exact_test(ref_fwd, ref_rev, alt_fwd, alt_rev));
+    // 应对'全 Ref' 或者是 '全 ALT'
     if (std::isinf(fs)) {
         fs = 10000;
     } else if (fs == 0) {
