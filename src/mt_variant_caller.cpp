@@ -80,9 +80,9 @@ void MtVariantCaller::_get_sample_id_from_bam() {
     time_t now = time(0);
     std::string ct(ctime(&now));
     ct.pop_back();  // rm the trailing '\n' put by `asctime`
-    std::cout << "[INFO] " + ct + ". Done for loading all samples' id from alignment files, "
-              << difftime(now, real_start_time) << " seconds elapsed.\n"
-              << std::endl;
+    std::cout << "[INFO] " + ct + ". Done for loading all " + std::to_string(_samples_id.size())
+              << " samples' id from alignment files, " << difftime(now, real_start_time)
+              << " seconds elapsed.\n" << std::endl;
 
     return;
 }
@@ -640,7 +640,9 @@ VCFRecord call_variant_in_pos(std::vector<VariantInfo> vi) {
                     sample_alts.push_back(alt);
                     gt_indices.push_back(gti);
                     allele_depths.push_back(sample_var.depths[j]);
-                    allele_freqs.push_back(sample_var.freqs[j]);
+                    // allele_freqs.push_back(sample_var.freqs[j]); // 这里不要用 lrt 计算出来的 allele frequency，因为可能不知为何会有负数（极少情况下）
+                    // use the allele frequency calculated by allele_depth/total_depth
+                    allele_freqs.push_back(double(sample_var.depths[j])/double(sample_var.total_depth)); 
                     ci_strings.push_back(format_double(sample_var.ci[j].first) + "," + format_double(sample_var.ci[j].second));
                     sb_strings.push_back(std::to_string(sample_var.strand_bias[j].ref_fwd) + "," + 
                                          std::to_string(sample_var.strand_bias[j].ref_rev) + "," + 
@@ -678,7 +680,7 @@ VCFRecord call_variant_in_pos(std::vector<VariantInfo> vi) {
     std::vector<std::string> af;
     for (const auto& alt : vcf_record.alt) { // Only record the counts (AC) and frequencies (AF) of non-ref allele in INFO field
         ac_v.push_back(ac[alt]);
-        af.push_back(format_double(ac[alt] / an)); 
+        af.push_back(format_double(ac[alt] / an, 4)); 
     }
     vcf_record.info = "AF=" + ngslib::join(af, ",") + ";AC=" + ngslib::join(ac_v, ",") + ";AN=" + std::to_string(int(an));
 
