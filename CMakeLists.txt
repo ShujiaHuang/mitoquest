@@ -12,7 +12,8 @@ project (HMTK VERSION 1.2.0 LANGUAGES CXX)
 # -O3: optimization level 3
 # -fPIC: generate position-independent code
 # -Wl,-no_compact_unwind: disable compact unwind information
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3 -fPIC -Wl,-no_compact_unwind")
+#set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3 -fPIC -Wl,--no_compact_unwind")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3 -fPIC")
 set(EXECUTABLE_OUTPUT_PATH ${CMAKE_CURRENT_SOURCE_DIR}/bin)
 
 # Ensure htslib is built before the main executable
@@ -24,25 +25,25 @@ add_custom_target(
 
 # Include directories
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/htslib)  # include the header of htslib
-include_directories(${CMAKE_CURRENT_SOURCE_DIR}/src)     # include the header of hmtk
+include_directories(${CMAKE_CURRENT_SOURCE_DIR}/src)     # include the header of mitoquest
 
-# Compile hmtk - main executable
+# Compile mitoquest - main executable
 # Add all the source files in the src directory
 file(GLOB SRC_MT ${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp ${CMAKE_CURRENT_SOURCE_DIR}/src/io/*.cpp)
-add_executable(hmtk ${SRC_MT})
+add_executable(mitoquest ${SRC_MT})
 
 # This is necessary to ensure that the htslib library is built before the main executable
-add_dependencies(hmtk Buildhts)
+add_dependencies(mitoquest Buildhts)
 
 # Link the htslib static library
-target_link_libraries(hmtk ${CMAKE_CURRENT_SOURCE_DIR}/htslib/libhts.a)
+target_link_libraries(mitoquest ${CMAKE_CURRENT_SOURCE_DIR}/htslib/libhts.a)
 
 # Link common system libraries
 set(COMMON_SYS_LIB pthread z bz2 m lzma curl)
 if (APPLE)
-    target_link_libraries(hmtk ${COMMON_SYS_LIB})
+    target_link_libraries(mitoquest ${COMMON_SYS_LIB})
 else ()
-    target_link_libraries(hmtk ${COMMON_SYS_LIB} ssl crypto)
+    target_link_libraries(mitoquest ${COMMON_SYS_LIB} ssl crypto)
 endif()
 
 
