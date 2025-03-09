@@ -10,158 +10,66 @@
 #include <getopt.h>
 #include <iostream>
 #include <cstdlib>
+#include <ctime>
 
 #include "version.h"
 #include "mt_variant_caller.h"
 
-void print_usage(const MtVariantCaller::Config &config) {
-    std::cout << "\nA Human Mitochondrial sequencing data Analysis Toolkit.\n" 
-              << "Version: " << MITOQUEST_VERSION << "\n"
-            //   << "Author: "  << MITOQUEST_AUTHOR << " <" << MITOQUEST_AUTHOR_EMAIL << ">\n\n"
-              << "Usage: mitoquest [options] -f ref.fa -o output.vcf.gz in1.bam [in2.bam ...]\n\n"
-              << "Required options:\n"
-              << "  -f, --reference FILE       Reference FASTA file\n"
-              << "  -o, --output FILE          Output VCF file\n\n"
-
-              << "Optional options:\n"
-              << "  -b, --bam-list FILE        list of input BAM/CRAM filenames, one per line.\n"
-              << "  -r, --regions REG[,...]    Comma separated list of regions in which to process (default: entire genome).\n"
-              << "                             REG format: chr:start-end (e.g.: chrM or chrM:1-1000,chrM:8000-8200)\n"
-              << "  -q, --min-MQ INT           skip alignments with mapQ smaller than INT (default: " << config.min_mapq  << ")\n"
-            //   << "  -Q, --min-BQ INT           skip bases with base quality smaller than INT (default: " << config.min_baseq << ")\n"
-              << "  -p, --pairs-map-only       Only use the paired reads which mapped to the some chromosome.\n"
-              << "  -P, --proper-pairs-only    Only use properly paired reads.\n"
-              << "  --filename-has-samplename  If the name of bamfile is something like 'SampleID.xxxx.bam', set this\n"
-              << "                             argrument could save a lot of time during get the sample id from BAMfile.\n"
-              << "  -j, --threshold FLOAT      Heteroplasmy threshold (default: " << config.heteroplasmy_threshold << ")\n"
-              << "  -c, --chunk INT            Chunk size for parallel processing (default: " << config.chunk_size << ")\n"
-              << "  -t, --threads INT          Number of threads (default: " << config.thread_count << ")\n"
-              << "  -h, --help                 Print this help message.\n\n";
+static int usage() {
+    std::cout << MITOQUEST_DESCRIPTION << "\n"
+              << "Version: " << MITOQUEST_VERSION << "\n\n"
+              << "Usage: mitoquest <command> [options]\n"
+                 "Commands:\n"
+                 "  caller    Mitochondrial variants and heteroplasmy/homoplasmy caller.\n"
+              << "\n" << std::endl;
+    return 1;
 }
 
 int main(int argc, char* argv[]) {
+    clock_t cpu_start_time = clock();
+    time_t real_start_time = time(0);
+
+    if (argc < 2) {
+        return usage();
+    }
+
     // Save the complete command line with quotes for arguments containing spaces
     std::string cmdline = argv[0];  // start with program name
     for (int i = 1; i < argc; ++i) {
         cmdline += " " + std::string(argv[i]);
     }
-    
-    MtVariantCaller::Config config;
-    // Set default values
-    config.min_mapq                = 0;
-    // config.min_baseq               = 20;
-    config.heteroplasmy_threshold  = 0.01;
-    config.thread_count            = 1;
-    config.chunk_size              = 1000;
-    config.pairs_map_only          = false;
-    config.proper_pairs_only       = false;
-    config.filename_has_samplename = false;
 
-    static const struct option MT_CMDLINE_LOPTS[] = {
-        {"reference",          required_argument, 0, 'R'},
-        {"output",             required_argument, 0, 'o'},
-
-        {"bam-list",           optional_argument, 0, 'b'},
-        {"regions",            optional_argument, 0, 'r'},
-        {"min-MQ",             optional_argument, 0, 'q'},
-        // {"min-BQ",             optional_argument, 0, 'Q'},
-        {"threads",            optional_argument, 0, 't'},
-        {"threshold",          optional_argument, 0, 'j'},
-        {"chunk",              optional_argument, 0, 'c'},
-
-        {"pairs-map-only",          no_argument, 0, 'p'}, // 小写 p
-        {"proper-pairs-only",       no_argument, 0, 'P'},
-        {"filename-has-samplename", no_argument, 0, '1'},
-        {"help",                    no_argument, 0, 'h'},
-
-        // must set this value, to get the correct value from getopt_long
-        {0, 0, 0, 0}
-    };
-
-    int opt;
-    std::vector<std::string> bam_filelist;
-    while ((opt = getopt_long(argc, argv, "f:b:o:r:q:c:j:t:pPh", MT_CMDLINE_LOPTS, NULL)) != -1) {
-        switch (opt) {
-            case 'f': config.reference_file = optarg;                    break;
-            case 'o': config.output_file    = optarg;                    break;
-            case 'b': 
-                bam_filelist = ngslib::get_firstcolumn_from_file(optarg);
-                config.bam_files.insert(
-                    config.bam_files.end(), 
-                    bam_filelist.begin(), 
-                    bam_filelist.end()
-                );
-                break;
-
-            case 'r': config.calling_regions         = optarg;            break;
-            case 'q': config.min_mapq                = std::atoi(optarg); break;
-            // case 'Q': config.min_baseq               = std::atoi(optarg); break;
-            case 'p': config.pairs_map_only          = true;              break;
-            case 'P': config.proper_pairs_only       = true;              break;
-            case '1': config.filename_has_samplename = true;              break;
-            case 'c': config.chunk_size              = std::atoi(optarg); break;
-            case 'j': config.heteroplasmy_threshold  = std::atof(optarg); break;
-            case 't': config.thread_count            = std::atoi(optarg); break;
-            case 'h': print_usage(config); return 0;
-            
-            default:
-                std::cerr << "Unknown argument: " << opt << std::endl;
+    std::string cmd(argv[1]);
+    if (cmd == "caller") {
+        std::cout << "Commandline options: " << cmdline << "\n" << std::endl;
+        try {
+            MtVariantCaller caller(argc-1, argv+1);
+            if (!caller.run()) {
+                std::cerr << "Error processing\n";
                 return 1;
-        }
-    }
+            }
 
-    // Collect BAM/CRAM files
-    while (optind < argc) {
-        config.bam_files.push_back(argv[optind++]);
-    }
-
-    /* Make sure we set valid arguments */
-    if (config.reference_file.empty() || config.output_file.empty()) {
-        std::cerr << "Error: Missing required arguments. \n\n";
-        print_usage(config);
-        return 1;
-    }
-
-    if (config.bam_files.empty()) {
-        std::cerr << "Error: Missing required BAM/CRAM files.\n\n";
-        print_usage(config);
-        return 1;
-    }
-
-    if (config.min_mapq < 0) {
-        std::cerr << "Error: Quality score must be non-negative\n";
-        return 1;
-    }
-
-    if (config.heteroplasmy_threshold <= 0.0 || config.heteroplasmy_threshold > 1.0) {
-        std::cerr << "Error: Heteroplasmy threshold must be between 0 and 1\n";
-        return 1;
-    }
-
-    if (config.thread_count < 1) {
-        std::cerr << "Error: Thread count must be at least 1\n";
-        return 1;
-    }
-
-    if (config.chunk_size < 100) {
-        std::cerr << "Error: Chunk size must be at least 100\n";
-        return 1;
-    }
-
-    // Output the commandline options
-    std::cout << "Commandline options:\n\n" << cmdline << "\n" << std::endl;
-
-    try {
-        MtVariantCaller caller(config);
-        if (!caller.run()) {
-            std::cerr << "Error processing variants\n";
+        } catch (const std::exception& e) {
+            std::cerr << "Error: " << e.what() << '\n';
             return 1;
         }
+    
+    } else if (cmd == "-h" || cmd == "--help") {
+        return usage();
 
-    } catch (const std::exception& e) {
-        std::cerr << "Error: " << e.what() << '\n';
+    } else {
+        std::cout << "\nError: Unrecognizable option: " << cmd + "\n" << std::endl;
         return 1;
     }
+
+    // Time information
+    time_t now = time(0);
+    std::string ct(ctime(&now));
+    ct.pop_back(); // rm the trailing '\n' put by `asctime`
+    std::cout << "\n[INFO] " + ct + ". Processes are all done, "
+              << difftime(now, real_start_time) << " (CPU time: "
+              << std::round((clock() - cpu_start_time) / CLOCKS_PER_SEC) 
+              << ") seconds elapsed.\n" << std::endl;
 
     return 0;
 }

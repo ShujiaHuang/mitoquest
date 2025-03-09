@@ -7,6 +7,6 @@
 #define MITOQUEST_VERSION "1.3.0"
 #define MITOQUEST_AUTHOR "Shujia Huang"
 #define MITOQUEST_AUTHOR_EMAIL "hshujia@qq.com"
-#define MITOQUEST_DESCRIPTION "MitoQuest: Human Mitochondrial sequencing data Analysis Toolkit"
+#define MITOQUEST_DESCRIPTION "mitoquest: Human Mitochondrial sequencing data Analysis Toolkit"
 
 #endif // MITOQUEST_VERSION_H

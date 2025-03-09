@@ -8,15 +8,18 @@
 #ifndef _MT_VARIANT_CALLER_H_
 #define _MT_VARIANT_CALLER_H_
 
+#include <getopt.h>
 #include <string>
 #include <vector>
 #include <ctime>  // clock, time_t
 
-#include "basetype.h"
+#include "version.h"
+
 #include "io/fasta.h"
 #include "io/bam.h"
 #include "external/thread_pool.h"
 
+#include "basetype.h"
 #include "mt_caller_utils.h"
 
 static const bool IS_DELETE_CACHE = true;
@@ -40,10 +43,11 @@ public:
     };
     ngslib::Fasta reference;  // reference fasta object
 
-    explicit MtVariantCaller(const Config& config);
+    explicit MtVariantCaller(int argc, char* argv[]);
     ~MtVariantCaller();
 
     // Main processing function
+    void usage(const Config &config);
     bool run();
 
 private:

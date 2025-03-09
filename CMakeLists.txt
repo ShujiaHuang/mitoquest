@@ -11,7 +11,7 @@ project (MITOQUEST VERSION 1.3.0 LANGUAGES CXX)
 # Add project metadata
 set(PROJECT_AUTHOR "Shujia Huang")
 set(PROJECT_EMAIL "hshujia@qq.com")
-set(PROJECT_DESCRIPTION "MitoQuest: Human Mitochondrial sequencing data Analysis Toolkit")
+set(PROJECT_DESCRIPTION "mitoquest: Human Mitochondrial sequencing data Analysis Toolkit")
 
 # Configure version header
 configure_file(
