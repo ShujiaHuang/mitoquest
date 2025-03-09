@@ -8,6 +8,17 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # Set the project name
 project (MITOQUEST VERSION 1.3.0 LANGUAGES CXX)
 
+# Add project metadata
+set(PROJECT_AUTHOR "Shujia Huang")
+set(PROJECT_EMAIL "hshujia@qq.com")
+set(PROJECT_DESCRIPTION "MitoQuest: Human Mitochondrial sequencing data Analysis Toolkit")
+
+# Configure version header
+configure_file(
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/version.h.in
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/version.h
+)
+
 # Set compiler flags
 # -O3: optimization level 3
 # -fPIC: generate position-independent code

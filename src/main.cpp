@@ -11,10 +11,14 @@
 #include <iostream>
 #include <cstdlib>
 
+#include "version.h"
 #include "mt_variant_caller.h"
 
 void print_usage(const MtVariantCaller::Config &config) {
-    std::cout << "Usage: hmtk [options] -f ref.fa -o output.vcf.gz in1.bam [in2.bam ...]\n"
+    std::cout << "\nA Human Mitochondrial sequencing data Analysis Toolkit.\n" 
+              << "Version: " << MITOQUEST_VERSION << "\n"
+            //   << "Author: "  << MITOQUEST_AUTHOR << " <" << MITOQUEST_AUTHOR_EMAIL << ">\n\n"
+              << "Usage: mitoquest [options] -f ref.fa -o output.vcf.gz in1.bam [in2.bam ...]\n\n"
               << "Required options:\n"
               << "  -f, --reference FILE       Reference FASTA file\n"
               << "  -o, --output FILE          Output VCF file\n\n"
