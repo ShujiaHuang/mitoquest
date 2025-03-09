@@ -112,7 +112,8 @@ MtVariantCaller::MtVariantCaller(int argc, char* argv[]) {
         "-t " << config.thread_count           << " "
         "-q " << config.min_mapq               << " "
         "-j " << config.heteroplasmy_threshold << " "
-        "-c " << config.chunk_size             << (config.filename_has_samplename ? " "
+        "-c " << config.chunk_size             << (config.calling_regions.empty() ? "": 
+        "-r " + config.calling_regions + " ")  << (config.filename_has_samplename ? " "
         "--filename-has-samplename" : "")      << (config.pairs_map_only ?          " "
         "--pairs-map-only"          : "")      << (config.proper_pairs_only ?       " "
         "--proper-pairs-only"       : "")      << " "
