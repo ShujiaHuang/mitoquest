@@ -349,6 +349,8 @@ bool MtVariantCaller::_fetch_base_in_region(const GenomeRegion gr, std::vector<P
     ThreadPool thread_pool(this->_config.thread_count);  // set multiple-thread
 
     std::vector<std::future<PosVariantMap>> pileup_results;
+    pileup_results.reserve(this->_config.bam_files.size());
+    
     std::string fa_seq = this->reference[gr.ref_id];     // use the whole sequence of ``ref_id`` for simply
     // Loop all alignment files
     for(size_t i(0); i < this->_config.bam_files.size(); ++i) { // The same order as this->_samples_id
