@@ -5,7 +5,7 @@ MtVariantCaller::MtVariantCaller(int argc, char* argv[]) {
 
     Config config;
     // Set default values
-    config.min_mapq                = 0;
+    config.min_mapq                = 20;
     // config.min_baseq               = 20;
     config.heteroplasmy_threshold  = 0.01;
     config.thread_count            = 1;
@@ -104,6 +104,20 @@ MtVariantCaller::MtVariantCaller(int argc, char* argv[]) {
         std::cerr << "Error: Chunk size must be at least 100\n";
         exit(1);
     }
+
+    // Output the commandline options "f:b:o:r:q:c:j:t:pPh"
+    std::cout <<
+        "[INFO] arguments: "
+        "mitoquest caller -f " + config.reference_file + " "
+        "-t " << config.thread_count           << " "
+        "-q " << config.min_mapq               << " "
+        "-j " << config.heteroplasmy_threshold << " "
+        "-c " << config.chunk_size             << (config.filename_has_samplename ? " "
+        "--filename-has-samplename" : "")      << (config.pairs_map_only ?          " "
+        "--pairs-map-only"          : "")      << (config.proper_pairs_only ?       " "
+        "--proper-pairs-only"       : "")      << " "
+        "-o " + config.output_file + " "       << config.bam_files[0] + " [ ... " 
+        << config.bam_files.size() << " bamfiles in total]. \n" << std::endl;
 
     // set parameters
     _config = config;
@@ -350,7 +364,7 @@ bool MtVariantCaller::_fetch_base_in_region(const GenomeRegion gr, std::vector<P
 
     std::vector<std::future<PosVariantMap>> pileup_results;
     pileup_results.reserve(this->_config.bam_files.size());
-    
+
     std::string fa_seq = this->reference[gr.ref_id];     // use the whole sequence of ``ref_id`` for simply
     // Loop all alignment files
     for(size_t i(0); i < this->_config.bam_files.size(); ++i) { // The same order as this->_samples_id
