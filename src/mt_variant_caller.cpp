@@ -786,8 +786,8 @@ VCFRecord call_variant_in_pos(std::vector<VariantInfo> vi) {
                            ngslib::join(allele_freqs, ",")  + ":" +             // HF, allele frequency
                            ngslib::join(ci_strings, ";")    + ":" +             // CI, confidence interval
                            ngslib::join(sb_strings, ";")    + ":" +             // SB, strand bias
-                           ngslib::join(fs_strings, ";")    + ":" +             // FS, Fisher strand bias
-                           ngslib::join(sor_strings, ";")   + ":" +             // SOR, Strand odds ratio
+                           ngslib::join(fs_strings, ",")    + ":" +             // FS, Fisher strand bias
+                           ngslib::join(sor_strings, ",")   + ":" +             // SOR, Strand odds ratio
                            ngslib::join(var_types, ",");                        // VT, Variant type
         }
         vcf_record.samples.push_back(sample_info);
