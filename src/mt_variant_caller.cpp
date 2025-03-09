@@ -108,16 +108,16 @@ MtVariantCaller::MtVariantCaller(int argc, char* argv[]) {
     // Output the commandline options "f:b:o:r:q:c:j:t:pPh"
     std::cout <<
         "[INFO] arguments: "
-        "mitoquest caller -f " + config.reference_file + " "
-        "-t " << config.thread_count           << " "
-        "-q " << config.min_mapq               << " "
-        "-j " << config.heteroplasmy_threshold << " "
-        "-c " << config.chunk_size             << (config.calling_regions.empty() ? "": 
-        "-r " + config.calling_regions + " ")  << (config.filename_has_samplename ? " "
-        "--filename-has-samplename" : "")      << (config.pairs_map_only ?          " "
-        "--pairs-map-only"          : "")      << (config.proper_pairs_only ?       " "
-        "--proper-pairs-only"       : "")      << " "
-        "-o " + config.output_file + " "       << config.bam_files[0] + " [ ... " 
+        "mitoquest caller -f " + config.reference_file + 
+        " -t " << config.thread_count           << ""
+        " -q " << config.min_mapq               << ""
+        " -j " << config.heteroplasmy_threshold << ""
+        " -c " << config.chunk_size             << (config.calling_regions.empty() ? "" : 
+        " -r " + config.calling_regions)        << (config.filename_has_samplename ? ""
+        " --filename-has-samplename" : "")      << (config.pairs_map_only ?          ""
+        " --pairs-map-only"          : "")      << (config.proper_pairs_only ?       ""
+        " --proper-pairs-only"       : "")      << ""
+        " -o " + config.output_file + " "       << config.bam_files[0] + " [ ... " 
         << config.bam_files.size() << " bamfiles in total]. \n" << std::endl;
 
     // set parameters
