@@ -6,20 +6,23 @@ set(CMAKE_CXX_STANDARD 17)  # C++ 17
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Set the project name
-project (HMTK VERSION 1.2.0 LANGUAGES CXX)
+project (MITOQUEST VERSION 1.3.0 LANGUAGES CXX)
 
 # Set compiler flags
 # -O3: optimization level 3
 # -fPIC: generate position-independent code
-# -Wl,-no_compact_unwind: disable compact unwind information
-#set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3 -fPIC -Wl,--no_compact_unwind")
+# -Wl,-no_compact_unwind: disable compact unwind information for MacOS only
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3 -fPIC")
+if (APPLE)
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wl,-no_compact_unwind")
+endif()
+
 set(EXECUTABLE_OUTPUT_PATH ${CMAKE_CURRENT_SOURCE_DIR}/bin)
 
 # Ensure htslib is built before the main executable
 add_custom_target(
     Buildhts ALL
-    COMMAND autoreconf -i && ./configure --disable-shared && make
+    COMMAND autoreconf -i && ./configure && make
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/htslib
 )
 
@@ -27,55 +30,29 @@ add_custom_target(
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/htslib)  # include the header of htslib
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/src)     # include the header of mitoquest
 
-# Compile mitoquest - main executable
-# Add all the source files in the src directory
-file(GLOB SRC_MT ${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp ${CMAKE_CURRENT_SOURCE_DIR}/src/io/*.cpp)
-add_executable(mitoquest ${SRC_MT})
-
-# This is necessary to ensure that the htslib library is built before the main executable
-add_dependencies(mitoquest Buildhts)
-
-# Link the htslib static library
-target_link_libraries(mitoquest ${CMAKE_CURRENT_SOURCE_DIR}/htslib/libhts.a)
-
-# Link common system libraries
+# Define common system libraries
 set(COMMON_SYS_LIB pthread z bz2 m lzma curl)
-if (APPLE)
-    target_link_libraries(mitoquest ${COMMON_SYS_LIB})
-else ()
-    target_link_libraries(mitoquest ${COMMON_SYS_LIB} ssl crypto)
+if(NOT APPLE)
+    list(APPEND COMMON_SYS_LIB ssl crypto)
 endif()
 
+# Define htslib library
+set(HTSLIB ${CMAKE_CURRENT_SOURCE_DIR}/htslib/libhts.a)
 
+# Compile mitoquest - main executable
+file(GLOB_RECURSE SRC_MT 
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/io/*.cpp"
+)
 
+add_executable(mitoquest ${SRC_MT})
+add_dependencies(mitoquest Buildhts)
+target_link_libraries(mitoquest ${HTSLIB} ${COMMON_SYS_LIB})
 
 ####################################################################################################
 ####### Compile the test and other executables scripts
 ####################################################################################################
 # Compile count_align_fragments.cpp
 add_executable(count_align_fragments ${CMAKE_CURRENT_SOURCE_DIR}/scripts/count_align_fragments.cpp)
-
-# Ensure htslib is built before the following executable
 add_dependencies(count_align_fragments Buildhts)
-
-# Link htslib static library
-target_link_libraries(count_align_fragments ${CMAKE_CURRENT_SOURCE_DIR}/htslib/libhts.a)
-if (APPLE)
-    target_link_libraries(count_align_fragments ${COMMON_SYS_LIB})
-else ()
-    target_link_libraries(count_align_fragments ${COMMON_SYS_LIB} ssl crypto)
-endif()
-
-# Compile test_thread_pool.cpp
-add_executable(test_thread_pool ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_thread_pool.cpp)
-add_dependencies(test_thread_pool Buildhts)
-
-# Link htslib static library to the test executable
-target_link_libraries(test_thread_pool ${CMAKE_CURRENT_SOURCE_DIR}/htslib/libhts.a)
-
-# Link common system libraries
-if (APPLE)
-    target_link_libraries(test_thread_pool pthread z bz2 m lzma curl)
-else ()
-    target_link_libraries(test_thread_pool pthread z bz2 m lzma curl ssl crypto)
-endif()
+target_link_libraries(count_align_fragments ${HTSLIB} ${COMMON_SYS_LIB})
