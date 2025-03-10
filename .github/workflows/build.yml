@@ -56,7 +56,7 @@ jobs:
         cp bin/mitoquest dist/${{ matrix.artifact_name }}
         
     - name: Upload artifacts
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: ${{ matrix.artifact_name }}
         path: dist/${{ matrix.artifact_name }}
