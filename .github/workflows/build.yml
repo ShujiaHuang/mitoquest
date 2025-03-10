@@ -66,3 +66,11 @@ jobs:
       uses: softprops/action-gh-release@v1
       with:
         files: dist/${{ matrix.artifact_name }}
+    
+    - name: Show artifact location
+      run: |
+        echo "Build artifacts have been uploaded to:"
+        echo "- Actions tab: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+        if [[ "${{ github.event_name }}" == "release" ]]; then
+          echo "- Release page: ${{ github.server_url }}/${{ github.repository }}/releases/latest"
+        fi
