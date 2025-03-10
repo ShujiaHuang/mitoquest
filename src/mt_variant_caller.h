@@ -70,7 +70,9 @@ private:
     bool _fetch_base_in_region(const GenomeRegion genome_region, std::vector<PosVariantMap> &samples_pileup_v);
 
     // integrate the variant information of all samples in the region
-    bool _variant_discovery(const GenomeRegion genome_region, const std::vector<PosVariantMap> &samples_pileup_v, const std::string out_vcf_fn);
+    bool _variant_discovery(const GenomeRegion genome_region, 
+                            const std::vector<PosVariantMap> &samples_pileup_v, 
+                            const std::string out_vcf_fn);
 };
 
 PosVariantMap call_pileup_in_sample(const std::string sample_bam_fn, 

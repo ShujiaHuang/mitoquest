@@ -107,7 +107,7 @@ MtVariantCaller::MtVariantCaller(int argc, char* argv[]) {
 
     // Output the commandline options "f:b:o:r:q:c:j:t:pPh"
     std::cout <<
-        "[INFO] arguments: "
+        "[INFO] Arguments: "
         "mitoquest caller -f " + config.reference_file + 
         " -t " << config.thread_count           << ""
         " -q " << config.min_mapq               << ""
@@ -125,7 +125,9 @@ MtVariantCaller::MtVariantCaller(int argc, char* argv[]) {
 
     // load fasta
     reference = _config.reference_file;
-    _get_calling_interval(); // _print_calling_interval();
+    _get_calling_interval();
+    
+    // _print_calling_interval();
 
     // keep the order of '_samples_id' as the same as input bamfiles
     _get_sample_id_from_bam();
@@ -309,11 +311,10 @@ bool MtVariantCaller::_caller_process() {
     // 以区间为单位进行变异检测, 每个区间里先按照样本调用多线程，然后合并样本，多线程遍历位点并行处理
     bool is_success = true;
     std::vector<std::string> sub_vcf_files;
-
     for (auto &gr: _calling_intervals) {
         // 按样本进行 pileup，在函数里按样本进行多线程，记录每个样本在每个位点上的 pileup 信息
         std::vector<PosVariantMap> samples_pileup_v;
-        samples_pileup_v.reserve(_samples_id.size() + 1);  // reserve the memory before push_back
+        samples_pileup_v.reserve(_samples_id.size());  // reserve the memory before push_back
 
         //////////////////////////////////////////////
         bool is_empty = _fetch_base_in_region(gr, samples_pileup_v);
@@ -394,10 +395,13 @@ bool MtVariantCaller::_fetch_base_in_region(const GenomeRegion gr, std::vector<P
     if (samples_pileup_v.size() != this->_samples_id.size())
         throw std::runtime_error("[_fetch_base_in_region] 'samples_pileup_v.size()' "
                                  "should be the same as '_config.bam_files.size()'");
+
     return is_empty;  // no cover reads in 'GenomeRegion' if empty.
 }
 
-bool MtVariantCaller::_variant_discovery(const GenomeRegion gr, const std::vector<PosVariantMap> &samples_pileup_v, const std::string out_vcf_fn) {
+bool MtVariantCaller::_variant_discovery(const GenomeRegion gr, const std::vector<PosVariantMap> &samples_pileup_v, 
+                                         const std::string out_vcf_fn)
+{
     // 1. integrate the variant information of all samples in the region
     // 2. call the variant by the integrated information
     // 3. output the variant information to the VCF file
@@ -763,7 +767,7 @@ VCFRecord call_variant_in_pos(std::vector<VariantInfo> vi) {
         std::vector<std::string> var_types;
 
         // Collect and format sample information 
-        for (size_t gti = 0; gti < ref_alt_order.size(); gti++) {  // gti == 0 represents the REF GT for mtDNA
+        for (size_t gti = 0; gti < ref_alt_order.size(); gti++) {  // gti == 0 represents the REF GT
             const auto& alt = ref_alt_order[gti];
 
             for (size_t j = 0; j < sample_var.alt_bases.size(); j++) {
@@ -777,7 +781,7 @@ VCFRecord call_variant_in_pos(std::vector<VariantInfo> vi) {
                     allele_depths.push_back(sample_var.depths[j]);
                     // allele_freqs.push_back(sample_var.freqs[j]); // 这里不要用 lrt 计算出来的 allele frequency，因为可能不知为何会有负数（极少情况下）
                     // use the allele frequency calculated by allele_depth/total_depth
-                    allele_freqs.push_back(double(sample_var.depths[j])/double(sample_var.total_depth)); 
+                    allele_freqs.push_back(double(sample_var.depths[j])/double(sample_var.total_depth)); // calculate AF by read depth
                     ci_strings.push_back(format_double(sample_var.ci[j].first) + "," + format_double(sample_var.ci[j].second));
                     sb_strings.push_back(std::to_string(sample_var.strand_bias[j].ref_fwd) + "," + 
                                          std::to_string(sample_var.strand_bias[j].ref_rev) + "," + 
@@ -795,7 +799,7 @@ VCFRecord call_variant_in_pos(std::vector<VariantInfo> vi) {
         bool alt_found = sample_alts.size() > 0;
         std::string gt = alt_found ? ngslib::join(gt_indices, "/") : ".";       // set generate genotype (GT)
         std::string sample_info = gt + ":" +                                    // GT, genotype
-                                  std::to_string(int(sample_var.qual)) + ":" +  // GQ, genotype quality
+                                  std::to_string(int(sample_var.qual)) + ":" +  // GQ, genotype quality (Variant quality)
                                   std::to_string(sample_var.total_depth);       // DP, total depth
         if (alt_found) {
             sample_info += ":";
