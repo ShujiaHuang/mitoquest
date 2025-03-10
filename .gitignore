@@ -1,9 +1,6 @@
 *.o
 *.py[cod]
 
-bin/
-!bin/*.sh
-!bin/mitoquest-*
 build/
 learn_from/
 
