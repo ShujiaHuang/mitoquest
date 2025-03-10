@@ -153,13 +153,16 @@ void BaseType::lrt(const std::vector<std::string> &specific_bases) {
         var = _f(active_bases, n);
         std::vector<double> lrt_chivalue;
         for (size_t j(0); j < var.lr.size(); ++j) {
-            lrt_chivalue.push_back(2 * (lr - var.lr[j]));
+            lrt_chivalue.push_back(2 * (lr - var.lr[j])); // 负号代入对数方程了，所以和公式比起来就是分子分母互换
         }
-        size_t i_min = argmin(lrt_chivalue.begin(), lrt_chivalue.end());
+        size_t i_min = argmin(lrt_chivalue.begin(), lrt_chivalue.end());  // 选出最优组合
 
         lr = var.lr[i_min];
-        chi_sqrt_value = lrt_chivalue[i_min];
-        if (chi_sqrt_value < LRT_THRESHOLD) {
+        chi_sqrt_value = lrt_chivalue[i_min]; // 获得该最优组合的卡方值
+
+        // 注意这 H0 假设是“少碱基的组合与多碱基的组合相比无显著差异”，如果是，那么选H0，也就是少碱基的组合，否则取多碱基组合(H1)。
+        // 这和我的计算公式是一致的，只是反过来而已
+        if (chi_sqrt_value < LRT_THRESHOLD) { 
             // Take the null hypothesis and continue
             active_bases = var.bc[i_min];
             active_bases_freq = var.bp[i_min];

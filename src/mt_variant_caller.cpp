@@ -679,15 +679,15 @@ VariantInfo get_pileup(const BaseType &bt, const BaseType::BatchInfo *smp_bi) {
     return vi;
 }
 
-VCFRecord call_variant_in_pos(std::vector<VariantInfo> vi) {
+VCFRecord call_variant_in_pos(std::vector<VariantInfo> vvi) {
     // 1. call the variant by the integrated information
     // 2. output the variant information to the VCF file
-    if (vi.empty()) {
+    if (vvi.empty()) {
         return VCFRecord(); // Return empty record if no variants
     }
 
     VCFRecord vcf_record;
-    const auto& first_var = vi[0];  // Use first variant info as reference
+    const auto& first_var = vvi[0];  // Use first variant info as reference
     
     // Set basic VCF fields
     vcf_record.chrom = first_var.ref_id;
@@ -695,8 +695,8 @@ VCFRecord call_variant_in_pos(std::vector<VariantInfo> vi) {
     
     // First pass: collect all REF sequences and find the longest one
     std::string shared_ref;  // The final REF to use in VCF
-    for (size_t i = 0; i < vi.size(); i++) {
-        for (const auto& ref : vi[i].ref_bases) {
+    for (size_t i = 0; i < vvi.size(); i++) {
+        for (const auto& ref : vvi[i].ref_bases) {
             if (ref.length() > shared_ref.length()) {
                 shared_ref = ref;
             }
@@ -709,16 +709,16 @@ VCFRecord call_variant_in_pos(std::vector<VariantInfo> vi) {
 
     // Second pass: collect and normalize ALT sequences
     std::set<std::string> unique_alts;
-    for (size_t i = 0; i < vi.size(); i++) { // Loop all samples in the position, and collect the ALT information
-        for (size_t j = 0; j < vi[i].alt_bases.size(); j++) {
-            std::string alt = vi[i].alt_bases[j];
-            std::string ref = vi[i].ref_bases[j];
+    for (size_t i = 0; i < vvi.size(); i++) { // Loop all samples in the position, and collect the ALT information
+        for (size_t j = 0; j < vvi[i].alt_bases.size(); j++) {
+            std::string alt = vvi[i].alt_bases[j];
+            std::string ref = vvi[i].ref_bases[j];
             std::transform(ref.begin(), ref.end(), ref.begin(), ::toupper); // Convert to upper case
             
             // Normalize ALT sequence
             if (ref != shared_ref && shared_ref.length() > ref.length()) {
                 alt += shared_ref.substr(ref.length());
-                vi[i].alt_bases[j] = alt; // Update the ALT sequence
+                vvi[i].alt_bases[j] = alt; // Update the ALT sequence
             }
             unique_alts.insert(alt);
         }
@@ -746,8 +746,8 @@ VCFRecord call_variant_in_pos(std::vector<VariantInfo> vi) {
     
     // Process sample information
     vcf_record.format = "GT:GQ:DP:AD:HF:CI:SB:FS:SOR:VT";
-    for (size_t sample_idx = 0; sample_idx < vi.size(); sample_idx++) {
-        const auto& sample_var = vi[sample_idx];
+    for (size_t sample_idx = 0; sample_idx < vvi.size(); sample_idx++) {
+        const auto& sample_var = vvi[sample_idx];
 
         // record the biggest qual value
         if (sample_var.qual > vcf_record.qual && sample_var.qual != 10000) {
@@ -803,7 +803,7 @@ VCFRecord call_variant_in_pos(std::vector<VariantInfo> vi) {
                                   std::to_string(sample_var.total_depth);       // DP, total depth
         if (alt_found) {
             sample_info += ":";
-            sample_info += ngslib::join(allele_depths, ",") + ":" +             // AD, allele depth
+            sample_info += ngslib::join(allele_depths, ",") + ":" +             // AD, active allele depth, so sum(AD) <= PD
                            ngslib::join(allele_freqs, ",")  + ":" +             // HF, allele frequency
                            ngslib::join(ci_strings, ";")    + ":" +             // CI, confidence interval
                            ngslib::join(sb_strings, ";")    + ":" +             // SB, strand bias

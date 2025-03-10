@@ -5,4 +5,4 @@
 
 ../../bin/mitoquest caller -f ref_mt.fasta -o tt test.bam --filename-has-samplename
 
-../../bin/mitoquest caller -t 4 -f chrM_rCRS.decoy.fa -r chrM -o tt 21200715BFF2A.cram 15100105TLL4A.cram 00115121204M17BFF2.cram
+../../bin/mitoquest caller -t 4 -f chrM_rCRS.decoy.fa -r chrM -o tt smp1.cram smp2.cram smp3.cram
