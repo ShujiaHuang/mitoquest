@@ -17,3 +17,4 @@ g++ -O3 -fPIC test_algorithm.cpp ../htslib/libhts.a -I ../htslib -I ../src -o te
 gcc -O3 -Wall -I ../src -std=c++11 -lstdc++ -o test_combinations test_combinations.cpp && ./test_combinations && rm -f test_combinations
 
 g++ -O3 -fPIC test_hts_utils.cpp ../htslib/libhts.a -I ../htslib -I ../src -o test_hts_utils -lz -lbz2 -lm -llzma -lpthread -lcurl
+g++ -O3 -fPIC test_iobgzf.cpp ../htslib/libhts.a -I ../htslib -I ../src -o test_iobgzf -lz -lbz2 -lm -llzma -lpthread -lcurl
