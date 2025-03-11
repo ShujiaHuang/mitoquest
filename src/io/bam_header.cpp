@@ -9,7 +9,7 @@ namespace ngslib {
     BamHeader::BamHeader(const std::string &fn, const std::string ref_fn) {
 
         if (!is_readable(fn)) {
-            throw std::runtime_error("_bam_header::BamHeader: " + fn + " not found.");
+            throw std::runtime_error("[bam_header.cpp::BamHeader] " + fn + " not found.");
         }
 
         // Open BAM/CRAM file

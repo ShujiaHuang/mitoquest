@@ -20,6 +20,7 @@
 #include <htslib/tbx.h>
 
 #include "io/fasta.h"
+#include "io/iobgzf.h"
 #include "io/utils.h"
 #include "external/robin_hood.h"  // robin_hood::unordered_map, robin_hood::unordered_set
 

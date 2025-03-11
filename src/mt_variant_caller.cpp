@@ -434,12 +434,8 @@ bool MtVariantCaller::_variant_discovery(const GenomeRegion gr, const std::vecto
         }
     }
 
-    BGZF *out_vcf_fp = bgzf_open(out_vcf_fn.c_str(), "w");
-    if (out_vcf_fp == NULL) {
-        throw std::runtime_error("[ERROR] Cannot open file: " + out_vcf_fn);
-    }
-
     bool is_empty = true;
+    ngslib::BGZFile OUT(out_vcf_fn, "wb");
     for (auto && p: results) { // Run and make sure all processes are finished
         if (p.valid()) {
             VCFRecord vcf_record = p.get();
@@ -447,17 +443,11 @@ bool MtVariantCaller::_variant_discovery(const GenomeRegion gr, const std::vecto
             // write to a file
             if (vcf_record.is_valid()) {
                 if (is_empty) is_empty = false;
-
-                std::string vcf_str = vcf_record.to_string() + "\n";
-                if (bgzf_write(out_vcf_fp, vcf_str.c_str(), vcf_str.length()) != vcf_str.length()) {
-                    throw std::runtime_error("[ERROR] fail to write data");
-                }
+                OUT << vcf_record.to_string() << "\n";
             }
         }
     }
-    
-    int is_cl = bgzf_close(out_vcf_fp);
-    if (is_cl < 0) throw std::runtime_error("[ERROR] " + out_vcf_fn + " fail close.");
+    OUT.close(); // 要调用该 close 函数，确保所有数据完成写入和文件生成
     
     return is_empty;  // no variant in the region if empty.
 }

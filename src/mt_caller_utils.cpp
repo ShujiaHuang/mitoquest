@@ -117,7 +117,6 @@ std::string vcf_header_define(const std::string &ref_file_path, const std::vecto
         "##FORMAT=<ID=FS,Number=A,Type=Float,Description=\"An ordered, comma delimited list of phred-scaled p-value using Fisher's exact test to detect strand bias\">",
         "##FORMAT=<ID=SOR,Number=A,Type=Float,Description=\"An ordered, comma delimited list of strand bias estimated by the Symmetric Odds Ratio test\">",
         "##FORMAT=<ID=VT,Number=1,Type=String,Description=\"An ordered, comma delimited list of variant type: REF, SNV, INS, DEL, or MNV\">",
-
         "##INFO=<ID=AF,Number=A,Type=Float,Description=\"An ordered, comma delimited list of non-reference allele frequencies\">",
         "##INFO=<ID=AC,Number=A,Type=Integer,Description=\"An ordered, comma delimited list of non-reference allele count in genotypes\">",
         "##INFO=<ID=AN,Number=1,Type=Integer,Description=\"Total number of ref and non-ref allele in called genotypes\">",
@@ -144,32 +143,24 @@ void merge_file_by_line(const std::vector<std::string> &infiles, const std::stri
 {
     if (infiles.empty()) return;
 
-    bool is_compress_out = (ngslib::suffix_name(outfile) == ".gz") ? true : false;
-    BGZF *OUT = bgzf_open(outfile.c_str(), is_compress_out ? "w" : "uw");  // output file
-    if (!OUT) throw std::runtime_error("[ERROR] " + outfile + " open failure.");
-
-    header += "\n";
-    if (bgzf_write(OUT, header.c_str(), header.length()) != header.length())
-        throw std::runtime_error("[ERROR] fail to write data");
+    bool is_compress = (ngslib::suffix_name(outfile) == ".gz") ? true : false;
+    ngslib::BGZFile OUT(outfile, is_compress ? "wb" : "uw"); 
+    OUT << header << "\n";
 
     /* Merge all files here */
     for (auto fn: infiles) {
-        BGZF *f = bgzf_open(fn.c_str(), "r");
-        kstring_t s; s.s = NULL; s.l = s.m = 0;
-        while (bgzf_getline(f, '\n', &s) >= 0) {
-            if (s.s[0] == '#') continue;  // ignore the header of subfiles.
-            std::string out(s.s); out += "\n";
+        ngslib::BGZFile f(fn, "r");
+        std::string line;
 
-            if (bgzf_write(OUT, out.c_str(), out.length()) != out.length())
-                throw std::runtime_error("[ERROR] fail to write data");
+        while (f.getline(line)) {
+            if (line[0] == '#') continue;
+            OUT << line << "\n";
         }
-        bgzf_close(f);
+        OUT.flush(); // 确保数据被写入
 
         if (is_remove_tempfile) ngslib::safe_remove(fn);
     }
-    
-    int is_cl = bgzf_close(OUT);
-    if (is_cl < 0) throw std::runtime_error("[ERROR] " + outfile + " fail close.");
-    
+
+    OUT.close();
     return;
 }

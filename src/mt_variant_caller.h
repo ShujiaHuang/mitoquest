@@ -17,6 +17,7 @@
 
 #include "io/fasta.h"
 #include "io/bam.h"
+#include "io/iobgzf.h"
 #include "external/thread_pool.h"
 
 #include "basetype.h"
@@ -95,7 +96,6 @@ VariantInfo basetype_caller_unit(const AlignInfo &pos_align_info, double min_af)
  * @return VariantInfo 
  */
 VariantInfo get_pileup(const BaseType &bt, const BaseType::BatchInfo *smp_bi);
-
 VCFRecord call_variant_in_pos(std::vector<VariantInfo> variant_infos);
 
 #endif // _MT_VARIANT_CALLER_H_
