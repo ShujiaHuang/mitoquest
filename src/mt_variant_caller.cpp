@@ -284,7 +284,7 @@ void MtVariantCaller::_print_calling_interval() {
     return;
 }
 
-bool MtVariantCaller::_caller_process() {
+void MtVariantCaller::_caller_process() {
 
     // Get filepath and stem name
     std::string _bname = ngslib::basename(_config.output_file);
@@ -296,7 +296,6 @@ bool MtVariantCaller::_caller_process() {
     ngslib::safe_mkdir(cache_outdir);
 
     // 以区间为单位进行变异检测, 每个区间里先按照样本调用多线程，然后合并样本，多线程遍历位点并行处理
-    bool is_success = true;
     std::vector<std::string> sub_vcf_files;
     for (auto &gr: _calling_intervals) {
 
@@ -341,8 +340,6 @@ bool MtVariantCaller::_caller_process() {
 
         ngslib::safe_remove(cache_outdir);
     }
-
-    return is_success;
 }
 
 bool MtVariantCaller::_fetch_base_in_region(const GenomeRegion gr, std::vector<PosVariantMap> &samples_pileup_v) {
@@ -520,7 +517,6 @@ void seek_position(const std::string &fa_seq,   // must be the whole chromosome 
         ab.map_strand = al.map_strand();  // '*', '-' or '+'
         ab.mapq = al.mapq();
 
-        // std::string ref_bases;
         uint32_t map_ref_pos;
         aligned_pairs = al.get_aligned_pairs(fa_seq);
         for (size_t i(0); i < aligned_pairs.size(); ++i) {
@@ -545,9 +541,9 @@ void seek_position(const std::string &fa_seq,   // must be the whole chromosome 
                     throw std::runtime_error("[ERROR] We got reference base in insertion region.");
                 }
 
-                // roll back one position to the leftmost to insertion break point.
+                // roll back one position to the leftmost of insertion break point.
                 --map_ref_pos;
-                ab.ref_base  = fa_seq[aligned_pairs[i].ref_pos-1]; // break point's ref base
+                ab.ref_base  = fa_seq[aligned_pairs[i].ref_pos-1]; // break point's leftmost ref base
                 ab.read_base = fa_seq[aligned_pairs[i].ref_pos-1] + aligned_pairs[i].read_base;
 
                 // Need to convert the read_base to upper case if it is a insertion in case of the ref is lower case.
@@ -566,10 +562,10 @@ void seek_position(const std::string &fa_seq,   // must be the whole chromosome 
                     throw std::runtime_error("[ERROR] We got read bases in deletion region.");
                 }
 
-                // roll back one position to the leftmost to deletion break point.
+                // roll back one position to the leftmost of deletion break point.
                 --map_ref_pos;
                 ab.ref_base  = fa_seq[aligned_pairs[i].ref_pos-1] + aligned_pairs[i].ref_base;
-                ab.read_base = fa_seq[aligned_pairs[i].ref_pos-1]; // break point's ref base
+                ab.read_base = fa_seq[aligned_pairs[i].ref_pos-1]; // break point's leftmost ref base
 
                 // Need to convert the read_base to upper case if it is a deletion in case of the ref is lower case.
                 std::transform(ab.read_base.begin(), ab.read_base.end(), ab.read_base.begin(), ::toupper);
@@ -578,8 +574,7 @@ void seek_position(const std::string &fa_seq,   // must be the whole chromosome 
                 ab.base_qual = uint8_t(al.mean_qqual()) + 33; // 33 is the offset of base QUAL;
 
             } else { 
-                // Skip other kinds of CIGAR symbals.
-                continue;
+                continue;  // Skip other kinds of CIGAR symbals.
             }
             // qpos is 0-based, conver to 1-based to set the rank of base on read.
             ab.rpr = aligned_pairs[i].qpos + 1;
@@ -615,12 +610,18 @@ VariantInfo basetype_caller_unit(const AlignInfo &pos_align_info, double min_af)
     BaseType bt(&smp_bi, min_af);
     bt.lrt();  // use likelihood ratio test to detect candidate variant
 
-    return get_pileup(bt, &smp_bi);
+    return get_pos_pileup(bt, &smp_bi);
 }
 
-VariantInfo get_pileup(const BaseType &bt, const BaseType::BatchInfo *smp_bi) {
+VariantInfo get_pos_pileup(const BaseType &bt, const BaseType::BatchInfo *smp_bi) {
 
     VariantInfo vi(bt.get_ref_id(), bt.get_ref_pos(), bt.get_total_depth(), bt.get_var_qual());
+    int major_allele_depth;
+    if (bt.get_active_bases().size() != 0) {
+        vi.major_allele    = bt.get_active_bases()[0];
+        major_allele_depth = bt.get_base_depth(vi.major_allele);
+    }
+
     for (size_t i(0); i < bt.get_active_bases().size(); ++i) {
         std::string b = bt.get_active_bases()[i];
         std::string ref_base = bt.get_bases2ref().at(b);
@@ -629,9 +630,14 @@ VariantInfo get_pileup(const BaseType &bt, const BaseType::BatchInfo *smp_bi) {
         std::transform(upper_ref_base.begin(), upper_ref_base.end(), upper_ref_base.begin(), ::toupper);
 
         vi.ref_bases.push_back(ref_base);  // could only be raw ref-base
-        vi.alt_bases.push_back(b);         // could be ref and non-ref alleles
+        vi.alt_bases.push_back(b);         // could be ref or non-ref alleles
         vi.depths.push_back(bt.get_base_depth(b));
         vi.freqs.push_back(bt.get_lrt_af(b));
+
+        if (major_allele_depth < bt.get_base_depth(b)) {
+            vi.major_allele    = b;
+            major_allele_depth = bt.get_base_depth(b);
+        }
 
         if (b == upper_ref_base) {
             vi.var_types.push_back("REF");
@@ -647,7 +653,14 @@ VariantInfo get_pileup(const BaseType &bt, const BaseType::BatchInfo *smp_bi) {
 
         std::pair<double, double> ci = calculate_confidence_interval(bt.get_base_depth(b), bt.get_total_depth());
         vi.ci.push_back(ci);
-        vi.strand_bias.push_back(strand_bias(upper_ref_base, b, smp_bi->align_bases, smp_bi->map_strands));
+    }
+
+    // calculate the Strand Bias
+    for (size_t i(0); i < vi.alt_bases.size(); ++i) {
+        vi.strand_bias.push_back(strand_bias(vi.major_allele,
+                                             vi.alt_bases[i],
+                                             smp_bi->align_bases,
+                                             smp_bi->map_strands));
     }
 
 // std::cout << "*****: " << smp_bi->ref_id << "\t" << smp_bi->ref_pos << "\t" 
@@ -760,12 +773,10 @@ VCFRecord call_variant_in_pos(std::vector<VariantInfo> vvi) {
                     allele_depths.push_back(sample_var.depths[j]);
                     // allele_freqs.push_back(sample_var.freqs[j]); // 这里不要用 lrt 计算出来的 allele frequency，因为可能不知为何会有负数（极少情况下）
                     // use the allele frequency calculated by allele_depth/total_depth
-                    allele_freqs.push_back(double(sample_var.depths[j])/double(sample_var.total_depth)); // calculate AF by read depth
+                    allele_freqs.push_back(double(sample_var.depths[j]) / double(sample_var.total_depth)); // calculate AF by read depth
                     ci_strings.push_back(format_double(sample_var.ci[j].first) + "," + format_double(sample_var.ci[j].second));
-                    sb_strings.push_back(std::to_string(sample_var.strand_bias[j].ref_fwd) + "," + 
-                                         std::to_string(sample_var.strand_bias[j].ref_rev) + "," + 
-                                         std::to_string(sample_var.strand_bias[j].alt_fwd) + "," + 
-                                         std::to_string(sample_var.strand_bias[j].alt_rev));
+                    sb_strings.push_back(std::to_string(sample_var.strand_bias[j].fwd) + "," + 
+                                         std::to_string(sample_var.strand_bias[j].rev));
                     fs_strings.push_back(sample_var.strand_bias[j].fs != 10000 ? 
                                          format_double(sample_var.strand_bias[j].fs) : "10000"); // it's a phred-scale score
                     sor_strings.push_back(sample_var.strand_bias[j].sor != 10000 ? 

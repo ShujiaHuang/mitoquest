@@ -48,9 +48,7 @@ public:
 
     // Main processing function
     void usage(const Config &config);
-    bool run() {
-        return _caller_process();
-    }
+    void run() { _caller_process(); }
 
 private:
     // Prevent copying (C++11 style)
@@ -67,7 +65,7 @@ private:
     void _get_sample_id_from_bam();
     GenomeRegion _make_genome_region(std::string gregion);
 
-    bool _caller_process();  // main process function
+    void _caller_process();  // main process function
     bool _fetch_base_in_region(const GenomeRegion genome_region, std::vector<PosVariantMap> &samples_pileup_v);
 
     // integrate the variant information of all samples in the region
@@ -96,7 +94,7 @@ VariantInfo basetype_caller_unit(const AlignInfo &pos_align_info, double min_af)
  * @return VariantInfo 
  * 
  */
-VariantInfo get_pileup(const BaseType &bt, const BaseType::BatchInfo *smp_bi);
+VariantInfo get_pos_pileup(const BaseType &bt, const BaseType::BatchInfo *smp_bi);
 VCFRecord call_variant_in_pos(std::vector<VariantInfo> variant_infos);
 
 #endif // _MT_VARIANT_CALLER_H_

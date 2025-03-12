@@ -15,36 +15,39 @@ int get_total_depth(const AlignInfo &align_infor) {
     return depth;
 }
 
-StrandBiasInfo strand_bias(const std::string &ref_base, 
-                           const std::string &alt_bases_string,
+StrandBiasInfo strand_bias(const std::string &major_base, 
+                           const std::string &alt_base,
                            const std::vector<std::string> &bases,
                            const std::vector<char> &strands)  // strands 和 bases 是配对的，一一对应 
 {
-    int ref_fwd = 0, ref_rev = 0;
+    int maj_fwd = 0, maj_rev = 0;
     int alt_fwd = 0, alt_rev = 0;
-
     for (size_t i(0); i < bases.size(); ++i) {
         if (strands[i] == '+') {
-            if (bases[i] == ref_base) {
-                ++ref_fwd;
-            } else if (alt_bases_string == bases[i]) {
+            if (bases[i] == major_base) {
+                ++maj_fwd;
+            } else if (alt_base == bases[i]) {
                 ++alt_fwd;
             }
 
         } else if (strands[i] == '-') {
-            if (bases[i] == ref_base) {
-                ++ref_rev;
-            } else if (alt_bases_string == bases[i]) {
+            if (bases[i] == major_base) {
+                ++maj_rev;
+            } else if (alt_base == bases[i]) {
                 ++alt_rev;
             }
-
         } else {
             throw std::runtime_error("[ERROR] Get strange strand symbol: " + std::to_string(strands[i]));
         }
     }
 
-    double fs = -10 * log10(fisher_exact_test(ref_fwd, ref_rev, alt_fwd, alt_rev));
-    // 应对'全 Ref' 或者是 '全 ALT'
+    if (alt_base == major_base) { 
+        // 如果 alt_base 刚好是 major_base 那么就按照 50% 的比例构造 alt_fwd 和 alt_rev 的理论值
+        alt_fwd = alt_rev = int(std::round(0.5 * (maj_fwd + maj_rev)));
+    }
+
+    double fs = -10 * log10(fisher_exact_test(maj_fwd, maj_rev, alt_fwd, alt_rev));
+    // 应对'全 major allele' 或者是 '全 alt allele'
     if (std::isinf(fs)) {
         fs = 10000;
     } else if (fs == 0) {
@@ -53,11 +56,11 @@ StrandBiasInfo strand_bias(const std::string &ref_base,
 
     // Strand bias estimated by the Symmetric Odds Ratio test
     // https://software.broadinstitute.org/gatk/documentation/tooldocs/current/org_broadinstitute_gatk_tools_walkers_annotator_StrandOddsRatio.php
-    double sor = (ref_rev * alt_fwd > 0) ? (double)(ref_fwd * alt_rev) / (double)(ref_rev * alt_fwd): 10000;
+    double sor = (maj_rev * alt_fwd > 0) ? (double)(maj_fwd * alt_rev) / (double)(maj_rev * alt_fwd): 10000;
 
     StrandBiasInfo sbi;
-    sbi.ref_fwd = ref_fwd; sbi.ref_rev = ref_rev; 
-    sbi.alt_fwd = alt_fwd; sbi.alt_rev = alt_rev;
+    sbi.fwd = (alt_base == major_base) ? maj_fwd : alt_fwd;
+    sbi.rev = (alt_base == major_base) ? maj_rev : alt_rev;
     sbi.fs  = fs; 
     sbi.sor = sor;
 

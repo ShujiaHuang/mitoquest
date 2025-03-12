@@ -41,14 +41,11 @@ int main(int argc, char* argv[]) {
 
     std::string cmd(argv[1]);
     if (cmd == "caller") {
+        
         std::cout << "Commandline options: " + cmdline + "\n" << std::endl;
         try {
             MtVariantCaller caller(argc-1, argv+1);
-            if (!caller.run()) {
-                std::cerr << "Error processing\n";
-                return 1;
-            }
-
+            caller.run();
         } catch (const std::exception& e) {
             std::cerr << "Error: " << e.what() << '\n';
             return 1;

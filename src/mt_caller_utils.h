@@ -66,8 +66,7 @@ struct AlignInfo {
 typedef robin_hood::unordered_map<uint32_t, AlignInfo> PosMap;  // key: ref_pos, value: AlignInfo
 
 typedef struct {
-    int ref_fwd, ref_rev;
-    int alt_fwd, alt_rev;
+    int fwd, rev;
     double fs;   // Phred-scaled p-value using Fisher's exact test to detect strand bias
     double sor;  // Strand bias estimated by the Symmetric Odds Ratio test
 } StrandBiasInfo;
@@ -78,6 +77,7 @@ struct VariantInfo {
     int total_depth;
     int qual;  // quality score
 
+    std::string major_allele;            // It may not be equal to REF seq
     std::vector<std::string> ref_bases;  // REF, could be a base or indels sequence  
     std::vector<std::string> alt_bases;  // ALT, could be a base or indels sequence
     std::vector<std::string> var_types;  // REF, SNV, INS, DEL, or MNV
