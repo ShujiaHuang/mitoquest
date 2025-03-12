@@ -111,7 +111,7 @@ std::string vcf_header_define(const std::string &ref_file_path, const std::vecto
         "##FORMAT=<ID=GQ,Number=1,Type=Integer,Description=\"Genotype Quality\">",
         "##FORMAT=<ID=DP,Number=1,Type=Integer,Description=\"Total read depth on the REF position\">",
         "##FORMAT=<ID=AD,Number=R,Type=Integer,Description=\"Allelic depths for the ref and alt alleles in the order listed\">",
-        "##FORMAT=<ID=HF,Number=A,Type=Float,Description=\"Heteroplasmy fraction for the ref and alt alleles in the order listed\">",
+        "##FORMAT=<ID=HF,Number=A,Type=Float,Description=\"Homoplasmy/Heteroplasmy fraction for the ref and alt alleles in the order listed\">",
         "##FORMAT=<ID=CI,Number=1,Type=String,Description=\"An ordered, semicolon delimited list of the 95\% confidence interval around the estimated heteroplasmy fraction for the ref and alt alleles in the order listed. format: ci_low,ci_up|ci_low,ci_up|...\">",
         "##FORMAT=<ID=SB,Number=1,Type=String,Description=\"An ordered, semicolon delimited list of read number of mapping strand orientation for ref and alt alleles in the order listed: ref_fwd,ref_rev,alt_fwd,alt_rev|...\">",
         "##FORMAT=<ID=FS,Number=A,Type=Float,Description=\"An ordered, comma delimited list of phred-scaled p-value using Fisher's exact test to detect strand bias\">",

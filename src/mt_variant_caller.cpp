@@ -1,6 +1,32 @@
 #include "mt_variant_caller.h"
 
 // MtVariantCaller implementation
+void MtVariantCaller::usage(const Config &config) {
+    std::cout << MITOQUEST_DESCRIPTION            << "\n"
+              << "Version: " << MITOQUEST_VERSION << "\n\n"
+            //   << "Author: "  << MITOQUEST_AUTHOR << " <" << MITOQUEST_AUTHOR_EMAIL << ">\n\n"
+
+              << "Usage: mitoquest caller [options] -f ref.fa -o output.vcf.gz in1.bam [in2.bam ...]\n\n"
+              << "Required options:\n"
+              << "  -f, --reference FILE       Reference FASTA file\n"
+              << "  -o, --output FILE          Output VCF file\n\n"
+
+              << "Optional options:\n"
+              << "  -b, --bam-list FILE        list of input BAM/CRAM filenames, one per line.\n"
+              << "                             REG format: chr:start-end (e.g.: chrM or chrM:1-1000,chrM:8000-8200)\n"
+            //   << "  -Q, --min-BQ INT           skip bases with base quality smaller than INT (default: " << config.min_baseq << ")\n"
+              << "  -q, --min-MQ INT           skip alignments with mapQ smaller than INT (default: " << config.min_mapq  << ")\n"
+              << "  -r, --regions REG[,...]    Comma separated list of regions in which to process (default: entire genome).\n"
+              << "  -p, --pairs-map-only       Only use the paired reads which mapped to the some chromosome.\n"
+              << "  -P, --proper-pairs-only    Only use properly paired reads.\n"
+              << "  --filename-has-samplename  If the name of BAM/CRAM is something like 'SampleID.xxxx.bam', set this\n"
+              << "                             argrument could save a lot of time during get the sample id from BAMfile.\n"
+              << "  -j, --threshold FLOAT      Heteroplasmy threshold (default: " << config.heteroplasmy_threshold << ")\n"
+              << "  -c, --chunk INT            Chunk size for parallel processing (default: " << config.chunk_size << ")\n"
+              << "  -t, --threads INT          Number of threads (default: " << config.thread_count << ")\n"
+              << "  -h, --help                 Print this help message.\n\n";
+}
+
 MtVariantCaller::MtVariantCaller(int argc, char* argv[]) {
 
     Config config;
@@ -19,12 +45,12 @@ MtVariantCaller::MtVariantCaller(int argc, char* argv[]) {
         {"output",             required_argument, 0, 'o'},
 
         {"bam-list",           optional_argument, 0, 'b'},
-        {"regions",            optional_argument, 0, 'r'},
-        {"min-MQ",             optional_argument, 0, 'q'},
         // {"min-BQ",             optional_argument, 0, 'Q'},
-        {"threads",            optional_argument, 0, 't'},
-        {"threshold",          optional_argument, 0, 'j'},
+        {"min-MQ",             optional_argument, 0, 'q'},
+        {"regions",            optional_argument, 0, 'r'},
         {"chunk",              optional_argument, 0, 'c'},
+        {"threshold",          optional_argument, 0, 'j'},
+        {"threads",            optional_argument, 0, 't'},
 
         {"pairs-map-only",          no_argument, 0, 'p'}, // 小写 p
         {"proper-pairs-only",       no_argument, 0, 'P'},
@@ -36,30 +62,30 @@ MtVariantCaller::MtVariantCaller(int argc, char* argv[]) {
     };
 
     int opt;
-    std::vector<std::string> bam_filelist;
-    while ((opt = getopt_long(argc, argv, "f:b:o:r:q:c:j:t:pPh", MT_CMDLINE_LOPTS, NULL)) != -1) {
+    std::vector<std::string> bv;
+    while ((opt = getopt_long(argc, argv, "f:b:o:q:r:c:j:t:pPh", MT_CMDLINE_LOPTS, NULL)) != -1) {
         switch (opt) {
             case 'f': config.reference_file = optarg;                    break;
             case 'o': config.output_file    = optarg;                    break;
             case 'b': 
-                bam_filelist = ngslib::get_firstcolumn_from_file(optarg);
-                config.bam_files.insert(
-                    config.bam_files.end(), 
-                    bam_filelist.begin(), 
-                    bam_filelist.end()
-                );
+                bv = ngslib::get_firstcolumn_from_file(optarg);
+                config.bam_files.insert(config.bam_files.end(), 
+                                        bv.begin(), bv.end());
                 break;
 
-            case 'r': config.calling_regions         = optarg;            break;
+            // case 'Q': config.min_baseq            = std::atoi(optarg); break;
             case 'q': config.min_mapq                = std::atoi(optarg); break;
-            // case 'Q': config.min_baseq               = std::atoi(optarg); break;
-            case 'p': config.pairs_map_only          = true;              break;
-            case 'P': config.proper_pairs_only       = true;              break;
-            case '1': config.filename_has_samplename = true;              break;
+            case 'r': config.calling_regions         = optarg;            break;
             case 'c': config.chunk_size              = std::atoi(optarg); break;
             case 'j': config.heteroplasmy_threshold  = std::atof(optarg); break;
             case 't': config.thread_count            = std::atoi(optarg); break;
-            case 'h': usage(config); exit(0);
+
+            case 'p': config.pairs_map_only          = true; break;
+            case 'P': config.proper_pairs_only       = true; break;
+            case '1': config.filename_has_samplename = true; break;
+            case 'h': 
+                usage(config); 
+                exit(0);
             
             default:
                 std::cerr << "Unknown argument: " << opt << std::endl;
@@ -105,7 +131,7 @@ MtVariantCaller::MtVariantCaller(int argc, char* argv[]) {
         exit(1);
     }
 
-    // Output the commandline options "f:b:o:r:q:c:j:t:pPh"
+    // Output the commandline options
     std::cout <<
         "[INFO] Arguments: "
         "mitoquest caller -f " + config.reference_file + 
@@ -121,50 +147,13 @@ MtVariantCaller::MtVariantCaller(int argc, char* argv[]) {
         << config.bam_files.size() << " bamfiles in total]. \n" << std::endl;
 
     // set parameters
-    _config = config;
-
-    // load fasta
-    reference = _config.reference_file;
+    _config   = config;
+    reference = _config.reference_file; // load fasta
     _get_calling_interval();
-    
     // _print_calling_interval();
 
     // keep the order of '_samples_id' as the same as input bamfiles
     _get_sample_id_from_bam();
-}
-
-MtVariantCaller::~MtVariantCaller() {
-    // 析构函数的实现，如果不需要特殊操作，则为空
-}
-
-void MtVariantCaller::usage(const Config &config) {
-    std::cout << MITOQUEST_DESCRIPTION            << "\n"
-              << "Version: " << MITOQUEST_VERSION << "\n\n"
-            //   << "Author: "  << MITOQUEST_AUTHOR << " <" << MITOQUEST_AUTHOR_EMAIL << ">\n\n"
-
-              << "Usage: mitoquest caller [options] -f ref.fa -o output.vcf.gz in1.bam [in2.bam ...]\n\n"
-              << "Required options:\n"
-              << "  -f, --reference FILE       Reference FASTA file\n"
-              << "  -o, --output FILE          Output VCF file\n\n"
-
-              << "Optional options:\n"
-              << "  -b, --bam-list FILE        list of input BAM/CRAM filenames, one per line.\n"
-              << "  -r, --regions REG[,...]    Comma separated list of regions in which to process (default: entire genome).\n"
-              << "                             REG format: chr:start-end (e.g.: chrM or chrM:1-1000,chrM:8000-8200)\n"
-              << "  -q, --min-MQ INT           skip alignments with mapQ smaller than INT (default: " << config.min_mapq  << ")\n"
-            //   << "  -Q, --min-BQ INT           skip bases with base quality smaller than INT (default: " << config.min_baseq << ")\n"
-              << "  -p, --pairs-map-only       Only use the paired reads which mapped to the some chromosome.\n"
-              << "  -P, --proper-pairs-only    Only use properly paired reads.\n"
-              << "  --filename-has-samplename  If the name of bamfile is something like 'SampleID.xxxx.bam', set this\n"
-              << "                             argrument could save a lot of time during get the sample id from BAMfile.\n"
-              << "  -j, --threshold FLOAT      Heteroplasmy threshold (default: " << config.heteroplasmy_threshold << ")\n"
-              << "  -c, --chunk INT            Chunk size for parallel processing (default: " << config.chunk_size << ")\n"
-              << "  -t, --threads INT          Number of threads (default: " << config.thread_count << ")\n"
-              << "  -h, --help                 Print this help message.\n\n";
-}
-
-bool MtVariantCaller::run() {
-    return _caller_process();
 }
 
 void MtVariantCaller::_get_sample_id_from_bam() {
@@ -243,10 +232,11 @@ void MtVariantCaller::_get_calling_interval() {
     }
 
     _calling_intervals.clear();
-    // split region into small pieces by chunk_size
     for (size_t i(0); i < regions.size(); ++i) {
+
         uint32_t total_length = regions[i].end - regions[i].start + 1;
         for (uint32_t j(0); j < total_length; j += _config.chunk_size) {
+            // split region into small pieces by chunk_size
             uint32_t start = regions[i].start + j;
             uint32_t end = std::min(regions[i].end, start + _config.chunk_size - 1);
             _calling_intervals.push_back(GenomeRegion(regions[i].ref_id, start, end));
@@ -286,14 +276,11 @@ GenomeRegion MtVariantCaller::_make_genome_region(std::string gregion) {
 
 void MtVariantCaller::_print_calling_interval() {
 
-    std::string ref_id;
-    uint32_t reg_start, reg_end;
     std::cout << "---- Calling Intervals ----\n";
     for (size_t i(0); i < _calling_intervals.size(); ++i) {
-        std::cout << i+1 << " - " << _calling_intervals[i].ref_id << ":"
-                  << _calling_intervals[i].start << "-" << _calling_intervals[i].end << "\n";
+        std::cout << i+1 << " - " << _calling_intervals[i].to_string() << "\n";
     }
-    std::cout << "\n";
+    std::cout << std::endl;
     return;
 }
 
@@ -312,38 +299,36 @@ bool MtVariantCaller::_caller_process() {
     bool is_success = true;
     std::vector<std::string> sub_vcf_files;
     for (auto &gr: _calling_intervals) {
-        // 按样本进行 pileup，在函数里按样本进行多线程，记录每个样本在每个位点上的 pileup 信息
-        std::vector<PosVariantMap> samples_pileup_v;
+
+        std::vector<PosVariantMap> samples_pileup_v;   // 按样本进行多线程，记录每个样本在每个位点上的 pileup 信息
         samples_pileup_v.reserve(_samples_id.size());  // reserve the memory before push_back
 
         //////////////////////////////////////////////
         bool is_empty = _fetch_base_in_region(gr, samples_pileup_v);
         if (is_empty) {
-            std::cerr << "[WARNING] No reads in region: " << gr.ref_id << ":"
-                      << gr.start << "-" << gr.end << "\n";
+            std::cerr << "[WARNING] No reads in region: " << gr.to_string() << "\n";
             continue;
         }
 
         //////////////////////////////////////////////
         // Call variants in parallel
-        std::string regstr = gr.ref_id + "_" + std::to_string(gr.start) + "_" + std::to_string(gr.end);
-        std::string sub_vcf_fn = cache_outdir + "/" + stem_bn + "." + regstr + ".vcf.gz";
+        std::string rgstr = gr.ref_id + "_" + std::to_string(gr.start) + "_" + std::to_string(gr.end);
+        std::string sub_vcf_fn = cache_outdir + "/" + stem_bn + "." + rgstr + ".vcf.gz";
         sub_vcf_files.push_back(sub_vcf_fn);
 
         is_empty = _variant_discovery(gr, samples_pileup_v, sub_vcf_fn);
         if (is_empty) {
-            std::cout << "[INFO] No variants in region: " << gr.ref_id << ":"
-                      << gr.start << "-" << gr.end << "\n";
+            std::cout << "[INFO] No variants in region: " << gr.to_string() << "\n";
         }
     }
 
-    // Merge VCF
+    // Merge multiple VCFs in one
     std::string header = vcf_header_define(_config.reference_file, _samples_id);
     merge_file_by_line(sub_vcf_files, _config.output_file, header, IS_DELETE_CACHE);
 
     const tbx_conf_t bf_tbx_conf = {1, 1, 2, 0, '#', 0};  // {preset, seq col, beg col, end col, header-char, skip-line}
     if ((ngslib::suffix_name(_config.output_file) == ".gz") &&          // create index
-        tbx_index_build(_config.output_file.c_str(), 0, &bf_tbx_conf))  // file suffix is ".tbi"
+        tbx_index_build(_config.output_file.c_str(), 0, &bf_tbx_conf))  // file suffix will be ".tbi"
     {
         throw std::runtime_error("tbx_index_build failed: Is the file bgzip-compressed? "
                                  "Check this file: " + _config.output_file + "\n");
@@ -460,16 +445,18 @@ PosVariantMap call_pileup_in_sample(const std::string sample_bam_fn,
 {
     // The expend size of region, 100bp is enough.
     static const uint32_t REG_EXTEND_SIZE = 100;
-    uint32_t extend_start     = gr.start > REG_EXTEND_SIZE ? gr.start - REG_EXTEND_SIZE : 1;
-    uint32_t extend_end       = gr.end + REG_EXTEND_SIZE;
-    std::string extend_regstr = gr.ref_id + ":" + std::to_string(extend_start) + "-" + std::to_string(extend_end);
+    GenomeRegion gr_extend(gr.ref_id,                                                    // Reference id
+                           gr.start > REG_EXTEND_SIZE ? gr.start - REG_EXTEND_SIZE : 1,  // start
+                           gr.end + REG_EXTEND_SIZE);                                    // end
+    std::string rg_extend_str = gr_extend.to_string(); // chr:start-end
 
-    // 位点信息存入该变量, 且由于是按区间读取比对数据，key 值无需再包含 ref_id，因为已经不言自明
-    PosMap sample_posinfo_map; // key: position, value: alignment information
+    // 位点信息存入该变量, 且由于是按区间读取比对数据，key 值无需包含 ref_id，已经不言自明
     ngslib::Bam bf(sample_bam_fn, "r", config.reference_file); // open bamfile in reading mode (one sample per bamfile)
-    if (bf.fetch(extend_regstr)) { // Set 'bf' only fetch alignment reads in 'exp_regstr'.
+    PosMap sample_posinfo_map;     // key: position, value: alignment information
+    if (bf.fetch(rg_extend_str)) { // Set 'bf' only fetch alignment reads in 'rg_extend_str'.
         hts_pos_t map_ref_start, map_ref_end;  // hts_pos_t is uint64_t
         std::vector<ngslib::BamRecord> sample_target_reads; 
+
         ngslib::BamRecord al;  // alignment read
         while (bf.next(al) >= 0) {  // -1 => hit the end of alignement file.
             if (al.mapq() < config.min_mapq || al.is_duplicate() || al.is_qc_fail() ||
@@ -502,18 +489,20 @@ PosVariantMap call_pileup_in_sample(const std::string sample_bam_fn,
         }
     }
 
-    // 信息抽提：先计算并返回每个样本在该区间里每一个位点的潜在突变信息（类似 pileup or gvcf），若不如此处理，内存吃不消
-    // 这样做的好处还可为多样本 joint-calling 打下基础.
-    PosVariantMap sample_pileup_map;
+    // 信息抽提：计算并返回每个样本在该区间里每一个位点的最佳碱基组合信息（类似 pileup or gvcf），省内存
+    // 同时，这样做的好处是可为多样本 joint-calling 打下基础.
+    PosVariantMap sample_pileup_m;
     for (auto &pos_align_info: sample_posinfo_map) {
+        // Call basetype to infer the best bases combination for each mapping position
         VariantInfo vi = basetype_caller_unit(pos_align_info.second, config.heteroplasmy_threshold);
 
         // key: position, value: variant information, 由于是按区间抽提，key 值无需再包含 ref_id，因为已经不言自明 
-        sample_pileup_map.insert({pos_align_info.first, vi});
+        sample_pileup_m.insert({pos_align_info.first, vi});
     }
 
-    // return the variant information for all the ref_pos of the sample in the region, no matter its a variant or not.
-    return sample_pileup_map;
+    // Return the variant information for all the ref_pos of the sample in the region, 
+    // no matter its a variant or not.
+    return sample_pileup_m;
 }
 
 void seek_position(const std::string &fa_seq,   // must be the whole chromosome sequence
@@ -614,7 +603,7 @@ VariantInfo basetype_caller_unit(const AlignInfo &pos_align_info, double min_af)
 
     BaseType::BatchInfo smp_bi(pos_align_info.ref_id, pos_align_info.ref_pos);
     for (auto &ab: pos_align_info.align_bases) {
-        smp_bi.ref_bases.push_back(ab.ref_base);
+        smp_bi.ref_bases.push_back(ab.ref_base);  // REF may be single base for SNV or a sub-seq for Indel
         smp_bi.mapqs.push_back(ab.mapq);
         smp_bi.map_strands.push_back(ab.map_strand);
 
@@ -636,13 +625,13 @@ VariantInfo get_pileup(const BaseType &bt, const BaseType::BatchInfo *smp_bi) {
         std::string b = bt.get_active_bases()[i];
         std::string ref_base = bt.get_bases2ref().at(b);
 
-        vi.ref_bases.push_back(ref_base);
-        vi.alt_bases.push_back(b);
-        vi.depths.push_back(bt.get_base_depth(b));
-        vi.freqs.push_back(bt.get_lrt_af(b));
-
         std::string upper_ref_base(ref_base);
         std::transform(upper_ref_base.begin(), upper_ref_base.end(), upper_ref_base.begin(), ::toupper);
+
+        vi.ref_bases.push_back(ref_base);  // could only be raw ref-base
+        vi.alt_bases.push_back(b);         // could be ref and non-ref alleles
+        vi.depths.push_back(bt.get_base_depth(b));
+        vi.freqs.push_back(bt.get_lrt_af(b));
 
         if (b == upper_ref_base) {
             vi.var_types.push_back("REF");
@@ -670,8 +659,8 @@ VariantInfo get_pileup(const BaseType &bt, const BaseType::BatchInfo *smp_bi) {
 }
 
 VCFRecord call_variant_in_pos(std::vector<VariantInfo> vvi) {
-    // 1. call the variant by the integrated information
-    // 2. output the variant information to the VCF file
+    // 1. Call the variant by the integrated information
+    // 2. Return the variant information to in VCF format
     if (vvi.empty()) {
         return VCFRecord(); // Return empty record if no variants
     }

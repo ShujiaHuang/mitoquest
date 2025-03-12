@@ -21,29 +21,36 @@
 
 #include <htslib/kfunc.h>
 
-template<class ForwardIterator>
+template<typename ForwardIterator>
 inline size_t argmin(ForwardIterator first, ForwardIterator last) {
+    if (first == last) {
+        throw std::invalid_argument("Empty range");
+    }
     return std::distance(first, std::min_element(first, last));
 }
 
-template<class ForwardIterator>
+template<typename ForwardIterator>
 inline size_t argmax(ForwardIterator first, ForwardIterator last) {
+    if (first == last) {
+        throw std::invalid_argument("Empty range");
+    }
     return std::distance(first, std::max_element(first, last));
 }
 
 // sum the value for all the data which could call '+' operator
 template<typename T> // T must be a numeric type
-T sum(const std::vector<T> &value) {
-    T d(0);
-    for (auto x: value) { d += x; }
-    
-    return d;
+typename std::enable_if<std::is_arithmetic<T>::value, T>::type
+sum(const std::vector<T> &value) {
+    return std::accumulate(value.begin(), value.end(), T(0));
 }
 
 // mean the value for all the data which could call '+' operator
 template<typename T>  // T must be a numeric type
 double mean(const std::vector<T> &value) {
-    return sum(value) / value.size();
+    if (value.empty()) {
+        throw std::invalid_argument("Cannot calculate mean of empty vector");
+    }
+    return static_cast<double>(sum(value)) / value.size();
 }
 
 // median the value for all the data which could call '+' operator
@@ -83,22 +90,47 @@ std::pair<double, double> calculate_confidence_interval(int x, int n, double con
 
 // Function for chi^2 test
 double chi2_test(double chi_sqrt_value, double degree_of_freedom);
-
 double norm_dist(double x);
 
+enum class TestSide {
+    LEFT_SIDED,
+    RIGHT_SIDED,
+    TWO_SIDED
+};
 /**
  *  Perform a Fisher exact test on a 2x2 contingency table. 
  *  The null hypothesis is that the true odds ratio of the 
  *  populations underlying the observations is one.
+ *  
+ *  Mathmatical note: https://mathworld.wolfram.com/FishersExactTest.html
+ * 
+ *  @param n11 Value in cell (1,1)
+ *  @param n12 Value in cell (1,2)
+ *  @param n21 Value in cell (2,1)
+ *  @param n22 Value in cell (2,2)
+ *  @param test_side Type of test to perform (left-sided, right-sided, or two-sided)
+ *  @return p-value for the specified test
  * 
  *    n11  n12  | n1_
  *    n21  n22  | n2_
  *   -----------+----
  *    n_1  n_2  | n
+ * 
+ *  Example: https://gatk.broadinstitute.org/hc/en-us/articles/360035532152-Fisher-s-Exact-Test
+ * 
  */
-double fisher_exact_test(int n11, int n12, int n21, int n22, 
-                         bool is_leftside=false, bool is_rightside=false, 
-                         bool is_twoside=true);
+double fisher_exact_test(int n11, int n12, int n21, int n22, TestSide test_side = TestSide::TWO_SIDED);
+
+struct ContingencyTable {
+    int n11, n12, n21, n22;
+    ContingencyTable(int a, int b, int c, int d) 
+        : n11(a), n12(b), n21(c), n22(d) {
+        if (n11 < 0 || n12 < 0 || n21 < 0 || n22 < 0) {
+            throw std::invalid_argument("Contingency table entries must be non-negative");
+        }
+    }
+};
+double fisher_exact_test(const ContingencyTable& table, TestSide test_side = TestSide::TWO_SIDED);
 
 double wilcoxon_ranksum_test(const std::vector<double>& sample1, const std::vector<double>& sample2);
 

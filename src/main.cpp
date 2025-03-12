@@ -26,8 +26,8 @@ static int usage() {
 }
 
 int main(int argc, char* argv[]) {
-    clock_t cpu_start_time = clock();
     time_t real_start_time = time(0);
+    clock_t cpu_start_time = clock();
 
     if (argc < 2) {
         return usage();
@@ -41,7 +41,7 @@ int main(int argc, char* argv[]) {
 
     std::string cmd(argv[1]);
     if (cmd == "caller") {
-        std::cout << "Commandline options: " << cmdline << "\n" << std::endl;
+        std::cout << "Commandline options: " + cmdline + "\n" << std::endl;
         try {
             MtVariantCaller caller(argc-1, argv+1);
             if (!caller.run()) {
@@ -58,14 +58,15 @@ int main(int argc, char* argv[]) {
         return usage();
 
     } else {
-        std::cout << "\nError: Unrecognizable option: " << cmd + "\n" << std::endl;
+        std::cout << "\nError: Unrecognizable option: " + cmd << std::endl;
         return 1;
     }
 
     // Time information
     time_t now = time(0);
     std::string ct(ctime(&now));
-    ct.pop_back(); // rm the trailing '\n' put by `asctime`
+    ct.pop_back();  // rm the trailing '\n' put by `asctime`
+
     std::cout << "\n[INFO] " + ct + ". Processes are all done, "
               << difftime(now, real_start_time) << " (CPU time: "
               << std::round((clock() - cpu_start_time) / CLOCKS_PER_SEC) 

@@ -40,15 +40,19 @@ struct GenomeRegion {
                                         std::to_string(start) + "-" + std::to_string(end));
         }
     };
+
+    std::string to_string() const {
+        return ref_id + ":" + std::to_string(start) + "-" + std::to_string(end);
+    }
 };
 
 struct AlignBase {
     std::string ref_base;
     std::string read_base; // read base (could be a base or indels sequence)
-    char base_qual;   // read base quality, get mean quality of seq if it is indels
-    int rpr;          // read position rank, the first base is 1, record the leftmost position for indels sequence
-    int mapq;         // mapping quality
-    char map_strand;  // mapping reference strand, should be one of '-', '+' or '*'
+    char base_qual;        // read base quality, get mean quality of seq if it is indels
+    int rpr;               // read position rank, the first base is 1, record the leftmost position for indels sequence
+    int mapq;              // mapping quality
+    char map_strand;       // mapping reference strand, should be one of '-', '+' or '*'
 };
 
 struct AlignInfo {
@@ -83,8 +87,8 @@ struct VariantInfo {
     std::vector<StrandBiasInfo> strand_bias;    // strand bias for each type of base
 
     VariantInfo() : ref_id(""), ref_pos(0), total_depth(0), qual(0) {};
-    VariantInfo(const std::string& rid, uint32_t pos, int dp, double qs) : 
-        ref_id(rid), ref_pos(pos), total_depth(dp), qual(qs) {};
+    VariantInfo(const std::string& rid, uint32_t pos, int dp, double qs) 
+        : ref_id(rid), ref_pos(pos), total_depth(dp), qual(qs) {};
 };
 typedef robin_hood::unordered_map<uint32_t, VariantInfo> PosVariantMap;  // key: ref_pos, value: VariantInfo
 

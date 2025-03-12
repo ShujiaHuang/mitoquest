@@ -14,7 +14,6 @@
 #include <ctime>  // clock, time_t
 
 #include "version.h"
-
 #include "io/fasta.h"
 #include "io/bam.h"
 #include "io/iobgzf.h"
@@ -42,27 +41,28 @@ public:
         bool proper_pairs_only;       // only use properly paired reads
         bool filename_has_samplename; // use filename as sample name
     };
-    ngslib::Fasta reference;  // reference fasta object
+    ngslib::Fasta reference;          // reference fasta object
 
     explicit MtVariantCaller(int argc, char* argv[]);
-    ~MtVariantCaller();
+    ~MtVariantCaller() { /*析构函数的实现，如果不需要特殊操作，则为空*/ }
 
     // Main processing function
     void usage(const Config &config);
-    bool run();
+    bool run() {
+        return _caller_process();
+    }
 
 private:
     // Prevent copying (C++11 style)
     MtVariantCaller(const MtVariantCaller&) = delete;
     MtVariantCaller& operator=(const MtVariantCaller&) = delete;
 
-    // Member variables
     Config _config;                                // command line options
     std::vector<std::string> _samples_id;          // sample ID of all alignment files (BAM/CRAM/SAM)
     std::vector<GenomeRegion> _calling_intervals;  // vector of calling regions
 
     // Helper methods
-    void _get_calling_interval();  // load the calling region from input
+    void _get_calling_interval();                  // load the calling region from input
     void _print_calling_interval();
     void _get_sample_id_from_bam();
     GenomeRegion _make_genome_region(std::string gregion);
@@ -94,6 +94,7 @@ VariantInfo basetype_caller_unit(const AlignInfo &pos_align_info, double min_af)
  * @param bt BaseType
  * @param smp_bi BaseType::BatchInfo 
  * @return VariantInfo 
+ * 
  */
 VariantInfo get_pileup(const BaseType &bt, const BaseType::BatchInfo *smp_bi);
 VCFRecord call_variant_in_pos(std::vector<VariantInfo> variant_infos);

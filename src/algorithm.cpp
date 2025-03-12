@@ -84,17 +84,45 @@ double norm_dist(double x) {
     return kf_erfc(double(x / std::sqrt(2.0))) / 2.0;
 }
 
-double fisher_exact_test(int n11, int n12, int n21, int n22, 
-                         bool is_leftside, bool is_rightside,
-                         bool is_twoside)
-{
-    double left_pvalue, right_pvalue, twoside_pvalue;
-    double v = kt_fisher_exact(n11, n12, n21, n22, 
-                               &left_pvalue, 
-                               &right_pvalue, 
-                               &twoside_pvalue);
+double fisher_exact_test(int n11, int n12, int n21, int n22, TestSide test_side) {
+    // Input validation
+    if (n11 < 0 || n12 < 0 || n21 < 0 || n22 < 0) {
+        throw std::invalid_argument("Contingency table entries must be non-negative");
+    }
 
-    return (is_twoside) ? twoside_pvalue : (is_leftside ? left_pvalue : right_pvalue);
+    double left_pvalue, right_pvalue, twoside_pvalue;
+    kt_fisher_exact(n11, n12, n21, n22, 
+                    &left_pvalue, 
+                    &right_pvalue, 
+                    &twoside_pvalue);
+
+    double pvalue = -1.0;
+    switch(test_side) {
+        case TestSide::LEFT_SIDED:  pvalue = left_pvalue;    break;
+        case TestSide::RIGHT_SIDED: pvalue = right_pvalue;   break;
+        case TestSide::TWO_SIDED:   pvalue = twoside_pvalue; break;
+        default:
+            throw std::invalid_argument("Invalid test side specification");
+    }
+
+    return pvalue; // -1 is an error
+}
+
+double fisher_exact_test(const ContingencyTable& table, TestSide test_side) {
+    double left_pvalue, right_pvalue, twoside_pvalue;
+    kt_fisher_exact(table.n11, table.n12, table.n21, table.n22,
+                    &left_pvalue, &right_pvalue, &twoside_pvalue);
+    
+    double pvalue = -1.0;
+    switch(test_side) {
+        case TestSide::LEFT_SIDED:  pvalue = left_pvalue;    break;
+        case TestSide::RIGHT_SIDED: pvalue = right_pvalue;   break;
+        case TestSide::TWO_SIDED:   pvalue = twoside_pvalue; break;
+        default:
+            throw std::invalid_argument("Invalid test side specification");
+    }
+
+    return pvalue; // -1 is an error
 }
 
 double wilcoxon_ranksum_test(const std::vector<double>& sample1, const std::vector<double>& sample2) {
@@ -188,13 +216,6 @@ void e_step(const std::vector<double> &obs_allele_freq,
     return;
 }
 
-/**
- * @brief Update observed allele frequency inplace.
- * 
- * @param ind_allele_post_prob 2d-array, n x _UNIQ_BASES.size() matrix.
- * @param obs_allele_freq      1d-array, 1 x _UNIQ_BASES.size(). update the allele frequence inplace and return. 
- * 
- */
 void m_step(const std::vector<std::vector<double>> &ind_allele_post_prob, std::vector<double> &obs_allele_freq) {
     size_t n_sample = ind_allele_post_prob.size();  // depth
     size_t n_allele = ind_allele_post_prob[0].size();
@@ -216,6 +237,13 @@ void EM(const std::vector<std::vector<double>> &ind_allele_likelihood, // n x _U
         std::vector<double> &log_marginal_likelihood,  // return value
         int iter_num, const float epsilon)
 {
+    if (iter_num <= 0) {
+        throw std::invalid_argument("Iteration number must be positive");
+    }
+    if (epsilon <= 0) {
+        throw std::invalid_argument("Epsilon must be positive");
+    }
+
     size_t n_sample = ind_allele_likelihood.size();
     size_t n_allele = obs_allele_freq.size();
 
