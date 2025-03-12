@@ -8,6 +8,22 @@
 
 #include "algorithm.h"
 
+// Example usage
+void fisher_exact_test_example() {
+    try {
+        // Using direct parameters
+        double p1 = fisher_exact_test(12, 5, 7, 10, TestSide::TWO_SIDED);
+        std::cout << "fisher_exact_test(12, 5, 7, 10, TestSide::TWO_SIDED): " << p1 << "\n";
+        
+        // Using ContingencyTable
+        ContingencyTable table(12, 5, 7, 10);
+        double p2 = fisher_exact_test(table, TestSide::LEFT_SIDED);
+        std::cout << "fisher_exact_test(table(12, 5, 7, 10), TestSide::LEFT_SIDED): " << p2 << "\n";
+        
+    } catch (const std::invalid_argument& e) {
+        std::cerr << "Error: " << e.what() << std::endl;
+    }
+}
 
 int main(int argc, char *argv[]) {
 
@@ -24,12 +40,16 @@ int main(int argc, char *argv[]) {
     std::cout << "wilcoxon_ranksum_test: " << ranksum_test_p << std::endl;
 
     // Fisher exact test
+    fisher_exact_test_example();
     double p = fisher_exact_test(345, 455, 260, 345);
     std::cout << "Fisher exact test: " << p << "\n";
-    std::cout << "Fisher exact test: " << fisher_exact_test(8, 4, 4, 9) << "\n";
-    std::cout << "Fisher exact test: " << fisher_exact_test(10, 5, 4, 9) << "\n";
-    std::cout << "Fisher exact test: " << fisher_exact_test(3, 4, 4, 5) << "\n";
-    std::cout << "Fisher exact test: " << fisher_exact_test(1, 1, 1, 1) << "\n";
+    std::cout << "Fisher exact test (8, 4, 4, 9) : " << fisher_exact_test(8, 4, 4, 9) << "\n";
+    std::cout << "Fisher exact test (4, 1, 2, 3) : " << fisher_exact_test(4, 1, 2, 3) << "\n";
+    std::cout << "Fisher exact test (3, 3, 2, 2) : " << fisher_exact_test(3, 3, 2, 2) << "\n";
+    std::cout << "Fisher exact test (2, 4, 3, 1) : " << fisher_exact_test(2, 4, 3, 1) << "\n";
+    std::cout << "Fisher exact test (5, 0, 1, 4) : " << fisher_exact_test(5, 0, 1, 4) << "\n";
+    std::cout << "Fisher exact test (3, 0, 0, 3) : " << fisher_exact_test(3, 0, 0, 3) << "\n";
+
 
 
     std::array<int, 7> numbers{ 2, 4, 8, 0, 6, -1, 3};
