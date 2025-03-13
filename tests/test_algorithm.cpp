@@ -50,6 +50,11 @@ int main(int argc, char *argv[]) {
     std::cout << "Fisher exact test (5, 0, 1, 4) : " << fisher_exact_test(5, 0, 1, 4) << "\n";
     std::cout << "Fisher exact test (3, 0, 0, 3) : " << fisher_exact_test(3, 0, 0, 3) << "\n";
 
+    std::cout << "Fisher exact test (89,353,41,0) : " << fisher_exact_test(89,353,41,0) << "\n";
+    std::cout << "Fisher exact test (89,353,221,221) : " << fisher_exact_test(89,353,221,221) << "\n";
+    std::cout << "Fisher exact test (221,221,89,353) : " << fisher_exact_test(89,353,221,221) << "\n";
+    std::cout << "Fisher exact test (527,391,459,459) : " << fisher_exact_test(527,391,459,459) << "\n";
+
 
 
     std::array<int, 7> numbers{ 2, 4, 8, 0, 6, -1, 3};

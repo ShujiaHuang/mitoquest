@@ -59,7 +59,6 @@ private:
 
     // _UNIQ_BASES likelihood vector for echo base string
     std::vector<std::vector<double>> _allele_likelihood; // 2d-array, n x _UNIQ_BASES.size() matrix, n is total_depth.
-    // std::vector<double> _qual_pvalue;      // n x 1 matrix, n is total depth.
     
     // init the base likelihood by input bases
     std::vector<double> _set_initial_freq(const std::vector<std::string> &bases);

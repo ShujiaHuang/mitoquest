@@ -626,9 +626,6 @@ VariantInfo get_pos_pileup(const BaseType &bt, const BaseType::BatchInfo *smp_bi
         std::string b = bt.get_active_bases()[i];
         std::string ref_base = bt.get_bases2ref().at(b);
 
-        std::string upper_ref_base(ref_base);
-        std::transform(upper_ref_base.begin(), upper_ref_base.end(), upper_ref_base.begin(), ::toupper);
-
         vi.ref_bases.push_back(ref_base);  // could only be raw ref-base
         vi.alt_bases.push_back(b);         // could be ref or non-ref alleles
         vi.depths.push_back(bt.get_base_depth(b));
@@ -638,6 +635,9 @@ VariantInfo get_pos_pileup(const BaseType &bt, const BaseType::BatchInfo *smp_bi
             vi.major_allele    = b;
             major_allele_depth = bt.get_base_depth(b);
         }
+
+        std::string upper_ref_base(ref_base);
+        std::transform(upper_ref_base.begin(), upper_ref_base.end(), upper_ref_base.begin(), ::toupper);
 
         if (b == upper_ref_base) {
             vi.var_types.push_back("REF");
