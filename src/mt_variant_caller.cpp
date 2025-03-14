@@ -816,6 +816,9 @@ VCFRecord call_variant_in_pos(std::vector<VariantInfo> vvi, double hf_cutoff) {
                     double hq = -10 * log10(fisher_exact_test(obs_major_allele_count, obs_minor_allele_count,
                                                               exp_major_allele_count, exp_minor_allele_count,
                                                               TestSide::LESS));
+                    if (std::isinf(hq)) {
+                        hq = 10000;
+                    }
                     hf_qual.push_back(int(hq));
                 }
             }
