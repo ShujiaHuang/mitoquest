@@ -55,6 +55,7 @@ private:
     MtVariantCaller(const MtVariantCaller&) = delete;
     MtVariantCaller& operator=(const MtVariantCaller&) = delete;
 
+    std::string _cmdline_string;
     Config _config;                                // command line options
     std::vector<std::string> _samples_id;          // sample ID of all alignment files (BAM/CRAM/SAM)
     std::vector<GenomeRegion> _calling_intervals;  // vector of calling regions
@@ -69,8 +70,8 @@ private:
     bool _fetch_base_in_region(const GenomeRegion genome_region, std::vector<PosVariantMap> &samples_pileup_v);
 
     // integrate the variant information of all samples in the region
-    bool _variant_discovery(const GenomeRegion genome_region, 
-                            const std::vector<PosVariantMap> &samples_pileup_v, 
+    bool _variant_discovery(const std::vector<PosVariantMap> &samples_pileup_v, 
+                            const GenomeRegion genome_region,
                             const std::string out_vcf_fn);
 };
 
@@ -95,7 +96,7 @@ VariantInfo basetype_caller_unit(const AlignInfo &pos_align_info, double min_af)
  * 
  */
 VariantInfo get_pos_pileup(const BaseType &bt, const BaseType::BatchInfo *smp_bi);
-VCFRecord call_variant_in_pos(std::vector<VariantInfo> variant_infos);
+VCFRecord call_variant_in_pos(std::vector<VariantInfo> variant_infos, double hf_cutoff);
 
 #endif // _MT_VARIANT_CALLER_H_
 

@@ -77,9 +77,9 @@ struct VariantInfo {
     int total_depth;
     int qual;  // quality score
 
-    std::string major_allele;            // It may not be equal to REF seq
-    std::vector<std::string> ref_bases;  // REF, could be a base or indels sequence  
-    std::vector<std::string> alt_bases;  // ALT, could be a base or indels sequence
+    size_t major_allele_idx;             // The index of major allele in `alt_bases` vector
+    std::vector<std::string> ref_bases;  // REF, it's raw REF alleles  
+    std::vector<std::string> alt_bases;  // ALT, it's REF and non-REF alleles
     std::vector<std::string> var_types;  // REF, SNV, INS, DEL, or MNV
     std::vector<int> depths;             // depth for each type of base
     std::vector<double> freqs;           // frequency for each type of base
@@ -206,7 +206,9 @@ double ref_vs_alt_ranksumtest(const char ref_base,
                               const std::vector<char> &bases,
                               const std::vector<char> &values);
 
-std::string vcf_header_define(const std::string &ref_file_path, const std::vector<std::string> &samples);
+std::string vcf_header_define(const std::string &ref_file_path, 
+                              const std::vector<std::string> &samples,
+                              const std::string other_comment);
 void merge_file_by_line(const std::vector<std::string> &infiles, const std::string &outfile,
                         std::string header, bool is_remove_tempfile);
 

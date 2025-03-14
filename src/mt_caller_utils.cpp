@@ -36,6 +36,7 @@ StrandBiasInfo strand_bias(const std::string &major_base,
             } else if (alt_base == bases[i]) {
                 ++alt_rev;
             }
+
         } else {
             throw std::runtime_error("[ERROR] Get strange strand symbol: " + std::to_string(strands[i]));
         }
@@ -107,7 +108,7 @@ double ref_vs_alt_ranksumtest(const char ref_base,
     return ref_vs_alt_ranksumtest(ref_base, alt_bases_string, bases, v);
 }
 
-std::string vcf_header_define(const std::string &ref_file_path, const std::vector<std::string> &samples) {
+std::string vcf_header_define(const std::string &ref_file_path, const std::vector<std::string> &samples, const std::string other_comment) {
     std::vector<std::string> header = {
         "##fileformat=VCFv4.2",
         "##FORMAT=<ID=GT,Number=1,Type=String,Description=\"Genotype\">",
@@ -115,8 +116,14 @@ std::string vcf_header_define(const std::string &ref_file_path, const std::vecto
         "##FORMAT=<ID=DP,Number=1,Type=Integer,Description=\"Total read depth on the REF position\">",
         "##FORMAT=<ID=AD,Number=R,Type=Integer,Description=\"Allelic depths for the ref and alt alleles in the order listed\">",
         "##FORMAT=<ID=HF,Number=A,Type=Float,Description=\"Homoplasmy/Heteroplasmy fraction for the ref and alt alleles in the order listed\">",
-        "##FORMAT=<ID=CI,Number=1,Type=String,Description=\"95\% confidence interval around the estimated homoplasmy/heteroplasmy fraction for the GT alleles in the order listed. format: ci_low,ci_up;ci_low,ci_up;...\">",
-        "##FORMAT=<ID=SB,Number=1,Type=String,Description=\"Allele-specific forward/reverse read counts for strand bias tests for the GT alleles in the order listed, separated by ';'. Format: fwd,rev;fwd,rev;...\">",
+        "##FORMAT=<ID=CI,Number=1,Type=String,Description=\"95\% confidence interval around the estimated homoplasmy/heteroplasmy fraction for "
+        "the GT alleles in the order listed. format: ci_low,ci_up;ci_low,ci_up;...\">",
+        "##FORMAT=<ID=HQ,Number=A,Type=Integer,Description=\"Heteroplasmy Quality, phred quality scores of pvalue of one-tail Fisher exact test "
+        "to determine if the rate of heteroplasmy is significantly greater than user defined cutoff (-j), an ordered list of the GT alleles. "
+        "[CAUTION] In most cases, the minor allele corresponds to the heteroplasmic allele; therefore, the HQ at the minor allele position "
+        "reflects the quality value of heterozygous allele mostly.\">",
+        "##FORMAT=<ID=SB,Number=1,Type=String,Description=\"Allele-specific forward/reverse read counts for strand bias tests for the GT alleles in "
+        "the order listed, separated by ';'. Format: fwd,rev;fwd,rev;...\">",
         "##FORMAT=<ID=FS,Number=A,Type=Float,Description=\"An ordered, comma delimited list of phred-scaled p-value using Fisher's exact test to detect strand bias\">",
         "##FORMAT=<ID=SOR,Number=A,Type=Float,Description=\"An ordered, comma delimited list of strand bias estimated by the Symmetric Odds Ratio test\">",
         "##FORMAT=<ID=VT,Number=1,Type=String,Description=\"An ordered, comma delimited list of variant type: REF, SNV, INS, DEL, or MNV\">",
@@ -134,8 +141,8 @@ std::string vcf_header_define(const std::string &ref_file_path, const std::vecto
                           ",assembly=" + ref_file_path + ">");
     }
     header.insert(header.end(), contigs.begin(), contigs.end());
-
     header.push_back("##reference=file://" + ngslib::abspath(ref_file_path));
+    if (!other_comment.empty()) header.push_back(other_comment);
     header.push_back("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t" + ngslib::join(samples, "\t"));
 
     return ngslib::join(header, "\n");

@@ -21,7 +21,7 @@ void MtVariantCaller::usage(const Config &config) {
               << "  -P, --proper-pairs-only    Only use properly paired reads.\n"
               << "  --filename-has-samplename  If the name of BAM/CRAM is something like 'SampleID.xxxx.bam', set this\n"
               << "                             argrument could save a lot of time during get the sample id from BAMfile.\n"
-              << "  -j, --threshold FLOAT      Heteroplasmy threshold (default: " << config.heteroplasmy_threshold << ")\n"
+              << "  -j, --het-threshold FLOAT  Heteroplasmy threshold (default: " << config.heteroplasmy_threshold << ")\n"
               << "  -c, --chunk INT            Chunk size for parallel processing (default: " << config.chunk_size << ")\n"
               << "  -t, --threads INT          Number of threads (default: " << config.thread_count << ")\n"
               << "  -h, --help                 Print this help message.\n\n";
@@ -49,7 +49,7 @@ MtVariantCaller::MtVariantCaller(int argc, char* argv[]) {
         {"min-MQ",             optional_argument, 0, 'q'},
         {"regions",            optional_argument, 0, 'r'},
         {"chunk",              optional_argument, 0, 'c'},
-        {"threshold",          optional_argument, 0, 'j'},
+        {"het-threshold",      optional_argument, 0, 'j'},
         {"threads",            optional_argument, 0, 't'},
 
         {"pairs-map-only",          no_argument, 0, 'p'}, // 小写 p
@@ -60,6 +60,12 @@ MtVariantCaller::MtVariantCaller(int argc, char* argv[]) {
         // must set this value, to get the correct value from getopt_long
         {0, 0, 0, 0}
     };
+
+    // Save the complete command line options in VCF header
+    _cmdline_string = "##mitoquest_caller_command=";
+    for (size_t i = 0; i < argc; ++i) {
+        _cmdline_string += " " + std::string(argv[i]);
+    }
 
     int opt;
     std::vector<std::string> bv;
@@ -315,17 +321,17 @@ void MtVariantCaller::_caller_process() {
         std::string sub_vcf_fn = cache_outdir + "/" + stem_bn + "." + rgstr + ".vcf.gz";
         sub_vcf_files.push_back(sub_vcf_fn);
 
-        is_empty = _variant_discovery(gr, samples_pileup_v, sub_vcf_fn);
+        is_empty = _variant_discovery(samples_pileup_v, gr, sub_vcf_fn);
         if (is_empty) {
             std::cout << "[INFO] No variants in region: " << gr.to_string() << "\n";
         }
     }
 
     // Merge multiple VCFs in one
-    std::string header = vcf_header_define(_config.reference_file, _samples_id);
+    std::string header = vcf_header_define(_config.reference_file, _samples_id, _cmdline_string);
     merge_file_by_line(sub_vcf_files, _config.output_file, header, IS_DELETE_CACHE);
 
-    const tbx_conf_t bf_tbx_conf = {1, 1, 2, 0, '#', 0};  // {preset, seq col, beg col, end col, header-char, skip-line}
+    const tbx_conf_t bf_tbx_conf = {1, 1, 2, 0, '#', 0};  // {preset, seq-col, beg-col, end-col, header-char, skip-line}
     if ((ngslib::suffix_name(_config.output_file) == ".gz") &&          // create index
         tbx_index_build(_config.output_file.c_str(), 0, &bf_tbx_conf))  // file suffix will be ".tbi"
     {
@@ -337,13 +343,11 @@ void MtVariantCaller::_caller_process() {
         for (auto fn: sub_vcf_files) {
             ngslib::safe_remove(fn);
         }
-
         ngslib::safe_remove(cache_outdir);
     }
 }
 
 bool MtVariantCaller::_fetch_base_in_region(const GenomeRegion gr, std::vector<PosVariantMap> &samples_pileup_v) {
-
     ThreadPool thread_pool(this->_config.thread_count);  // set multiple-thread
 
     std::vector<std::future<PosVariantMap>> pileup_results;
@@ -381,7 +385,7 @@ bool MtVariantCaller::_fetch_base_in_region(const GenomeRegion gr, std::vector<P
     return is_empty;  // no cover reads in 'GenomeRegion' if empty.
 }
 
-bool MtVariantCaller::_variant_discovery(const GenomeRegion gr, const std::vector<PosVariantMap> &samples_pileup_v, 
+bool MtVariantCaller::_variant_discovery(const std::vector<PosVariantMap> &samples_pileup_v, const GenomeRegion gr,
                                          const std::string out_vcf_fn)
 {
     // 1. integrate the variant information of all samples in the region
@@ -395,15 +399,17 @@ bool MtVariantCaller::_variant_discovery(const GenomeRegion gr, const std::vecto
         vvi.reserve(samples_pileup_v.size()); // reserve the memory before push_back
 
         // get the variant information of all samples in the position
-        PosVariantMap::const_iterator smp_pos_it;
         bool is_empty = true;
+        PosVariantMap::const_iterator smp_pos_it;
         for (size_t i(0); i < samples_pileup_v.size(); ++i) {
 
             smp_pos_it = samples_pileup_v[i].find(pos);
             if (smp_pos_it != samples_pileup_v[i].end()) {
+
                 vvi.push_back(smp_pos_it->second);
                 if (is_empty) is_empty = false;
             } else {
+
                 VariantInfo vi(gr.ref_id, pos, 0, 0); // empty VariantInfo
                 vvi.push_back(vi);
             }
@@ -412,7 +418,7 @@ bool MtVariantCaller::_variant_discovery(const GenomeRegion gr, const std::vecto
         // ignore the position which no reads cover of all samples
         if (!is_empty) { 
             // performance multi-thread here
-            results.emplace_back(thread_pool.submit(call_variant_in_pos, vvi));  // return VCFRecord
+            results.emplace_back(thread_pool.submit(call_variant_in_pos, vvi, _config.heteroplasmy_threshold));  // return VCFRecord
         }
     }
 
@@ -421,11 +427,9 @@ bool MtVariantCaller::_variant_discovery(const GenomeRegion gr, const std::vecto
     for (auto && p: results) { // Run and make sure all processes are finished
         if (p.valid()) {
             VCFRecord vcf_record = p.get();
-
-            // write to a file
             if (vcf_record.is_valid()) {
                 if (is_empty) is_empty = false;
-                OUT << vcf_record.to_string() << "\n";
+                OUT << vcf_record.to_string() << "\n";  // write to a file
             }
         }
     }
@@ -598,7 +602,7 @@ VariantInfo basetype_caller_unit(const AlignInfo &pos_align_info, double min_af)
 
     BaseType::BatchInfo smp_bi(pos_align_info.ref_id, pos_align_info.ref_pos);
     for (auto &ab: pos_align_info.align_bases) {
-        smp_bi.ref_bases.push_back(ab.ref_base);  // REF may be single base for SNV or a sub-seq for Indel
+        smp_bi.ref_bases.push_back(ab.ref_base);  // REF may be single base for SNVs or a sub-seq for Indels
         smp_bi.mapqs.push_back(ab.mapq);
         smp_bi.map_strands.push_back(ab.map_strand);
 
@@ -608,7 +612,7 @@ VariantInfo basetype_caller_unit(const AlignInfo &pos_align_info, double min_af)
     }
 
     BaseType bt(&smp_bi, min_af);
-    bt.lrt();  // use likelihood ratio test to detect candidate variant
+    bt.lrt();  // likelihood ratio test to detect candidate variants
 
     return get_pos_pileup(bt, &smp_bi);
 }
@@ -616,11 +620,8 @@ VariantInfo basetype_caller_unit(const AlignInfo &pos_align_info, double min_af)
 VariantInfo get_pos_pileup(const BaseType &bt, const BaseType::BatchInfo *smp_bi) {
 
     VariantInfo vi(bt.get_ref_id(), bt.get_ref_pos(), bt.get_total_depth(), bt.get_var_qual());
-    int major_allele_depth;
-    if (bt.get_active_bases().size() != 0) {
-        vi.major_allele    = bt.get_active_bases()[0];
-        major_allele_depth = bt.get_base_depth(vi.major_allele);
-    }
+    int major_allele_depth = 0;
+    vi.major_allele_idx    = 0;
 
     for (size_t i(0); i < bt.get_active_bases().size(); ++i) {
         std::string b = bt.get_active_bases()[i];
@@ -632,8 +633,8 @@ VariantInfo get_pos_pileup(const BaseType &bt, const BaseType::BatchInfo *smp_bi
         vi.freqs.push_back(bt.get_lrt_af(b));
 
         if (major_allele_depth < bt.get_base_depth(b)) {
-            vi.major_allele    = b;
-            major_allele_depth = bt.get_base_depth(b);
+            vi.major_allele_idx = i;
+            major_allele_depth  = bt.get_base_depth(b);
         }
 
         std::string upper_ref_base(ref_base);
@@ -657,7 +658,7 @@ VariantInfo get_pos_pileup(const BaseType &bt, const BaseType::BatchInfo *smp_bi
 
     // calculate the Strand Bias
     for (size_t i(0); i < vi.alt_bases.size(); ++i) {
-        vi.strand_bias.push_back(strand_bias(vi.major_allele,
+        vi.strand_bias.push_back(strand_bias(vi.alt_bases[vi.major_allele_idx],
                                              vi.alt_bases[i],
                                              smp_bi->align_bases,
                                              smp_bi->map_strands));
@@ -671,11 +672,16 @@ VariantInfo get_pos_pileup(const BaseType &bt, const BaseType::BatchInfo *smp_bi
     return vi;
 }
 
-VCFRecord call_variant_in_pos(std::vector<VariantInfo> vvi) {
+VCFRecord call_variant_in_pos(std::vector<VariantInfo> vvi, double hf_cutoff) {
     // 1. Call the variant by the integrated information
     // 2. Return the variant information to in VCF format
     if (vvi.empty()) {
         return VCFRecord(); // Return empty record if no variants
+    }
+
+    if (hf_cutoff <= 0.0 || hf_cutoff > 1.0) {
+        std::cerr << "Error: Heteroplasmy threshold must be between 0 and 1\n";
+        exit(1);
     }
 
     VCFRecord vcf_record;
@@ -683,7 +689,7 @@ VCFRecord call_variant_in_pos(std::vector<VariantInfo> vvi) {
     
     // Set basic VCF fields
     vcf_record.chrom = first_var.ref_id;
-    vcf_record.pos = first_var.ref_pos;
+    vcf_record.pos   = first_var.ref_pos;
     
     // First pass: collect all REF sequences and find the longest one
     std::string shared_ref;  // The final REF to use in VCF
@@ -737,20 +743,21 @@ VCFRecord call_variant_in_pos(std::vector<VariantInfo> vvi) {
     vcf_record.qual = 0;
     
     // Process sample information
-    vcf_record.format = "GT:GQ:DP:AD:HF:CI:SB:FS:SOR:VT";
+    vcf_record.format = "GT:GQ:DP:AD:HF:CI:HQ:SB:FS:SOR:VT";
     for (size_t sample_idx = 0; sample_idx < vvi.size(); sample_idx++) {
-        const auto& sample_var = vvi[sample_idx];
+        const auto& smp_vi = vvi[sample_idx];
 
         // record the biggest qual value
-        if (sample_var.qual > vcf_record.qual && sample_var.qual != 10000) {
-            vcf_record.qual = sample_var.qual;
+        if (smp_vi.qual > vcf_record.qual && smp_vi.qual != 10000) {
+            vcf_record.qual = smp_vi.qual;
         }
 
         // Re-order ALTs present in this sample according to 'vcf_record.alt'
-        std::vector<size_t> gt_indices; // Genotype indices
+        std::vector<size_t>      gt_indices; // Genotype indices
         std::vector<std::string> sample_alts;
-        std::vector<int>    allele_depths;
-        std::vector<double> allele_freqs;
+        std::vector<int>         allele_depths;
+        std::vector<double>      allele_freqs;
+        std::vector<int>         hf_qual;  // phred quality score of heterophasmy allele
 
         std::vector<std::string> ci_strings;
         std::vector<std::string> sb_strings;
@@ -758,49 +765,81 @@ VCFRecord call_variant_in_pos(std::vector<VariantInfo> vvi) {
         std::vector<std::string> sor_strings;
         std::vector<std::string> var_types;
 
+        int exp_major_allele_count = (1 - hf_cutoff) * smp_vi.total_depth; 
+        int exp_minor_allele_count = hf_cutoff * smp_vi.total_depth;
+        int obs_major_allele_count = smp_vi.depths[smp_vi.major_allele_idx];
+        int obs_minor_allele_count;
+
         // Collect and format sample information 
         for (size_t gti = 0; gti < ref_alt_order.size(); gti++) {  // gti == 0 represents the REF GT
             const auto& alt = ref_alt_order[gti];
-
-            for (size_t j = 0; j < sample_var.alt_bases.size(); j++) {
-                if (sample_var.alt_bases[j] == alt) {
+            for (size_t j = 0; j < smp_vi.alt_bases.size(); j++) {
+                if (smp_vi.alt_bases[j] == alt) {
 
                     an += 1;
                     ac[alt] += 1;
 
-                    sample_alts.push_back(alt);
                     gt_indices.push_back(gti);
-                    allele_depths.push_back(sample_var.depths[j]);
-                    // allele_freqs.push_back(sample_var.freqs[j]); // 这里不要用 lrt 计算出来的 allele frequency，因为可能不知为何会有负数（极少情况下）
+                    sample_alts.push_back(alt);
+                    allele_depths.push_back(smp_vi.depths[j]);
+
+                    // allele_freqs.push_back(smp_vi.freqs[j]); // 这里不要用 lrt 计算出来的 allele frequency，因为可能不知为何会有负数（极少情况下）
                     // use the allele frequency calculated by allele_depth/total_depth
-                    allele_freqs.push_back(double(sample_var.depths[j]) / double(sample_var.total_depth)); // calculate AF by read depth
-                    ci_strings.push_back(format_double(sample_var.ci[j].first) + "," + format_double(sample_var.ci[j].second));
-                    sb_strings.push_back(std::to_string(sample_var.strand_bias[j].fwd) + "," + 
-                                         std::to_string(sample_var.strand_bias[j].rev));
-                    fs_strings.push_back(sample_var.strand_bias[j].fs != 10000 ? 
-                                         format_double(sample_var.strand_bias[j].fs) : "10000"); // it's a phred-scale score
-                    sor_strings.push_back(sample_var.strand_bias[j].sor != 10000 ? 
-                                          format_double(sample_var.strand_bias[j].sor) : "10000");
-                    var_types.push_back(sample_var.var_types[j]);
+                    allele_freqs.push_back(double(smp_vi.depths[j]) / double(smp_vi.total_depth)); // calculate AF by read depth
+                    ci_strings.push_back(format_double(smp_vi.ci[j].first) + "," + format_double(smp_vi.ci[j].second));
+
+                    sb_strings.push_back(std::to_string(smp_vi.strand_bias[j].fwd) + "," + 
+                                         std::to_string(smp_vi.strand_bias[j].rev));
+                    fs_strings.push_back(smp_vi.strand_bias[j].fs != 10000 ? 
+                                         format_double(smp_vi.strand_bias[j].fs) : "10000"); // it's a phred-scale score
+                    sor_strings.push_back(smp_vi.strand_bias[j].sor != 10000 ? 
+                                          format_double(smp_vi.strand_bias[j].sor) : "10000");
+                    var_types.push_back(smp_vi.var_types[j]);
+
+                    /**
+                     * @brief determine if the rate of heteroplasmy is significantly greater than user defined cutoff.
+                     * 
+                     *  Null hypothesis(H0) : LESS
+                     *  Alternative hypothesis (H1): not less (equal or greater)
+                     * 
+                     *            major   minor
+                     *  observed    n11     n12 | n1p
+                     *  expected    n21     n22 | n2p
+                     *          -----------------
+                     *              np1     np2   npp
+                     * 
+                     *  where n11 and n12 are observed depth of major and minor alleles,
+                     *  `n21 = (n11+n12) * (1-hf_cutoff)` in which hf_cutoff is defined by --het-threshold 
+                     *  `n22 = (n11+n12) * hf_cutoff` in which hf_cutoff is defined by --het-threshold
+                     * 
+                     */
+                    obs_minor_allele_count = smp_vi.depths[j];
+                    double hq = -10 * log10(fisher_exact_test(obs_major_allele_count, obs_minor_allele_count,
+                                                              exp_major_allele_count, exp_minor_allele_count,
+                                                              TestSide::LESS));
+                    hf_qual.push_back(int(hq));
                 }
             }
         }
 
         bool alt_found = sample_alts.size() > 0;
-        std::string gt = alt_found ? ngslib::join(gt_indices, "/") : ".";       // set generate genotype (GT)
-        std::string sample_info = gt + ":" +                                    // GT, genotype
-                                  std::to_string(int(sample_var.qual)) + ":" +  // GQ, genotype quality (Variant quality)
-                                  std::to_string(sample_var.total_depth);       // DP, total depth
+        std::string gt = alt_found ? ngslib::join(gt_indices, "/") : ".";   // set generate genotype (GT)
+        std::string sample_info = gt + ":" +                                // GT, genotype
+                                  std::to_string(int(smp_vi.qual)) + ":" +  // GQ, genotype quality (Variant quality)
+                                  std::to_string(smp_vi.total_depth);       // DP, total depth
         if (alt_found) {
+            std::string hf_qual_str = (hf_qual.size() == 1) ? "." : ngslib::join(hf_qual, ",");
             sample_info += ":";
-            sample_info += ngslib::join(allele_depths, ",") + ":" +             // AD, active allele depth, so sum(AD) <= PD
-                           ngslib::join(allele_freqs, ",")  + ":" +             // HF, allele frequency
-                           ngslib::join(ci_strings, ";")    + ":" +             // CI, confidence interval
-                           ngslib::join(sb_strings, ";")    + ":" +             // SB, strand bias
-                           ngslib::join(fs_strings, ",")    + ":" +             // FS, Fisher strand bias
-                           ngslib::join(sor_strings, ",")   + ":" +             // SOR, Strand odds ratio
-                           ngslib::join(var_types, ",");                        // VT, Variant type
+            sample_info += ngslib::join(allele_depths, ",") + ":" +         // AD, active allele depth, so sum(AD) <= PD
+                           ngslib::join(allele_freqs, ",")  + ":" +         // HF, allele frequency
+                           ngslib::join(ci_strings, ";")    + ":" +         // CI, confidence interval
+                           hf_qual_str                      + ":" +         // HQ, Heteroplasmy quality score
+                           ngslib::join(sb_strings, ";")    + ":" +         // SB, strand bias
+                           ngslib::join(fs_strings, ",")    + ":" +         // FS, Fisher strand bias
+                           ngslib::join(sor_strings, ",")   + ":" +         // SOR, Strand odds ratio
+                           ngslib::join(var_types, ",");                    // VT, Variant type
         }
+
         vcf_record.samples.push_back(sample_info);
     }
     
