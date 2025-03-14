@@ -98,9 +98,9 @@ double fisher_exact_test(int n11, int n12, int n21, int n22, TestSide test_side)
 
     double pvalue = -1.0;
     switch(test_side) {
-        case TestSide::LEFT_SIDED:  pvalue = left_pvalue;    break;
-        case TestSide::RIGHT_SIDED: pvalue = right_pvalue;   break;
-        case TestSide::TWO_SIDED:   pvalue = twoside_pvalue; break;
+        case TestSide::LESS:      pvalue = left_pvalue;    break;
+        case TestSide::GREATER:   pvalue = right_pvalue;   break;
+        case TestSide::TWO_SIDED: pvalue = twoside_pvalue; break;
         default:
             throw std::invalid_argument("Invalid test side specification");
     }
@@ -115,9 +115,9 @@ double fisher_exact_test(const ContingencyTable& table, TestSide test_side) {
     
     double pvalue = -1.0;
     switch(test_side) {
-        case TestSide::LEFT_SIDED:  pvalue = left_pvalue;    break;
-        case TestSide::RIGHT_SIDED: pvalue = right_pvalue;   break;
-        case TestSide::TWO_SIDED:   pvalue = twoside_pvalue; break;
+        case TestSide::LESS:      pvalue = left_pvalue;    break;
+        case TestSide::GREATER:   pvalue = right_pvalue;   break;
+        case TestSide::TWO_SIDED: pvalue = twoside_pvalue; break;
         default:
             throw std::invalid_argument("Invalid test side specification");
     }

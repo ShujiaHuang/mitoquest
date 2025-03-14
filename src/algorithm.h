@@ -93,8 +93,8 @@ double chi2_test(double chi_sqrt_value, double degree_of_freedom);
 double norm_dist(double x);
 
 enum class TestSide {
-    LEFT_SIDED,
-    RIGHT_SIDED,
+    LESS,
+    GREATER,
     TWO_SIDED
 };
 /**
@@ -119,7 +119,7 @@ enum class TestSide {
  *  Example: https://gatk.broadinstitute.org/hc/en-us/articles/360035532152-Fisher-s-Exact-Test
  * 
  */
-double fisher_exact_test(int n11, int n12, int n21, int n22, TestSide test_side = TestSide::TWO_SIDED);
+double fisher_exact_test(int n11, int n12, int n21, int n22, TestSide test_side=TestSide::TWO_SIDED);
 
 struct ContingencyTable {
     int n11, n12, n21, n22;
@@ -130,7 +130,7 @@ struct ContingencyTable {
         }
     }
 };
-double fisher_exact_test(const ContingencyTable& table, TestSide test_side = TestSide::TWO_SIDED);
+double fisher_exact_test(const ContingencyTable& table, TestSide test_side=TestSide::TWO_SIDED);
 
 double wilcoxon_ranksum_test(const std::vector<double>& sample1, const std::vector<double>& sample2);
 

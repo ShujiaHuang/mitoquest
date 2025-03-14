@@ -17,8 +17,11 @@ void fisher_exact_test_example() {
         
         // Using ContingencyTable
         ContingencyTable table(12, 5, 7, 10);
-        double p2 = fisher_exact_test(table, TestSide::LEFT_SIDED);
+        double p2 = fisher_exact_test(table, TestSide::LESS);
         std::cout << "fisher_exact_test(table(12, 5, 7, 10), TestSide::LEFT_SIDED): " << p2 << "\n";
+
+        double p3 = fisher_exact_test(table, TestSide::GREATER);
+        std::cout << "fisher_exact_test(table(12, 5, 7, 10), TestSide::RIGHT_SIDED): " << p3 << "\n";
         
     } catch (const std::invalid_argument& e) {
         std::cerr << "Error: " << e.what() << std::endl;
