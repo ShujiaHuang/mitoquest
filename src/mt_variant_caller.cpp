@@ -767,8 +767,6 @@ VCFRecord call_variant_in_pos(std::vector<VariantInfo> vvi, double hf_cutoff) {
 
         int exp_major_allele_count = (1 - hf_cutoff) * smp_vi.total_depth; 
         int exp_minor_allele_count = hf_cutoff * smp_vi.total_depth;
-        int obs_major_allele_count = smp_vi.depths[smp_vi.major_allele_idx];
-        int obs_minor_allele_count;
 
         // Collect and format sample information 
         for (size_t gti = 0; gti < ref_alt_order.size(); gti++) {  // gti == 0 represents the REF GT
@@ -809,11 +807,12 @@ VCFRecord call_variant_in_pos(std::vector<VariantInfo> vvi, double hf_cutoff) {
                      *              np1     np2   npp
                      * 
                      *  where n11 and n12 are observed depth of major and minor alleles,
-                     *  `n21 = (n11+n12) * (1-hf_cutoff)` in which hf_cutoff is defined by --het-threshold 
-                     *  `n22 = (n11+n12) * hf_cutoff` in which hf_cutoff is defined by --het-threshold
+                     *  `n21 = (n11+n12) * (1 - hf_cutoff)` in which hf_cutoff is defined by `--het-threshold` 
+                     *  `n22 = (n11+n12) * hf_cutoff` in which hf_cutoff is defined by `--het-threshold`
                      * 
                      */
-                    obs_minor_allele_count = smp_vi.depths[j];
+                    int obs_major_allele_count = smp_vi.depths[smp_vi.major_allele_idx];
+                    int obs_minor_allele_count = smp_vi.depths[j];
                     double hq = -10 * log10(fisher_exact_test(obs_major_allele_count, obs_minor_allele_count,
                                                               exp_major_allele_count, exp_minor_allele_count,
                                                               TestSide::LESS));
