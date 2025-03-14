@@ -1,6 +1,6 @@
 # MitoQuest Changelog
 
-## [1.4.0] - 2025-03-14
+## [1.4.1] - 2025-03-14
 
 - 添加 `HQ` 记录异质性碱基可信值
 - 使用 `Fisher's exact test` 计算 `phred-score` 描述异质性碱基的可靠性
