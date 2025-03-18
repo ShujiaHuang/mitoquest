@@ -463,6 +463,7 @@ PosVariantMap call_pileup_in_sample(const std::string sample_bam_fn,
             if (al.mapq() < config.min_mapq || al.is_duplicate() || al.is_qc_fail() ||
                 (al.is_paired() && config.proper_pairs_only && !al.is_proper_pair()))
             {
+                // std::cout << "[TEST] " << al.qname() << " al.mapq: " << al.mapq() << " al.is_duplicate: " << al.is_duplicate() << " al.is_qc_fail: " <<  al.is_qc_fail() << std::endl;
                 continue;
             }
 

@@ -247,7 +247,7 @@ void EM(const std::vector<std::vector<double>> &ind_allele_likelihood, // n x _U
     size_t n_sample = ind_allele_likelihood.size();
     size_t n_allele = obs_allele_freq.size();
 
-    // n x 4 matrix, the same shape as 'ind_allele_likelihood'.
+    // n x _UNIQ_BASES.size()matrix, the same shape as 'ind_allele_likelihood'.
     std::vector<std::vector<double>> ind_allele_post_prob = std::vector<std::vector<double>>(
         n_sample, std::vector<double>(n_allele, 0));
 
