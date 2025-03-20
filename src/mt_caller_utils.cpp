@@ -122,6 +122,7 @@ std::string vcf_header_define(const std::string &ref_file_path, const std::vecto
         "to determine if the rate of heteroplasmy is significantly greater than user defined cutoff (-j), an ordered list of the GT alleles. "
         "[CAUTION] In most cases, the minor allele corresponds to the heteroplasmic allele; therefore, the HQ at the minor allele position "
         "reflects the quality value of heterozygous allele mostly.\">",
+        "##FORMAT=<ID=LHF,Number=A,Type=Float,Description=\"Transformed heteroplasmy. It's a log-odds ratio. logit(HF)=ln(hf/(1-hf)) for each heterplasmy alleles in the order listed by GT.\">",
         "##FORMAT=<ID=SB,Number=1,Type=String,Description=\"Allele-specific forward/reverse read counts for strand bias tests for the GT alleles in "
         "the order listed, separated by ';'. Format: fwd,rev;fwd,rev;...\">",
         "##FORMAT=<ID=FS,Number=A,Type=Float,Description=\"An ordered, comma delimited list of phred-scaled p-value using Fisher's exact test to detect strand bias\">",

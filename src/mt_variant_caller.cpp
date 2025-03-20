@@ -64,7 +64,7 @@ MtVariantCaller::MtVariantCaller(int argc, char* argv[]) {
     // Save the complete command line options in VCF header
     _cmdline_string = "##mitoquest_caller_command=";
     for (size_t i = 0; i < argc; ++i) {
-        _cmdline_string += " " + std::string(argv[i]);
+        _cmdline_string += (i >0 ) ? " " + std::string(argv[i]) : std::string(argv[i]);
     }
 
     int opt;
@@ -744,7 +744,7 @@ VCFRecord call_variant_in_pos(std::vector<VariantInfo> vvi, double hf_cutoff) {
     vcf_record.qual = 0;
     
     // Process sample information
-    vcf_record.format = "GT:GQ:DP:AD:HF:CI:HQ:SB:FS:SOR:VT";
+    vcf_record.format = "GT:GQ:DP:AD:HF:CI:HQ:LHF:SB:FS:SOR:VT";
     for (size_t sample_idx = 0; sample_idx < vvi.size(); sample_idx++) {
         const auto& smp_vi = vvi[sample_idx];
 
@@ -758,7 +758,8 @@ VCFRecord call_variant_in_pos(std::vector<VariantInfo> vvi, double hf_cutoff) {
         std::vector<std::string> sample_alts;
         std::vector<int>         allele_depths;
         std::vector<double>      allele_freqs;
-        std::vector<int>         hf_qual;  // phred quality score of heterophasmy allele
+        std::vector<int>         hf_qual;  // HQ: phred quality score of heterophasmy allele
+        std::vector<double>      logit_hf; // LHQ: logit transformed heterophasmy fraction
 
         std::vector<std::string> ci_strings;
         std::vector<std::string> sb_strings;
@@ -784,8 +785,11 @@ VCFRecord call_variant_in_pos(std::vector<VariantInfo> vvi, double hf_cutoff) {
 
                     // allele_freqs.push_back(smp_vi.freqs[j]); // 这里不要用 lrt 计算出来的 allele frequency，因为可能不知为何会有负数（极少情况下）
                     // use the allele frequency calculated by allele_depth/total_depth
-                    allele_freqs.push_back(double(smp_vi.depths[j]) / double(smp_vi.total_depth)); // calculate AF by read depth
+                    double h = double(smp_vi.depths[j]) / double(smp_vi.total_depth);  // calculate AF by read depth
+                    allele_freqs.push_back(h);
                     ci_strings.push_back(format_double(smp_vi.ci[j].first) + "," + format_double(smp_vi.ci[j].second));
+                    
+                    logit_hf.push_back(log(h/(1-h))); // logit transformed
 
                     sb_strings.push_back(std::to_string(smp_vi.strand_bias[j].fwd) + "," + 
                                          std::to_string(smp_vi.strand_bias[j].rev));
@@ -831,12 +835,14 @@ VCFRecord call_variant_in_pos(std::vector<VariantInfo> vvi, double hf_cutoff) {
                                   std::to_string(int(smp_vi.qual)) + ":" +  // GQ, genotype quality (Variant quality)
                                   std::to_string(smp_vi.total_depth);       // DP, total depth
         if (alt_found) {
-            std::string hf_qual_str = (hf_qual.size() == 1) ? "." : ngslib::join(hf_qual, ",");
+            std::string hf_qual_str  = (hf_qual.size() == 1) ? "." : ngslib::join(hf_qual, ",");
+            std::string logit_hf_str = (logit_hf.size() == 1) ? "." : ngslib::join(logit_hf, ",");
             sample_info += ":";
             sample_info += ngslib::join(allele_depths, ",") + ":" +         // AD, active allele depth, so sum(AD) <= PD
                            ngslib::join(allele_freqs, ",")  + ":" +         // HF, allele frequency
                            ngslib::join(ci_strings, ";")    + ":" +         // CI, confidence interval
                            hf_qual_str                      + ":" +         // HQ, Heteroplasmy quality score
+                           logit_hf_str                     + ":" +         // LHF, Transformed heteroplasmy by `logit`
                            ngslib::join(sb_strings, ";")    + ":" +         // SB, strand bias
                            ngslib::join(fs_strings, ",")    + ":" +         // FS, Fisher strand bias
                            ngslib::join(sor_strings, ",")   + ":" +         // SOR, Strand odds ratio

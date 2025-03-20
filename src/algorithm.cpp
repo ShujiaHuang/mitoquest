@@ -127,8 +127,6 @@ double fisher_exact_test(const ContingencyTable& table, TestSide test_side) {
 
 double wilcoxon_ranksum_test(const std::vector<double>& sample1, const std::vector<double>& sample2) {
 
-    size_t n1 = sample1.size(), n2 = sample2.size();
-
     std::vector<double> combined = sample1;
     combined.insert(combined.end(), sample2.begin(), sample2.end());
 
@@ -170,6 +168,8 @@ double wilcoxon_ranksum_test(const std::vector<double>& sample1, const std::vect
             rankvalues[j] = avg_rank; // 分配平均秩
         }
     }
+
+    size_t n1 = sample1.size(), n2 = sample2.size();
 
     // 计算样本1的秩和
     double smp1_ranksum = 0.0;
