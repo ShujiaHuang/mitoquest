@@ -64,6 +64,6 @@ target_link_libraries(mitoquest ${HTSLIB} ${COMMON_SYS_LIB})
 ####### Compile the test and other executables scripts
 ####################################################################################################
 # Compile count_align_fragments.cpp
-add_executable(count_align_fragments ${CMAKE_CURRENT_SOURCE_DIR}/scripts/count_align_fragments.cpp)
-add_dependencies(count_align_fragments Buildhts)
-target_link_libraries(count_align_fragments ${HTSLIB} ${COMMON_SYS_LIB})
+# add_executable(count_align_fragments ${CMAKE_CURRENT_SOURCE_DIR}/scripts/count_align_fragments.cpp)
+# add_dependencies(count_align_fragments Buildhts)
+# target_link_libraries(count_align_fragments ${HTSLIB} ${COMMON_SYS_LIB})
