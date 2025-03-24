@@ -53,6 +53,20 @@ struct AlignBase {
     int rpr;               // read position rank, the first base is 1, record the leftmost position for indels sequence
     int mapq;              // mapping quality
     char map_strand;       // mapping reference strand, should be one of '-', '+' or '*'
+
+    std::string to_string() const {
+        std::stringstream ss;
+        
+        // Required fields
+        ss << ref_base  << "\t"
+           << read_base << "\t"
+           << base_qual << "\t"
+           << rpr       << "\t"
+           << mapq      << "\t"
+           << map_strand;
+
+        return ss.str();
+    }
 };
 
 struct AlignInfo {
