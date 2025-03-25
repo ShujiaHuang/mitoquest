@@ -1,12 +1,13 @@
 # MitoQuest Changelog
 
+## [TBD] - TBD
+
 ## [1.5.0] - 2025-03-25
 
 - 修复已知 bug
 - 不再移动 Indel 端点，解决 Indel 位点深度覆盖的计算和异质性估算的 bug 问题
 - Indel 优先原则：输出时，如果 break point 的 leftmost 是 SNV，那么强制用 Indel 代替
 - 添加 `LHF` 记录异质性分值的对数几率模型(对数优势比)
-
 
 ## [1.4.1] - 2025-03-14
 

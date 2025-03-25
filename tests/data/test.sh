@@ -6,3 +6,6 @@
 ../../bin/mitoquest caller -f ref_mt.fasta -o tt test.bam --filename-has-samplename
 
 ../../bin/mitoquest caller -t 4 -f chrM_rCRS.decoy.fa -r chrM -o tt smp1.cram smp2.cram smp3.cram
+
+../../bin/mitoquest caller -t 4 -f chrM_rCRS.decoy.fa -r chrM:5745-5747 -o t 19106769BFF2B.sorted.markdup.realigner.cram > log
+
