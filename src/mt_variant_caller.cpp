@@ -879,14 +879,12 @@ VCFRecord call_variant_in_pos(std::vector<VariantInfo> vvi, double hf_cutoff) {
                                   std::to_string(int(smp_vi.qual)) + ":" +  // GQ, genotype quality (Variant quality)
                                   std::to_string(smp_vi.total_depth);       // DP, total depth
         if (alt_found) {
-            std::string hf_qual_str  = (hf_qual.size() == 1) ? "." : ngslib::join(hf_qual, ",");
-            std::string logit_hf_str = (logit_hf.size() == 1) ? "." : ngslib::join(logit_hf, ",");
             sample_info += ":";
             sample_info += ngslib::join(allele_depths, ",") + ":" +         // AD, active allele depth, so sum(AD) <= PD
                            ngslib::join(allele_freqs, ",")  + ":" +         // HF, allele frequency
                            ngslib::join(ci_strings, ";")    + ":" +         // CI, confidence interval
-                           hf_qual_str                      + ":" +         // HQ, Heteroplasmy quality score
-                           logit_hf_str                     + ":" +         // LHF, Transformed heteroplasmy by `logit`
+                           ngslib::join(hf_qual, ",")       + ":" +         // HQ, Heteroplasmy quality score
+                           ngslib::join(logit_hf, ",")      + ":" +         // LHF, Transformed heteroplasmy by `logit`
                            ngslib::join(sb_strings, ";")    + ":" +         // SB, strand bias
                            ngslib::join(fs_strings, ",")    + ":" +         // FS, Fisher strand bias
                            ngslib::join(sor_strings, ",")   + ":" +         // SOR, Strand odds ratio

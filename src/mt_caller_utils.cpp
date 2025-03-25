@@ -115,11 +115,11 @@ std::string vcf_header_define(const std::string &ref_file_path, const std::vecto
         "##FORMAT=<ID=GQ,Number=1,Type=Integer,Description=\"Genotype Quality\">",
         "##FORMAT=<ID=DP,Number=1,Type=Integer,Description=\"Total read depth on the REF position\">",
         "##FORMAT=<ID=AD,Number=R,Type=Integer,Description=\"Allelic depths for the ref and alt alleles in the order listed\">",
-        "##FORMAT=<ID=HF,Number=A,Type=Float,Description=\"Homoplasmy/Heteroplasmy fraction for the ref and alt alleles in the order listed\">",
+        "##FORMAT=<ID=HF,Number=A,Type=Float,Description=\"Heteroplasmy/Homoplasmy fraction for the ref and alt alleles in the order listed\">",
         "##FORMAT=<ID=CI,Number=1,Type=String,Description=\"95\% confidence interval around the estimated homoplasmy/heteroplasmy fraction for "
         "the GT alleles in the order listed. format: ci_low,ci_up;ci_low,ci_up;...\">",
-        "##FORMAT=<ID=HQ,Number=A,Type=Integer,Description=\"Heteroplasmy Quality, phred quality scores of pvalue of one-tail Fisher exact test "
-        "to determine if the rate of heteroplasmy is significantly greater than user defined cutoff (-j), an ordered list of the GT alleles. "
+        "##FORMAT=<ID=HQ,Number=A,Type=Integer,Description=\"Heteroplasmy/Homoplasmy Quality, phred quality scores of pvalue of one-tail Fisher exact test "
+        "to determine if the rate of heteroplasmy/Homoplasmy is significantly greater than user defined cutoff (-j), an ordered list of the GT alleles. "
         "[CAUTION] In most cases, the minor allele corresponds to the heteroplasmic allele; therefore, the HQ at the minor allele position "
         "reflects the quality value of heterozygous allele mostly.\">",
         "##FORMAT=<ID=LHF,Number=A,Type=Float,Description=\"Transformed heteroplasmy: The logit of the heteroplasmy fraction (HF) is computed as "
