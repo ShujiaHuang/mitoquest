@@ -46,7 +46,7 @@ private:
 
     std::string _ref_id;
     uint32_t _ref_pos;
-    std::vector<std::string> _gvar_bases;           // the Ref and alternative bases
+    std::vector<std::string> _active_bases;           // the Ref and alternative bases
     std::map<std::string, std::string> _bases2ref;  // align/alt bases => ref_base
     double _var_qual;
     double _min_af;
@@ -111,8 +111,7 @@ public:
     const std::string &get_ref_id() const { return this->_ref_id; };
     const uint32_t &get_ref_pos() const { return this->_ref_pos; };
     const std::map<std::string, std::string> &get_bases2ref() const { return this->_bases2ref; };
-    const std::vector<std::string> &get_active_bases() const { return this->_gvar_bases; }; // candidate variant bases
-    // const std::vector<double> &get_qual_pvalue() const { return this->_qual_pvalue; }
+    const std::vector<std::string> &get_active_bases() const { return this->_active_bases; }; // candidate variant bases
 
     const double get_var_qual() const { return this->_var_qual; }
     const int get_total_depth() const { return this->_total_depth; }

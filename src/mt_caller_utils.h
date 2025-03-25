@@ -13,8 +13,6 @@
 #include <sstream>
 #include <string>
 #include <vector>
-#include <map>
-#include <set>
 
 #include <htslib/bgzf.h>
 #include <htslib/tbx.h>

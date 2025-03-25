@@ -487,7 +487,7 @@ PosVariantMap call_pileup_in_sample(const std::string sample_bam_fn,
 
         if (sample_target_reads.size() > 0) {
             // get alignment information of [i] sample.
-            seek_position(fa_seq, sample_target_reads, gr, sample_posinfo_map);
+            seek_position(fa_seq, sample_target_reads, gr, config.heteroplasmy_threshold, sample_posinfo_map);
         }
     }
 
@@ -510,6 +510,7 @@ PosVariantMap call_pileup_in_sample(const std::string sample_bam_fn,
 void seek_position(const std::string &fa_seq,   // must be the whole chromosome sequence
                    const std::vector<ngslib::BamRecord> &sample_map_reads,  // record the alignment reads of sample
                    const GenomeRegion gr,
+                   double min_af,
                    PosMap &sample_posinfo_map)  // key: position, value: alignment information
 {
     if (!sample_posinfo_map.empty())
@@ -517,6 +518,7 @@ void seek_position(const std::string &fa_seq,   // must be the whole chromosome 
 
     // A vector of: (cigar_op, read position, reference position, read base, read_qual, reference base)
     std::vector<ngslib::ReadAlignedPair> aligned_pairs;
+    std::set<uint32_t> indel_pos_set;
     for (auto &al: sample_map_reads) {  // loop mapping reads
         AlignBase ab;
         ab.map_strand = al.map_strand();  // '*', '-' or '+'
@@ -526,9 +528,6 @@ void seek_position(const std::string &fa_seq,   // must be the whole chromosome 
         aligned_pairs = al.get_aligned_pairs(fa_seq);
         for (size_t i(0); i < aligned_pairs.size(); ++i) {
             map_ref_pos = aligned_pairs[i].ref_pos + 1;  // ref_pos is 0-based, convert to 1-based;
-
-            if (gr.start > map_ref_pos) continue;
-            if (gr.end < map_ref_pos) break;
 
             // 'BAM_XXX' are macros for CIGAR, which defined in 'htslib/sam.h'
             if (aligned_pairs[i].op == BAM_CMATCH ||  /* CIGAR: M */ 
@@ -546,20 +545,19 @@ void seek_position(const std::string &fa_seq,   // must be the whole chromosome 
                     throw std::runtime_error("[ERROR] We got reference base in insertion region.");
                 }
 
-                // roll back one position to the leftmost of insertion break point.
-                --map_ref_pos;
-                ab.ref_base  = fa_seq[aligned_pairs[i].ref_pos-1]; // break point's leftmost ref base
-                ab.read_base = fa_seq[aligned_pairs[i].ref_pos-1] + aligned_pairs[i].read_base;
+                // do not roll back position here
+                ab.ref_base  = "";
+                ab.read_base = "+" + aligned_pairs[i].read_base;
 
                 // Need to convert the read_base to upper case if it is a insertion in case of the ref is lower case.
                 std::transform(ab.read_base.begin(), ab.read_base.end(), ab.read_base.begin(), ::toupper);
 
                 // mean quality of the whole insertion sequence
                 double total_score = 0;
-                for (size_t i = 0; i < aligned_pairs[i].read_base.size(); ++i)
-                    total_score += aligned_pairs[i].read_qual[i];
+                for (size_t j = 0; j < aligned_pairs[i].read_base.size(); ++j) {
+                    total_score += aligned_pairs[i].read_qual[j];
+                }
                 ab.base_qual = uint8_t(total_score / aligned_pairs[i].read_base.size());
-
             } else if (aligned_pairs[i].op == BAM_CDEL) {  /* CIGAR: D */
                 // Deletion.
                 if (!aligned_pairs[i].read_base.empty()) {
@@ -567,22 +565,25 @@ void seek_position(const std::string &fa_seq,   // must be the whole chromosome 
                     throw std::runtime_error("[ERROR] We got read bases in deletion region.");
                 }
 
-                // roll back one position to the leftmost of deletion break point.
-                --map_ref_pos;
-                ab.ref_base  = fa_seq[aligned_pairs[i].ref_pos-1] + aligned_pairs[i].ref_base;
-                ab.read_base = fa_seq[aligned_pairs[i].ref_pos-1]; // break point's leftmost ref base
+                // do not roll back position here
+                ab.ref_base  = aligned_pairs[i].ref_base;
+                ab.read_base = "-" + aligned_pairs[i].ref_base;  // aligned_pairs[i].ref_base 是做识别用的 (后面不直接用，要替换的)，因为可能有其他类型的 DEL 
 
                 // Need to convert the read_base to upper case if it is a deletion in case of the ref is lower case.
                 std::transform(ab.read_base.begin(), ab.read_base.end(), ab.read_base.begin(), ::toupper);
 
                 // set to be mean quality of the whole read if deletion
                 ab.base_qual = uint8_t(al.mean_qqual()) + 33; // 33 is the offset of base QUAL;
-
             } else { 
                 continue;  // Skip other kinds of CIGAR symbals.
             }
+
             // qpos is 0-based, conver to 1-based to set the rank of base on read.
             ab.rpr = aligned_pairs[i].qpos + 1;
+
+            // 考虑到 Indel，这个区间判断只能放在这里，否则当 break point 发生在区间两个端点上，该 Indel 会被错过
+            if (map_ref_pos < gr.start) continue;
+            if (map_ref_pos > gr.end) break;
 
             // 以 map_ref_pos 为 key，将所有的 read_bases 信息存入 map 中，多个突变共享同个 ref_pos，
             if (sample_posinfo_map.find(map_ref_pos) == sample_posinfo_map.end()) {
@@ -593,10 +594,44 @@ void seek_position(const std::string &fa_seq,   // must be the whole chromosome 
             
             // collected all the base informations of the read into the map.
             sample_posinfo_map[map_ref_pos].align_bases.push_back(ab);
+
+            // Record indels' reference position
+            if (!ab.read_base.empty() && (ab.read_base[0] == '-' || ab.read_base[0] == '+')) {
+                indel_pos_set.insert(map_ref_pos);
+            }
         }
     }
 
-    return;
+    // 对于 Indel 位点，按照 Indel 优先的原则对位点的 map info 做修改
+    for (auto pos: indel_pos_set) {
+        uint32_t leftmost_pos = pos > 1 ? pos - 1 : pos; // roll back one position to the leftmost of Indels break point.
+        AlignInfo raw_align_info = sample_posinfo_map[pos];
+        sample_posinfo_map.erase(pos);
+
+        AlignInfo indel_info(raw_align_info.ref_id, leftmost_pos);  // record the leftmost position for Indels
+        AlignInfo non_indel_info(raw_align_info.ref_id, pos);       // raw position for non-indel variants
+        for (auto ab: raw_align_info.align_bases) {
+            if (ab.read_base[0] == '-' || ab.read_base[0] == '+') {
+                ab.ref_base = fa_seq[leftmost_pos - 1] + ab.ref_base;  // add one leftmost ref-base
+                indel_info.align_bases.push_back(ab);
+            } else {
+                non_indel_info.align_bases.push_back(ab);
+            }
+        }
+
+        if (indel_info.align_bases.empty()) {
+            throw std::runtime_error("[ERROR] We must got at least one Indel here!.");
+        }
+
+        double total_depth = double(indel_info.align_bases.size() + non_indel_info.align_bases.size());
+        if (indel_info.align_bases.size() / total_depth >= min_af) {  // filter noise singnal
+            sample_posinfo_map[leftmost_pos] = indel_info;
+        }
+
+        if (non_indel_info.align_bases.size() / total_depth >= min_af) {  // filter noise singnal
+            sample_posinfo_map[pos] = non_indel_info;  // replace
+        }
+    }
 }
 
 VariantInfo basetype_caller_unit(const AlignInfo &pos_align_info, double min_af) {
@@ -645,9 +680,9 @@ VariantInfo get_pos_pileup(const BaseType &bt, const BaseType::BatchInfo *smp_bi
             vi.var_types.push_back("REF");
         } else if (b.size() == 1 && ref_base.size() == 1) {
             vi.var_types.push_back("SNV");
-        } else if (b.size() > ref_base.size()) {
+        } else if (b[0] == '+') {
             vi.var_types.push_back("INS");
-        } else if (b.size() < ref_base.size()) {
+        } else if (b[0] == '-') {
             vi.var_types.push_back("DEL");
         } else {
             vi.var_types.push_back("MNV");
@@ -713,6 +748,15 @@ VCFRecord call_variant_in_pos(std::vector<VariantInfo> vvi, double hf_cutoff) {
             std::string alt = vvi[i].alt_bases[j];
             std::string ref = vvi[i].ref_bases[j];
             std::transform(ref.begin(), ref.end(), ref.begin(), ::toupper); // Convert to upper case
+
+            // rebase if Indel
+            if (alt[0] == '-') {
+                alt = ref[0];  // replace by the first ref bases for DEL seq
+                vvi[i].alt_bases[j] = alt;
+            } else if (alt[0] == '+') {
+                alt = ref + alt.substr(1); // replace the first base('+') by ref bases
+                vvi[i].alt_bases[j] = alt; // rewrite deletion seq
+            }
             
             // Normalize ALT sequence
             if (ref != shared_ref && shared_ref.length() > ref.length()) {
@@ -802,8 +846,8 @@ VCFRecord call_variant_in_pos(std::vector<VariantInfo> vvi, double hf_cutoff) {
                     /**
                      * @brief determine if the rate of heteroplasmy is significantly greater than user defined cutoff.
                      * 
-                     *  Null hypothesis(H0) : LESS
-                     *  Alternative hypothesis (H1): not less (equal or greater)
+                     *  H0 (Null hypothesis): LESS
+                     *  H1 (Alternative hypothesis): Equal or Greater
                      * 
                      *            major   minor
                      *  observed    n11     n12 | n1p

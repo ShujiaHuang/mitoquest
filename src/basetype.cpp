@@ -18,10 +18,10 @@ BaseType::BaseType(const BatchInfo *smp_bi, double min_af) {
      * @brief set the unique bases and the index map
      * 
      * 1. merge the align_bases and BASIC_BASES to make sure the UNIQ_BASES 
-     *    at least have the four basic bases ([A, C, G, T]).
+     *    at least have the four basic bases ([A, C, G, T])
      * 2. get the unique strings vector: sort by length and then by ASCII
      * 3. set the string of UNIQ_BASES map to array index
-     * 4. inital the uniq bases depth to 0.
+     * 4. inital the uniq bases depth to 0
      * 
      */
     std::vector<std::string> tmp_bases(smp_bi->align_bases);
@@ -35,10 +35,8 @@ BaseType::BaseType(const BatchInfo *smp_bi, double min_af) {
     _min_af  = min_af;
     _ref_id  = smp_bi->ref_id;
     _ref_pos = smp_bi->ref_pos;
-
-    _allele_likelihood.reserve(smp_bi->align_bases.size());
-    // _qual_pvalue.reserve(smp_bi->align_bases.size());
     _total_depth = 0;
+    _allele_likelihood.reserve(smp_bi->align_bases.size());
     for (size_t i(0); i < smp_bi->align_bases.size(); ++i) {
 
         if (_bases2ref.find(smp_bi->align_bases[i]) == _bases2ref.end()) {
@@ -46,7 +44,6 @@ BaseType::BaseType(const BatchInfo *smp_bi, double min_af) {
         }
 
         double epsilon = exp((smp_bi->align_base_quals[i] - 33) * MLN10TO10); // base error probability
-        // _qual_pvalue.push_back(1.0 - epsilon);
         if (smp_bi->align_bases[i][0] != 'N' && smp_bi->align_bases[i][0] != 'n') { 
             // ignore all the 'N' bases
             _total_depth++;
@@ -59,25 +56,23 @@ BaseType::BaseType(const BatchInfo *smp_bi, double min_af) {
                 allele_lh[_B_IDX[b]] = (smp_bi->align_bases[i] == b) ? 1.0 - epsilon : epsilon / (_UNIQ_BASES.size() - 1);
             }
 
-            // A 2d-array, total_depth x _UNIQ_BASES.size() matrix
             // 也就是说这个 likelihood 数组将只保留有覆盖的位点信息，避免无效计算。因此 _ind_allele_likelihood 的长度较小
             // 但无所谓，因为除了该值不会传到 basetype classe 之外，仅仅只用于计算突变 
-            _allele_likelihood.push_back(allele_lh);
+            _allele_likelihood.push_back(allele_lh);  // A 2d-array, total_depth x _UNIQ_BASES.size() matrix
         }
     }
 }
 
 BaseType::BaseType(const BaseType &b) {
 
-    this->_UNIQ_BASES  = b._UNIQ_BASES;
-    this->_ref_id      = b._ref_id;
-    this->_ref_pos     = b._ref_pos;
-    this->_gvar_bases  = b._gvar_bases;
+    this->_UNIQ_BASES   = b._UNIQ_BASES;
+    this->_ref_id       = b._ref_id;
+    this->_ref_pos      = b._ref_pos;
+    this->_active_bases = b._active_bases;
 
-    this->_min_af      = b._min_af;
-    this->_var_qual    = b._var_qual;
-    this->_af_by_lrt   = b._af_by_lrt;
-    // this->_qual_pvalue = b._qual_pvalue;
+    this->_min_af       = b._min_af;
+    this->_var_qual     = b._var_qual;
+    this->_af_by_lrt    = b._af_by_lrt;
     this->_allele_likelihood = b._allele_likelihood;
 
     this->_depth       = b._depth;
@@ -173,15 +168,15 @@ void BaseType::lrt(const std::vector<std::string> &specific_bases) {
     }
 
     // Set the active bases and their frequency
-    this->_gvar_bases.clear();
+    this->_active_bases.clear();
     this->_af_by_lrt.clear();
     for (auto b: active_bases) {
-        this->_gvar_bases.push_back(b);
+        this->_active_bases.push_back(b);
         this->_af_by_lrt[b] = active_bases_freq[_B_IDX[b]];
     }
 
     // Todo: improve the calculation method for var_qual
-    if (!this->_gvar_bases.empty()) {
+    if (!this->_active_bases.empty()) {
 
         double r = this->_depth[active_bases[0]] / (double)(this->_total_depth);
         if ((active_bases.size() == 1) && (this->_total_depth > 10) && (r > 0.5)) {

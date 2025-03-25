@@ -11,6 +11,7 @@
 #include <getopt.h>
 #include <string>
 #include <vector>
+#include <set>
 #include <ctime>  // clock, time_t
 
 #include "version.h"
@@ -83,6 +84,7 @@ PosVariantMap call_pileup_in_sample(const std::string sample_bam_fn,
 void seek_position(const std::string &fa_seq,   // must be the whole chromosome sequence
                    const std::vector<ngslib::BamRecord> &sample_map_reads,
                    const GenomeRegion gr,
+                   double min_af,
                    PosMap &sample_posinfo_map);
 
 VariantInfo basetype_caller_unit(const AlignInfo &pos_align_info, double min_af);
