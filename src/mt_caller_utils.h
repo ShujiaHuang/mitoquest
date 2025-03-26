@@ -104,6 +104,27 @@ struct VariantInfo {
 };
 typedef robin_hood::unordered_map<uint32_t, VariantInfo> PosVariantMap;  // key: ref_pos, value: VariantInfo
 
+struct AlleleInfo {
+    std::string ref;
+    std::vector<std::string> alts;  // uniq ALT alleles string
+    std::map<std::string, int> allele_counts;
+    double total_alleles = 0;
+};
+
+struct VCFSampleAnnotation {
+    std::vector<size_t> gt_indices;       // Genotype indices
+    std::vector<std::string> sample_alts; 
+    std::vector<int> allele_depths;       // AD, allele depth
+    std::vector<int> hq;                  // HQ: phred quality score of homo-/hetero-phasmy allele
+    std::vector<double> allele_freqs;     // HF, allele frequency is the homo-/hetero-phasmy fraction
+    std::vector<double> logit_hf;         // LHF: logit transformed homo-/hetero-phasmy fraction
+    std::vector<std::string> ci_strings;
+    std::vector<std::string> sb_strings;
+    std::vector<std::string> fs_strings;
+    std::vector<std::string> sor_strings;
+    std::vector<std::string> var_types;
+};
+
 struct VCFRecord {
     // Required fields
     std::string chrom;     // CHROM: chromosome name
@@ -195,28 +216,16 @@ StrandBiasInfo strand_bias(const std::string &ref_base,
                            const std::vector<std::string> &bases,
                            const std::vector<char> &strands);
 
-/**
- * @brief Mann-Whitney-Wilcoxon Rank Sum Test for REF and ALT array.
- * 
- * @param ref_base A reference base
- * @param alt_bases_string 
- * @param bases 
- * @param values 
- * @return double   Phred-scale value of ranksum-test pvalue
- * 
- * Note: There's some difference between scipy.stats.ranksums with R's wilcox.test:
- *       https://stackoverflow.com/questions/12797658/pythons-scipy-stats-ranksums-vs-rs-wilcox-test
- * 
- */
-double ref_vs_alt_ranksumtest(const char ref_base,
-                              const std::string alt_bases_string,
-                              const std::vector<char> &bases,
-                              const std::vector<int> &values);
+// Collect and normalized REF/ALT information
+AlleleInfo collect_allele_info(std::vector<VariantInfo>& variants);
 
-double ref_vs_alt_ranksumtest(const char ref_base, 
-                              const std::string alt_bases_string,
-                              const std::vector<char> &bases,
-                              const std::vector<char> &values);
+// 处理单个样本的信息 
+VCFSampleAnnotation process_sample_variant(const VariantInfo& var_info, 
+                                           const std::vector<std::string>& ref_alt_order,
+                                           double hf_cutoff);
+std::string format_sample_string(const VCFSampleAnnotation& anno, 
+                                 const VariantInfo& var_info,
+                                 bool alt_found);
 
 std::string vcf_header_define(const std::string &ref_file_path, 
                               const std::vector<std::string> &samples,

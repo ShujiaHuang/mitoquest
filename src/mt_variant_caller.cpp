@@ -510,7 +510,7 @@ PosVariantMap call_pileup_in_sample(const std::string sample_bam_fn,
 void seek_position(const std::string &fa_seq,   // must be the whole chromosome sequence
                    const std::vector<ngslib::BamRecord> &sample_map_reads,  // record the alignment reads of sample
                    const GenomeRegion gr,
-                   double min_af,
+                   const double min_af,
                    PosMap &sample_posinfo_map)  // key: position, value: alignment information
 {
     if (!sample_posinfo_map.empty())
@@ -528,6 +528,9 @@ void seek_position(const std::string &fa_seq,   // must be the whole chromosome 
         aligned_pairs = al.get_aligned_pairs(fa_seq);
         for (size_t i(0); i < aligned_pairs.size(); ++i) {
             map_ref_pos = aligned_pairs[i].ref_pos + 1;  // ref_pos is 0-based, convert to 1-based;
+
+            if (map_ref_pos < gr.start) continue;
+            if (map_ref_pos > gr.end) break;
 
             // 'BAM_XXX' are macros for CIGAR, which defined in 'htslib/sam.h'
             if (aligned_pairs[i].op == BAM_CMATCH ||  /* CIGAR: M */ 
@@ -581,10 +584,6 @@ void seek_position(const std::string &fa_seq,   // must be the whole chromosome 
             // qpos is 0-based, conver to 1-based to set the rank of base on read.
             ab.rpr = aligned_pairs[i].qpos + 1;
 
-            // 考虑到 Indel，这个区间判断只能放在这里，否则当 break point 发生在区间两个端点上，该 Indel 会被错过
-            if (map_ref_pos < gr.start) continue;
-            if (map_ref_pos > gr.end) break;
-
             // 以 map_ref_pos 为 key，将所有的 read_bases 信息存入 map 中，多个突变共享同个 ref_pos，
             if (sample_posinfo_map.find(map_ref_pos) == sample_posinfo_map.end()) {
                 // First level. If the position is not in the map, insert it.
@@ -634,7 +633,7 @@ void seek_position(const std::string &fa_seq,   // must be the whole chromosome 
     }
 }
 
-VariantInfo basetype_caller_unit(const AlignInfo &pos_align_info, double min_af) {
+VariantInfo basetype_caller_unit(const AlignInfo &pos_align_info, const double min_af) {
 
     BaseType::BatchInfo smp_bi(pos_align_info.ref_id, pos_align_info.ref_pos);
     for (auto &ab: pos_align_info.align_bases) {
@@ -700,17 +699,12 @@ VariantInfo get_pos_pileup(const BaseType &bt, const BaseType::BatchInfo *smp_bi
                                              smp_bi->map_strands));
     }
 
-// std::cout << "*****: " << smp_bi->ref_id << "\t" << smp_bi->ref_pos << "\t" 
-//           << ngslib::join(smp_bi->ref_bases, ",") << "\t" << ngslib::join(smp_bi->align_bases, ",") << "\t: " 
-//           << ngslib::join(bt.get_active_bases(), "-") << "\t" 
-//           << ngslib::join(vi.ref_bases, ",") << "\t" << ngslib::join(vi.alt_bases) << "\t" 
-//           << ngslib::join(vi.depths, ",") << "\t" << ngslib::join(vi.freqs, ",") << "\t" << vi.total_depth << "-" << bt.get_total_depth() << "\n";
     return vi;
 }
 
-VCFRecord call_variant_in_pos(std::vector<VariantInfo> vvi, double hf_cutoff) {
+VCFRecord call_variant_in_pos(std::vector<VariantInfo> vvi, const double hf_cutoff) {
     // 1. Call the variant by the integrated information
-    // 2. Return the variant information to in VCF format
+    // 2. Return the variant information in VCF format
     if (vvi.empty()) {
         return VCFRecord(); // Return empty record if no variants
     }
@@ -719,189 +713,261 @@ VCFRecord call_variant_in_pos(std::vector<VariantInfo> vvi, double hf_cutoff) {
         std::cerr << "Error: Heteroplasmy threshold must be between 0 and 1\n";
         exit(1);
     }
-
-    VCFRecord vcf_record;
-    const auto& first_var = vvi[0];  // Use first variant info as reference
     
-    // Set basic VCF fields
-    vcf_record.chrom = first_var.ref_id;
-    vcf_record.pos   = first_var.ref_pos;
-    
-    // First pass: collect all REF sequences and find the longest one
-    std::string shared_ref;  // The final REF to use in VCF
-    for (size_t i = 0; i < vvi.size(); i++) {
-        for (const auto& ref : vvi[i].ref_bases) {
-            if (ref.length() > shared_ref.length()) {
-                shared_ref = ref;
-            }
-        }
-    }
-
-    // Set the shared REF
-    vcf_record.ref = shared_ref; // Set the original shared REF sequence
-    std::transform(shared_ref.begin(), shared_ref.end(), shared_ref.begin(), ::toupper); // Convert to upper case
-
-    // Second pass: collect and normalize ALT sequences
-    std::set<std::string> unique_alts;
-    for (size_t i = 0; i < vvi.size(); i++) { // Loop all samples in the position, and collect the ALT information
-        for (size_t j = 0; j < vvi[i].alt_bases.size(); j++) {
-            std::string alt = vvi[i].alt_bases[j];
-            std::string ref = vvi[i].ref_bases[j];
-            std::transform(ref.begin(), ref.end(), ref.begin(), ::toupper); // Convert to upper case
-
-            // rebase if Indel
-            if (alt[0] == '-') {
-                alt = ref[0];  // replace by the first ref bases for DEL seq
-                vvi[i].alt_bases[j] = alt;
-            } else if (alt[0] == '+') {
-                alt = ref + alt.substr(1); // replace the first base('+') by ref bases
-                vvi[i].alt_bases[j] = alt; // rewrite deletion seq
-            }
-            
-            // Normalize ALT sequence
-            if (ref != shared_ref && shared_ref.length() > ref.length()) {
-                alt += shared_ref.substr(ref.length());
-                vvi[i].alt_bases[j] = alt; // Update the ALT sequence
-            }
-            unique_alts.insert(alt);
-        }
-    }
-    unique_alts.erase(shared_ref); // Remove REF from ALTs
-
-    if (unique_alts.empty()) {
+    // First pass: collect and normalized all alleles by using the longest REF
+    AlleleInfo ai = collect_allele_info(vvi);  // vvi.alt_bases will be replaced by the normalized alleles
+    if (ai.alts.empty()) {
         return VCFRecord(); // Return empty record if no variants
     }
+    
+    VCFRecord vcf_record;
+    // Set basic VCF fields
+    vcf_record.chrom = vvi[0].ref_id;  // variant's reference id
+    vcf_record.pos   = vvi[0].ref_pos; // variant's reference position 
+    vcf_record.ref   = ai.ref;         // the final REF to be used in VCF
+    vcf_record.alt   = ai.alts;        // have been uniqued and sorted by length and then by ASCII
+    std::transform(ai.ref.begin(), ai.ref.end(), ai.ref.begin(), ::toupper);
 
-    // Set ALT field: Unique and sorted ALT sequences by length and then by ASCII
-    vcf_record.alt = ngslib::get_unique_strings(std::vector<std::string>(unique_alts.begin(), unique_alts.end()));
-
-    std::map<std::string, int> ac; // only record ref and non-ref allele counts (AC)
-    double an = 0;                 // Total allele number in called GT
-
-    std::vector<std::string> ref_alt_order = {shared_ref};
-    for (size_t i = 0; i < vcf_record.alt.size(); i++) {
-        ref_alt_order.push_back(vcf_record.alt[i]);
-        ac[vcf_record.alt[i]] = 0; // Initialize AC
-    }
+    std::vector<std::string> ref_alt_order = {ai.ref}; // First element must be REF allele
+    ref_alt_order.insert(ref_alt_order.end(), ai.alts.begin(), ai.alts.end());
 
     // Set QUAL field: The biggest QUAL value of all samples
     vcf_record.qual = 0;
     
     // Process sample information
     vcf_record.format = "GT:GQ:DP:AD:HF:CI:HQ:LHF:SB:FS:SOR:VT";
-    for (size_t sample_idx = 0; sample_idx < vvi.size(); sample_idx++) {
-        const auto& smp_vi = vvi[sample_idx];
-
-        // record the biggest qual value
-        if (smp_vi.qual > vcf_record.qual && smp_vi.qual != 10000) {
-            vcf_record.qual = smp_vi.qual;
-        }
-
-        // Re-order ALTs present in this sample according to 'vcf_record.alt'
-        std::vector<size_t>      gt_indices; // Genotype indices
-        std::vector<std::string> sample_alts;
-        std::vector<int>         allele_depths;
-        std::vector<double>      allele_freqs;
-        std::vector<int>         hf_qual;  // HQ: phred quality score of heterophasmy allele
-        std::vector<double>      logit_hf; // LHQ: logit transformed heterophasmy fraction
-
-        std::vector<std::string> ci_strings;
-        std::vector<std::string> sb_strings;
-        std::vector<std::string> fs_strings;
-        std::vector<std::string> sor_strings;
-        std::vector<std::string> var_types;
-
-        int exp_major_allele_count = (1 - hf_cutoff) * smp_vi.total_depth; 
-        int exp_minor_allele_count = hf_cutoff * smp_vi.total_depth;
-
+    for (const auto& smp_var_info : vvi) {
         // Collect and format sample information 
-        for (size_t gti = 0; gti < ref_alt_order.size(); gti++) {  // gti == 0 represents the REF GT
-            const auto& alt = ref_alt_order[gti];
-            for (size_t j = 0; j < smp_vi.alt_bases.size(); j++) {
-                if (smp_vi.alt_bases[j] == alt) {
-
-                    an += 1;
-                    ac[alt] += 1;
-
-                    gt_indices.push_back(gti);
-                    sample_alts.push_back(alt);
-                    allele_depths.push_back(smp_vi.depths[j]);
-
-                    // allele_freqs.push_back(smp_vi.freqs[j]); // 这里不要用 lrt 计算出来的 allele frequency，因为可能不知为何会有负数（极少情况下）
-                    // use the allele frequency calculated by allele_depth/total_depth
-                    double h = double(smp_vi.depths[j]) / double(smp_vi.total_depth);  // calculate AF by read depth
-                    allele_freqs.push_back(h);
-                    ci_strings.push_back(format_double(smp_vi.ci[j].first) + "," + format_double(smp_vi.ci[j].second));
-                    
-                    logit_hf.push_back(log(h/(1-h))); // logit transformed
-
-                    sb_strings.push_back(std::to_string(smp_vi.strand_bias[j].fwd) + "," + 
-                                         std::to_string(smp_vi.strand_bias[j].rev));
-                    fs_strings.push_back(smp_vi.strand_bias[j].fs != 10000 ? 
-                                         format_double(smp_vi.strand_bias[j].fs) : "10000"); // it's a phred-scale score
-                    sor_strings.push_back(smp_vi.strand_bias[j].sor != 10000 ? 
-                                          format_double(smp_vi.strand_bias[j].sor) : "10000");
-                    var_types.push_back(smp_vi.var_types[j]);
-
-                    /**
-                     * @brief determine if the rate of heteroplasmy is significantly greater than user defined cutoff.
-                     * 
-                     *  H0 (Null hypothesis): LESS
-                     *  H1 (Alternative hypothesis): Equal or Greater
-                     * 
-                     *            major   minor
-                     *  observed    n11     n12 | n1p
-                     *  expected    n21     n22 | n2p
-                     *          -----------------
-                     *              np1     np2   npp
-                     * 
-                     *  where n11 and n12 are observed depth of major and minor alleles,
-                     *  `n21 = (n11+n12) * (1 - hf_cutoff)` in which hf_cutoff is defined by `--het-threshold` 
-                     *  `n22 = (n11+n12) * hf_cutoff` in which hf_cutoff is defined by `--het-threshold`
-                     * 
-                     */
-                    int obs_major_allele_count = smp_vi.depths[smp_vi.major_allele_idx];
-                    int obs_minor_allele_count = smp_vi.depths[j];
-                    double hq = -10 * log10(fisher_exact_test(obs_major_allele_count, obs_minor_allele_count,
-                                                              exp_major_allele_count, exp_minor_allele_count,
-                                                              TestSide::LESS));
-                    if (std::isinf(hq)) {
-                        hq = 10000;
-                    }
-                    hf_qual.push_back(int(hq));
-                }
-            }
+        auto sa = process_sample_variant(smp_var_info, ref_alt_order, hf_cutoff);
+        
+        // Update variant quality
+        if (smp_var_info.qual > vcf_record.qual && smp_var_info.qual != 10000) {
+            vcf_record.qual = smp_var_info.qual;
         }
 
-        bool alt_found = sample_alts.size() > 0;
-        std::string gt = alt_found ? ngslib::join(gt_indices, "/") : ".";   // set generate genotype (GT)
-        std::string sample_info = gt + ":" +                                // GT, genotype
-                                  std::to_string(int(smp_vi.qual)) + ":" +  // GQ, genotype quality (Variant quality)
-                                  std::to_string(smp_vi.total_depth);       // DP, total depth
-        if (alt_found) {
-            sample_info += ":";
-            sample_info += ngslib::join(allele_depths, ",") + ":" +         // AD, active allele depth, so sum(AD) <= PD
-                           ngslib::join(allele_freqs, ",")  + ":" +         // HF, allele frequency
-                           ngslib::join(ci_strings, ";")    + ":" +         // CI, confidence interval
-                           ngslib::join(hf_qual, ",")       + ":" +         // HQ, Heteroplasmy quality score
-                           ngslib::join(logit_hf, ",")      + ":" +         // LHF, Transformed heteroplasmy by `logit`
-                           ngslib::join(sb_strings, ";")    + ":" +         // SB, strand bias
-                           ngslib::join(fs_strings, ",")    + ":" +         // FS, Fisher strand bias
-                           ngslib::join(sor_strings, ",")   + ":" +         // SOR, Strand odds ratio
-                           ngslib::join(var_types, ",");                    // VT, Variant type
+        // Update allele counts
+        for (const auto& alt : sa.sample_alts) {
+            ai.allele_counts[alt]++;
+            ai.total_alleles++;
         }
 
-        vcf_record.samples.push_back(sample_info);
+        // Format sample string
+        bool alt_found = !sa.sample_alts.empty();
+        vcf_record.samples.push_back(format_sample_string(sa, smp_var_info, alt_found));
     }
-    
+
     // Set INFO field
     std::vector<int> ac_v;
     std::vector<std::string> af;
-    for (const auto& alt : vcf_record.alt) { // Only record the counts (AC) and frequencies (AF) of non-ref allele in INFO field
-        ac_v.push_back(ac[alt]);
-        af.push_back(format_double(ac[alt] / an, 4)); 
+    for (const auto& alt : vcf_record.alt) { 
+        // Only record the counts (AC) and frequencies (AF) of non-ref allele in INFO field
+        ac_v.push_back(ai.allele_counts[alt]);
+        af.push_back(format_double(ai.allele_counts[alt] / ai.total_alleles, 4)); 
     }
-    vcf_record.info = "AF=" + ngslib::join(af, ",") + ";AC=" + ngslib::join(ac_v, ",") + ";AN=" + std::to_string(int(an));
+    vcf_record.info = "AF=" + ngslib::join(af, ",")   + ";"
+                      "AC=" + ngslib::join(ac_v, ",") + ";"
+                      "AN=" + std::to_string(int(ai.total_alleles));
 
     return vcf_record;
 }
+
+
+// Backup
+
+// VCFRecord call_variant_in_pos(std::vector<VariantInfo> vvi, const double hf_cutoff) {
+//     // 1. Call the variant by the integrated information
+//     // 2. Return the variant information to in VCF format
+//     if (vvi.empty()) {
+//         return VCFRecord(); // Return empty record if no variants
+//     }
+
+//     if (hf_cutoff <= 0.0 || hf_cutoff > 1.0) {
+//         std::cerr << "Error: Heteroplasmy threshold must be between 0 and 1\n";
+//         exit(1);
+//     }
+
+//     VCFRecord vcf_record;
+//     const auto& first_var = vvi[0];  // Use first variant info as reference
+    
+//     // Set basic VCF fields
+//     vcf_record.chrom = first_var.ref_id;
+//     vcf_record.pos   = first_var.ref_pos;
+    
+//     // First pass: collect all REF sequences and find the longest one
+//     std::string shared_ref;  // The final REF to use in VCF
+//     for (size_t i = 0; i < vvi.size(); i++) {
+//         for (const auto& ref : vvi[i].ref_bases) {
+//             if (ref.length() > shared_ref.length()) {
+//                 shared_ref = ref;
+//             }
+//         }
+//     }
+
+//     // Set the shared REF
+//     vcf_record.ref = shared_ref; // Set the original shared REF sequence
+//     std::transform(shared_ref.begin(), shared_ref.end(), shared_ref.begin(), ::toupper); // Convert to upper case
+
+//     // Second pass: collect and normalize ALT sequences
+//     std::set<std::string> unique_alts;
+//     for (size_t i = 0; i < vvi.size(); i++) { // Loop all samples in the position, and collect the ALT information
+//         for (size_t j = 0; j < vvi[i].alt_bases.size(); j++) {
+//             std::string alt = vvi[i].alt_bases[j];
+//             std::string ref = vvi[i].ref_bases[j];
+//             std::transform(ref.begin(), ref.end(), ref.begin(), ::toupper); // Convert to upper case
+
+//             // rebase if Indel
+//             if (alt[0] == '-') {
+//                 alt = ref[0];  // replace by the first ref bases for DEL seq
+//                 vvi[i].alt_bases[j] = alt;
+//             } else if (alt[0] == '+') {
+//                 alt = ref + alt.substr(1); // replace the first base('+') by ref bases
+//                 vvi[i].alt_bases[j] = alt; // rewrite deletion seq
+//             }
+            
+//             // Normalize ALT sequence
+//             if (ref != shared_ref && shared_ref.length() > ref.length()) {
+//                 alt += shared_ref.substr(ref.length());
+//                 vvi[i].alt_bases[j] = alt; // Update the ALT sequence
+//             }
+//             unique_alts.insert(alt);
+//         }
+//     }
+//     unique_alts.erase(shared_ref); // Remove REF from ALTs
+
+//     if (unique_alts.empty()) {
+//         return VCFRecord(); // Return empty record if no variants
+//     }
+
+//     // Set ALT field: Unique and sorted ALT sequences by length and then by ASCII
+//     vcf_record.alt = ngslib::get_unique_strings(std::vector<std::string>(unique_alts.begin(), unique_alts.end()));
+
+//     std::map<std::string, int> ac; // only record ref and non-ref allele counts (AC)
+//     double an = 0;                 // Total allele number in called GT
+
+//     std::vector<std::string> ref_alt_order = {shared_ref};
+//     for (size_t i = 0; i < vcf_record.alt.size(); i++) {
+//         ref_alt_order.push_back(vcf_record.alt[i]);
+//         ac[vcf_record.alt[i]] = 0; // Initialize AC
+//     }
+
+//     // Set QUAL field: The biggest QUAL value of all samples
+//     vcf_record.qual = 0;
+    
+//     // Process sample information
+//     vcf_record.format = "GT:GQ:DP:AD:HF:CI:HQ:LHF:SB:FS:SOR:VT";
+//     for (size_t sample_idx = 0; sample_idx < vvi.size(); sample_idx++) {
+//         const auto& smp_vi = vvi[sample_idx];
+
+//         // record the biggest qual value
+//         if (smp_vi.qual > vcf_record.qual && smp_vi.qual != 10000) {
+//             vcf_record.qual = smp_vi.qual;
+//         }
+
+//         // Re-order ALTs present in this sample according to 'vcf_record.alt'
+//         std::vector<size_t>      gt_indices; // Genotype indices
+//         std::vector<std::string> sample_alts;
+//         std::vector<int>         allele_depths;
+//         std::vector<double>      allele_freqs;
+//         std::vector<int>         hf_qual;  // HQ: phred quality score of heterophasmy allele
+//         std::vector<double>      logit_hf; // LHQ: logit transformed heterophasmy fraction
+
+//         std::vector<std::string> ci_strings;
+//         std::vector<std::string> sb_strings;
+//         std::vector<std::string> fs_strings;
+//         std::vector<std::string> sor_strings;
+//         std::vector<std::string> var_types;
+
+//         int exp_major_allele_count = (1 - hf_cutoff) * smp_vi.total_depth; 
+//         int exp_minor_allele_count = hf_cutoff * smp_vi.total_depth;
+
+//         // Collect and format sample information 
+//         for (size_t gti = 0; gti < ref_alt_order.size(); gti++) {  // gti == 0 represents the REF GT
+//             const auto& alt = ref_alt_order[gti];
+//             for (size_t j = 0; j < smp_vi.alt_bases.size(); j++) {
+//                 if (smp_vi.alt_bases[j] == alt) {
+
+//                     an += 1;
+//                     ac[alt] += 1;
+
+//                     gt_indices.push_back(gti);
+//                     sample_alts.push_back(alt);
+//                     allele_depths.push_back(smp_vi.depths[j]);
+
+//                     // allele_freqs.push_back(smp_vi.freqs[j]); // 这里不要用 lrt 计算出来的 allele frequency，因为可能不知为何会有负数（极少情况下）
+//                     // use the allele frequency calculated by allele_depth/total_depth
+//                     double h = double(smp_vi.depths[j]) / double(smp_vi.total_depth);  // calculate AF by read depth
+//                     allele_freqs.push_back(h);
+//                     ci_strings.push_back(format_double(smp_vi.ci[j].first) + "," + format_double(smp_vi.ci[j].second));
+                    
+//                     logit_hf.push_back(log(h/(1-h))); // logit transformed
+
+//                     sb_strings.push_back(std::to_string(smp_vi.strand_bias[j].fwd) + "," + 
+//                                          std::to_string(smp_vi.strand_bias[j].rev));
+//                     fs_strings.push_back(smp_vi.strand_bias[j].fs != 10000 ? 
+//                                          format_double(smp_vi.strand_bias[j].fs) : "10000"); // it's a phred-scale score
+//                     sor_strings.push_back(smp_vi.strand_bias[j].sor != 10000 ? 
+//                                           format_double(smp_vi.strand_bias[j].sor) : "10000");
+//                     var_types.push_back(smp_vi.var_types[j]);
+
+//                     /**
+//                      * @brief determine if the rate of heteroplasmy is significantly greater than user defined cutoff.
+//                      * 
+//                      *  H0 (Null hypothesis): LESS
+//                      *  H1 (Alternative hypothesis): Equal or Greater
+//                      * 
+//                      *            major   minor
+//                      *  observed    n11     n12 | n1p
+//                      *  expected    n21     n22 | n2p
+//                      *          -----------------
+//                      *              np1     np2   npp
+//                      * 
+//                      *  where n11 and n12 are observed depth of major and minor alleles,
+//                      *  `n21 = (n11+n12) * (1 - hf_cutoff)` in which hf_cutoff is defined by `--het-threshold` 
+//                      *  `n22 = (n11+n12) * hf_cutoff` in which hf_cutoff is defined by `--het-threshold`
+//                      * 
+//                      */
+//                     int obs_major_allele_count = smp_vi.depths[smp_vi.major_allele_idx];
+//                     int obs_minor_allele_count = smp_vi.depths[j];
+//                     double hq = -10 * log10(fisher_exact_test(obs_major_allele_count, obs_minor_allele_count,
+//                                                               exp_major_allele_count, exp_minor_allele_count,
+//                                                               TestSide::LESS));
+//                     if (std::isinf(hq)) {
+//                         hq = 10000;
+//                     }
+//                     hf_qual.push_back(int(hq));
+//                 }
+//             }
+//         }
+
+//         bool alt_found = sample_alts.size() > 0;
+//         std::string gt = alt_found ? ngslib::join(gt_indices, "/") : ".";   // set generate genotype (GT)
+//         std::string sample_info = gt + ":" +                                // GT, genotype
+//                                   std::to_string(int(smp_vi.qual)) + ":" +  // GQ, genotype quality (Variant quality)
+//                                   std::to_string(smp_vi.total_depth);       // DP, total depth
+//         if (alt_found) {
+//             sample_info += ":";
+//             sample_info += ngslib::join(allele_depths, ",") + ":" +         // AD, active allele depth, so sum(AD) <= PD
+//                            ngslib::join(allele_freqs, ",")  + ":" +         // HF, allele frequency
+//                            ngslib::join(ci_strings, ";")    + ":" +         // CI, confidence interval
+//                            ngslib::join(hf_qual, ",")       + ":" +         // HQ, Heteroplasmy quality score
+//                            ngslib::join(logit_hf, ",")      + ":" +         // LHF, Transformed heteroplasmy by `logit`
+//                            ngslib::join(sb_strings, ";")    + ":" +         // SB, strand bias
+//                            ngslib::join(fs_strings, ",")    + ":" +         // FS, Fisher strand bias
+//                            ngslib::join(sor_strings, ",")   + ":" +         // SOR, Strand odds ratio
+//                            ngslib::join(var_types, ",");                    // VT, Variant type
+//         }
+
+//         vcf_record.samples.push_back(sample_info);
+//     }
+    
+//     // Set INFO field
+//     std::vector<int> ac_v;
+//     std::vector<std::string> af;
+//     for (const auto& alt : vcf_record.alt) { // Only record the counts (AC) and frequencies (AF) of non-ref allele in INFO field
+//         ac_v.push_back(ac[alt]);
+//         af.push_back(format_double(ac[alt] / an, 4)); 
+//     }
+//     vcf_record.info = "AF=" + ngslib::join(af, ",") + ";AC=" + ngslib::join(ac_v, ",") + ";AN=" + std::to_string(int(an));
+
+//     return vcf_record;
+// }

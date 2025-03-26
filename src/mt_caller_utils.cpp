@@ -68,44 +68,147 @@ StrandBiasInfo strand_bias(const std::string &major_base,
     return sbi;
 }
 
-double ref_vs_alt_ranksumtest(const char ref_base, 
-                              const std::string alt_bases_string,
-                              const std::vector<char> &bases,
-                              const std::vector<int> &values)  // values 和 bases 的值是配对的，一一对应 
-{
-    std::vector<double> ref, alt;
-    ref.reserve(values.size());  // change capacity and save time
-    alt.reserve(values.size());  // change capacity and save time
+AlleleInfo collect_allele_info(std::vector<VariantInfo>& variants) {
+    
+    // Find longest REF
+    std::string shared_ref;
+    for (const auto& smp_var : variants) {
+        for (const auto& ref : smp_var.ref_bases) {
+            if (ref.length() > shared_ref.length()) {
+                shared_ref = ref;
+            }
+        }
+    }
+    AlleleInfo ai; 
+    ai.ref = shared_ref;  // set raw ref
+    std::transform(shared_ref.begin(), shared_ref.end(), shared_ref.begin(), ::toupper);
 
-    for (size_t i = 0; i < bases.size(); i++) {
-        if (bases[i] == ref_base) {
-            ref.push_back(values[i]);
-        } else if (alt_bases_string.find(bases[i]) != std::string::npos) {
-            alt.push_back(values[i]);
+    // Normalize ALTs and update variants
+    std::set<std::string> unique_alts;
+    for (auto& smp_var : variants) {  // Loop all samples in the position, collect and normalized the ALT information
+        for (size_t j = 0; j < smp_var.alt_bases.size(); j++) {
+            std::string alt = smp_var.alt_bases[j];
+            std::string ref = smp_var.ref_bases[j];
+            std::transform(ref.begin(), ref.end(), ref.begin(), ::toupper);
+
+            // rebase if Indels
+            if (alt[0] == '-') {
+                alt = ref[0];               // replace by the first ref bases for DEL seq
+                smp_var.alt_bases[j] = alt; // Update the ALT sequence
+            } else if (alt[0] == '+') {
+                alt = ref + alt.substr(1);  // replace the first base('+') by ref bases
+                smp_var.alt_bases[j] = alt; // rewrite deletion seq
+            }
+            
+            if (ref != shared_ref && shared_ref.length() > ref.length()) {
+                alt += shared_ref.substr(ref.length());
+                smp_var.alt_bases[j] = alt;  // Update the ALT sequence
+            }
+            unique_alts.insert(alt);
+        }
+    }
+    unique_alts.erase(shared_ref);  // Remove REF from ALTs
+
+    // Set ALT field: Unique and sorted ALT sequences by length and then by ASCII
+    ai.alts = ngslib::get_unique_strings(
+        std::vector<std::string>(unique_alts.begin(), unique_alts.end())
+    );
+
+    for (const auto& alt : ai.alts) {
+        ai.allele_counts[alt] = 0;
+    }
+    
+    return ai;
+}
+
+VCFSampleAnnotation process_sample_variant(const VariantInfo& var_info,
+                                           const std::vector<std::string>& ref_alt_order,
+                                           double hf_cutoff) {
+    VCFSampleAnnotation sa;
+    
+    int exp_major_count = (1 - hf_cutoff) * var_info.total_depth;
+    int exp_minor_count = hf_cutoff * var_info.total_depth;
+    
+    for (size_t i = 0; i < ref_alt_order.size(); i++) {  // i == 0 represents the REF GT
+        const auto& alt = ref_alt_order[i];
+        for (size_t j = 0; j < var_info.alt_bases.size(); j++) {
+            if (var_info.alt_bases[j] == alt) {
+                sa.gt_indices.push_back(i);
+                sa.sample_alts.push_back(alt);
+                sa.allele_depths.push_back(var_info.depths[j]);
+                
+                // allele_freqs.push_back(var_info.freqs[j]); // 这里不要用 lrt 计算出来的 allele frequency，因为可能不知为何会有负数（极少情况下）
+                 // calculate the allele frequency by allele_depth/total_depth
+                double h = double(var_info.depths[j]) / double(var_info.total_depth);
+                sa.allele_freqs.push_back(h);
+                sa.logit_hf.push_back(log(h/(1-h)));
+                
+                sa.ci_strings.push_back(format_double(var_info.ci[j].first) + "," + 
+                                        format_double(var_info.ci[j].second));
+                
+                sa.sb_strings.push_back(std::to_string(var_info.strand_bias[j].fwd) + "," + 
+                                        std::to_string(var_info.strand_bias[j].rev));
+                
+                sa.fs_strings.push_back(var_info.strand_bias[j].fs != 10000 ?
+                                        format_double(var_info.strand_bias[j].fs) : "10000"); // it's a phred-scale score
+                
+                sa.sor_strings.push_back(var_info.strand_bias[j].sor != 10000 ?
+                                         format_double(var_info.strand_bias[j].sor) : "10000");
+                
+                sa.var_types.push_back(var_info.var_types[j]);
+
+                /**
+                 * @brief determine if the rate of heteroplasmy is significantly greater than user defined cutoff.
+                 * 
+                 *  H0 (Null hypothesis): LESS
+                 *  H1 (Alternative hypothesis): Equal or Greater
+                 * 
+                 *            major   minor
+                 *  observed    n11     n12 | n1p
+                 *  expected    n21     n22 | n2p
+                 *          -----------------
+                 *              np1     np2   npp
+                 * 
+                 *  where n11 and n12 are observed depth of major and minor alleles,
+                 *  `n21 = (n11+n12) * (1 - hf_cutoff)` in which hf_cutoff is defined by `--het-threshold` 
+                 *  `n22 = (n11+n12) * hf_cutoff` in which hf_cutoff is defined by `--het-threshold`
+                 * 
+                 */
+                int obs_major_count = var_info.depths[var_info.major_allele_idx];
+                int obs_minor_count = var_info.depths[j];
+                double hq = -10 * log10(fisher_exact_test(obs_major_count, obs_minor_count,
+                                                          exp_major_count, exp_minor_count,
+                                                          TestSide::LESS));
+                if (std::isinf(hq)) {
+                    hq = 10000;
+                }
+                sa.hq.push_back(int(hq));
+            }
         }
     }
     
-    double p_phred_scale_value;
-    if (ref.size() > 0 && alt.size() > 0) { // not empty
-        double p_value = wilcoxon_ranksum_test(ref, alt);
-        p_phred_scale_value = -10 * log10(p_value);
-        if (std::isinf(p_phred_scale_value)) {
-            p_phred_scale_value = 10000;
-        }
-    } else {
-        // set a big enough phred-scale value if only get REF or ALT base on this postion.
-        p_phred_scale_value = 10000;
-    }
-    return p_phred_scale_value;
+    return sa;
 }
 
-double ref_vs_alt_ranksumtest(const char ref_base, 
-                              const std::string alt_bases_string,
-                              const std::vector<char> &bases,
-                              const std::vector<char> &values) 
-{
-    std::vector<int> v(values.begin(), values.end()); 
-    return ref_vs_alt_ranksumtest(ref_base, alt_bases_string, bases, v);
+std::string format_sample_string(const VCFSampleAnnotation& sa, const VariantInfo& var_info, bool alt_found) {
+    if (!alt_found) {
+        return ".:0:" + std::to_string(var_info.total_depth);  // No variants found
+    }
+
+    std::string sample_info = ngslib::join(sa.gt_indices, "/")     + ":" +  // GT, genotype
+                              std::to_string(int(var_info.qual))   + ":" +  // GQ, genotype quality (Variant quality)
+                              std::to_string(var_info.total_depth) + ":" +  // DP, total depth
+                              ngslib::join(sa.allele_depths, ",")  + ":" +  // AD, active allele depth, so sum(AD) <= PD
+                              ngslib::join(sa.allele_freqs, ",")   + ":" +  // HF, allele frequency, homo-/hetero-plasmy
+                              ngslib::join(sa.ci_strings, ";")     + ":" +  // CI, confidence interval
+                              ngslib::join(sa.hq, ",")             + ":" +  // HQ, homo-/hetero-plasmy quality score
+                              ngslib::join(sa.logit_hf, ",")       + ":" +  // LHF,Transformed homo-/hetero-plasmy by `logit`
+                              ngslib::join(sa.sb_strings, ";")     + ":" +  // SB, strand bias
+                              ngslib::join(sa.fs_strings, ",")     + ":" +  // FS, fisher-exact-test strand bias
+                              ngslib::join(sa.sor_strings, ",")    + ":" +  // SOR,Strand odds ratio
+                              ngslib::join(sa.var_types, ",");              // VT, Variant type
+
+    return sample_info;
 }
 
 std::string vcf_header_define(const std::string &ref_file_path, const std::vector<std::string> &samples, const std::string other_comment) {
@@ -122,8 +225,8 @@ std::string vcf_header_define(const std::string &ref_file_path, const std::vecto
         "to determine if the rate of heteroplasmy/Homoplasmy is significantly greater than user defined cutoff (-j), an ordered list of the GT alleles. "
         "[CAUTION] In most cases, the minor allele corresponds to the heteroplasmic allele; therefore, the HQ at the minor allele position "
         "reflects the quality value of heterozygous allele mostly.\">",
-        "##FORMAT=<ID=LHF,Number=A,Type=Float,Description=\"Transformed heteroplasmy: The logit of the heteroplasmy fraction (HF) is computed as "
-        "logit(HF) = ln(HF / (1 - HF)) for each heteroplasmic allele, in the order listed by GT.\">",
+        "##FORMAT=<ID=LHF,Number=A,Type=Float,Description=\"Transformed heteroplasmy/homoplasmy: The logit of the heteroplasmy/homoplasmy fraction (HF) is "
+        "computed as logit(HF) = ln(HF / (1 - HF)) for each heteroplasmic allele, in the order listed by GT.\">",
         "##FORMAT=<ID=SB,Number=1,Type=String,Description=\"Allele-specific forward/reverse read counts for strand bias tests for the GT alleles in "
         "the order listed, separated by ';'. Format: fwd,rev;fwd,rev;...\">",
         "##FORMAT=<ID=FS,Number=A,Type=Float,Description=\"An ordered, comma delimited list of phred-scaled p-value using Fisher's exact test to detect strand bias\">",
