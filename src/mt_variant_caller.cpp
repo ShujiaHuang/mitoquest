@@ -14,7 +14,7 @@ void MtVariantCaller::usage(const Config &config) {
               << "Optional options:\n"
               << "  -b, --bam-list FILE        list of input BAM/CRAM filenames, one per line.\n"
               << "                             REG format: chr:start-end (e.g.: chrM or chrM:1-1000,chrM:8000-8200)\n"
-            //   << "  -Q, --min-BQ INT           skip bases with base quality smaller than INT (default: " << config.min_baseq << ")\n"
+              << "  -Q, --min-BQ INT           skip bases with base quality smaller than INT (default: " << config.min_baseq << ")\n"
               << "  -q, --min-MQ INT           skip alignments with mapQ smaller than INT (default: " << config.min_mapq  << ")\n"
               << "  -r, --regions REG[,...]    Comma separated list of regions in which to process (default: entire genome).\n"
               << "  -p, --pairs-map-only       Only use the paired reads which mapped to the some chromosome.\n"
@@ -32,7 +32,7 @@ MtVariantCaller::MtVariantCaller(int argc, char* argv[]) {
     Config config;
     // Set default values
     config.min_mapq                = 20;
-    // config.min_baseq               = 20;
+    config.min_baseq               = 20;
     config.heteroplasmy_threshold  = 0.01;
     config.thread_count            = 1;
     config.chunk_size              = 1000;
@@ -45,7 +45,7 @@ MtVariantCaller::MtVariantCaller(int argc, char* argv[]) {
         {"output",             required_argument, 0, 'o'},
 
         {"bam-list",           optional_argument, 0, 'b'},
-        // {"min-BQ",             optional_argument, 0, 'Q'},
+        {"min-BQ",             optional_argument, 0, 'Q'},
         {"min-MQ",             optional_argument, 0, 'q'},
         {"regions",            optional_argument, 0, 'r'},
         {"chunk",              optional_argument, 0, 'c'},
@@ -69,7 +69,7 @@ MtVariantCaller::MtVariantCaller(int argc, char* argv[]) {
 
     int opt;
     std::vector<std::string> bv;
-    while ((opt = getopt_long(argc, argv, "f:b:o:q:r:c:j:t:pPh", MT_CMDLINE_LOPTS, NULL)) != -1) {
+    while ((opt = getopt_long(argc, argv, "f:b:o:Q:q:r:c:j:t:pPh", MT_CMDLINE_LOPTS, NULL)) != -1) {
         switch (opt) {
             case 'f': config.reference_file = optarg;                    break;
             case 'o': config.output_file    = optarg;                    break;
@@ -79,7 +79,7 @@ MtVariantCaller::MtVariantCaller(int argc, char* argv[]) {
                                         bv.begin(), bv.end());
                 break;
 
-            // case 'Q': config.min_baseq            = std::atoi(optarg); break;
+            case 'Q': config.min_baseq               = std::atoi(optarg); break;
             case 'q': config.min_mapq                = std::atoi(optarg); break;
             case 'r': config.calling_regions         = optarg;            break;
             case 'c': config.chunk_size              = std::atoi(optarg); break;
@@ -117,8 +117,13 @@ MtVariantCaller::MtVariantCaller(int argc, char* argv[]) {
         exit(1);
     }
 
+    if (config.min_baseq < 0) {
+        std::cerr << "Error: Base Quality score must be non-negative\n";
+        exit(1);
+    }
+
     if (config.min_mapq < 0) {
-        std::cerr << "Error: Quality score must be non-negative\n";
+        std::cerr << "Error: Mapping Quality score must be non-negative\n";
         exit(1);
     }
 
@@ -142,6 +147,7 @@ MtVariantCaller::MtVariantCaller(int argc, char* argv[]) {
         "[INFO] Arguments: "
         "mitoquest caller -f " + config.reference_file + 
         " -t " << config.thread_count           << ""
+        " -Q " << config.min_baseq              << ""
         " -q " << config.min_mapq               << ""
         " -j " << config.heteroplasmy_threshold << ""
         " -c " << config.chunk_size             << (config.calling_regions.empty() ? "" : 
@@ -487,7 +493,12 @@ PosVariantMap call_pileup_in_sample(const std::string sample_bam_fn,
 
         if (sample_target_reads.size() > 0) {
             // get alignment information of [i] sample.
-            seek_position(fa_seq, sample_target_reads, gr, config.heteroplasmy_threshold, sample_posinfo_map);
+            seek_position(fa_seq, 
+                          sample_target_reads,
+                          gr, 
+                          config.min_baseq,
+                          config.heteroplasmy_threshold,
+                          sample_posinfo_map);
         }
     }
 
@@ -507,9 +518,10 @@ PosVariantMap call_pileup_in_sample(const std::string sample_bam_fn,
     return sample_pileup_m;
 }
 
-void seek_position(const std::string &fa_seq,   // must be the whole chromosome sequence
+void seek_position(const std::string &fa_seq,                               // must be the whole chromosome sequence
                    const std::vector<ngslib::BamRecord> &sample_map_reads,  // record the alignment reads of sample
                    const GenomeRegion gr,
+                   const int min_baseq,
                    const double min_af,
                    PosMap &sample_posinfo_map)  // key: position, value: alignment information
 {
@@ -583,6 +595,8 @@ void seek_position(const std::string &fa_seq,   // must be the whole chromosome 
 
             // qpos is 0-based, conver to 1-based to set the rank of base on read.
             ab.rpr = aligned_pairs[i].qpos + 1;
+
+            if (ab.base_qual < min_baseq + 33) continue;  // filter low quality bases, 33 is the offset of base QUAL;
 
             // 以 map_ref_pos 为 key，将所有的 read_bases 信息存入 map 中，多个突变共享同个 ref_pos，
             if (sample_posinfo_map.find(map_ref_pos) == sample_posinfo_map.end()) {

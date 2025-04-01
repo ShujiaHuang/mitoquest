@@ -34,7 +34,7 @@ public:
         std::string output_file;            // output VCF file
 
         int min_mapq;                       // a mapping quality score less than this value will be filtered
-        // int min_baseq;  // a base quality score less than this value will be filtered (按照我的模型，这个参数没什么必要)
+        int min_baseq;  // a base quality score less than this value will be filtered (按照我的模型，这个参数没什么必要)
         float heteroplasmy_threshold;
         int thread_count;
         int chunk_size;               // Process this many bases per thread
@@ -84,6 +84,7 @@ PosVariantMap call_pileup_in_sample(const std::string sample_bam_fn,
 void seek_position(const std::string &fa_seq,   // must be the whole chromosome sequence
                    const std::vector<ngslib::BamRecord> &sample_map_reads,
                    const GenomeRegion gr,
+                   const int min_baseq,
                    const double min_af,
                    PosMap &sample_posinfo_map);
 

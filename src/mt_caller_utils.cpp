@@ -222,13 +222,13 @@ std::string vcf_header_define(const std::string &ref_file_path, const std::vecto
         "##FORMAT=<ID=CI,Number=1,Type=String,Description=\"95\% confidence interval around the estimated homoplasmy/heteroplasmy fraction for "
         "the GT alleles in the order listed. format: ci_low,ci_up;ci_low,ci_up;...\">",
         "##FORMAT=<ID=HQ,Number=A,Type=Integer,Description=\"Heteroplasmy/Homoplasmy Quality, phred quality scores of pvalue of one-tail Fisher exact test "
-        "to determine if the rate of heteroplasmy/Homoplasmy is significantly greater than user defined cutoff (-j), an ordered list of the GT alleles. "
+        "to determine if the rate of allele is significantly greater than user defined cutoff (-j), in the order listed by GT. "
         "[CAUTION] In most cases, the minor allele corresponds to the heteroplasmic allele; therefore, the HQ at the minor allele position "
         "reflects the quality value of heterozygous allele mostly.\">",
         "##FORMAT=<ID=LHF,Number=A,Type=Float,Description=\"Transformed heteroplasmy/homoplasmy: The logit of the heteroplasmy/homoplasmy fraction (HF) is "
-        "computed as logit(HF) = ln(HF / (1 - HF)) for each heteroplasmic allele, in the order listed by GT.\">",
-        "##FORMAT=<ID=SB,Number=1,Type=String,Description=\"Allele-specific forward/reverse read counts for strand bias tests for the GT alleles in "
-        "the order listed, separated by ';'. Format: fwd,rev;fwd,rev;...\">",
+        "computed as logit(HF) = ln(HF/(1-HF)) for each allele, in the order listed by GT.\">",
+        "##FORMAT=<ID=SB,Number=1,Type=String,Description=\"Allele-specific forward/reverse read counts for strand bias tests for the alleles, in "
+        "the order listed by GT, separated by ';'. Format: fwd,rev;fwd,rev;...\">",
         "##FORMAT=<ID=FS,Number=A,Type=Float,Description=\"An ordered, comma delimited list of phred-scaled p-value using Fisher's exact test to detect strand bias\">",
         "##FORMAT=<ID=SOR,Number=A,Type=Float,Description=\"An ordered, comma delimited list of strand bias estimated by the Symmetric Odds Ratio test\">",
         "##FORMAT=<ID=VT,Number=1,Type=String,Description=\"An ordered, comma delimited list of variant type: REF, SNV, INS, DEL, or MNV\">",
