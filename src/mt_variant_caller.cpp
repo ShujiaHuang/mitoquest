@@ -804,9 +804,12 @@ VCFRecord call_variant_in_pos(std::vector<VariantInfo> vvi, const double hf_cuto
     vcf_record.info = "AF=" + ngslib::join(af, ",")   + ";"
                       "AC=" + ngslib::join(ac_v, ",") + ";"
                       "AN=" + std::to_string(int(ai.total_alleles)) + ";"
-                      "HOM_AF=" + format_double(double(hom_ind_count) / total_available_ind_count, 4) + ";"
-                      "HET_AF=" + format_double(double(het_ind_count) / total_available_ind_count, 4) + ";"
-                      "SUM_AF=" + format_double(double(hom_ind_count + het_ind_count) / total_available_ind_count, 4) + ";"
+                      "HOM_N="   + std::to_string(hom_ind_count) + ";"
+                      "HET_N="   + std::to_string(het_ind_count) + ";"
+                      "Total_N=" + std::to_string(total_available_ind_count) + ";"
+                      "HOM_AF="  + format_double(double(hom_ind_count) / total_available_ind_count, 4) + ";"
+                      "HET_AF="  + format_double(double(het_ind_count) / total_available_ind_count, 4) + ";"
+                      "SUM_AF="  + format_double(double(hom_ind_count + het_ind_count) / total_available_ind_count, 4) + ";"
                       "PT=" + pt;
 
     return vcf_record;
