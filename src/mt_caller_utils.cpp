@@ -124,6 +124,7 @@ AlleleInfo collect_allele_info(std::vector<VariantInfo>& variants) {
 VCFSampleAnnotation process_sample_variant(const VariantInfo& var_info,
                                            const std::vector<std::string>& ref_alt_order,
                                            double hf_cutoff) {
+    // 计算并返回单个样本的信息
     VCFSampleAnnotation sa;
     
     int exp_major_count = (1 - hf_cutoff) * var_info.total_depth;
@@ -190,8 +191,9 @@ VCFSampleAnnotation process_sample_variant(const VariantInfo& var_info,
     return sa;
 }
 
-std::string format_sample_string(const VCFSampleAnnotation& sa, const VariantInfo& var_info, bool alt_found) {
-    if (!alt_found) {
+std::string format_sample_string(const VCFSampleAnnotation& sa, const VariantInfo& var_info) {
+    
+    if (sa.sample_alts.empty()) {
         return ".:0:" + std::to_string(var_info.total_depth);  // No variants found
     }
 
@@ -235,6 +237,10 @@ std::string vcf_header_define(const std::string &ref_file_path, const std::vecto
         "##INFO=<ID=AF,Number=A,Type=Float,Description=\"An ordered, comma delimited list of non-reference allele frequencies\">",
         "##INFO=<ID=AC,Number=A,Type=Integer,Description=\"An ordered, comma delimited list of non-reference allele count in genotypes\">",
         "##INFO=<ID=AN,Number=1,Type=Integer,Description=\"Total number of ref and non-ref allele in called genotypes\">",
+        "##INFO=<ID=HOM_AF,Number=1,Type=Float,Description=\"Total frequency of individuals exhibiting the homoplasmic state for the non-reference allele in the population.\">",
+        "##INFO=<ID=HET_AF,Number=1,Type=Float,Description=\"Total frequency of individuals exhibiting the heteroplasmic state for the non-reference allele in the population.\">",
+        "##INFO=<ID=SUM_AF,Number=1,Type=Float,Description=\"The frequency of HOM_AF+HET_AF.\">",
+        "##INFO=<ID=PT,Number=1,Type=String,Description=\"Type of plasmicity observed in population: Hom_only, Het_only, or Both\">"
     };  // initial by common information of header
 
     ngslib::Fasta fa = ref_file_path;

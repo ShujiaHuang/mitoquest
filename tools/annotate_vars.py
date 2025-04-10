@@ -2,14 +2,14 @@
 This script is modified according to the following script:
 https://github.com/leklab/mitochondrial_constraint/blob/main/build_model/annotate_mutations.py
 """
+import sys
 import argparse
+import gzip
 import csv
 import datetime
 import json
-import sys
 from itertools import zip_longest
 import subprocess
-import os
 
 
 def rcrs_pos_to_ref(anno_file_path):
@@ -38,17 +38,24 @@ def rcrs_pos_to_trinucleotide(anno_file_path):
         ref = row["REF"]
 
         if pos == 16569:
-            trinucleotide = rcrs_pos2ref[str(pos - 1)] + ref + rcrs_pos2ref[str(1)]  # dealing with circular genome
+            # dealing with circular genome
+            trinucleotide = rcrs_pos2ref[str(
+                pos - 1)] + ref + rcrs_pos2ref[str(1)]
         elif pos == 1:
-            trinucleotide = rcrs_pos2ref[str(16569)] + ref + rcrs_pos2ref[str(pos + 1)]  # dealing with circular genome
+            # dealing with circular genome
+            trinucleotide = rcrs_pos2ref[str(
+                16569)] + ref + rcrs_pos2ref[str(pos + 1)]
         elif ref == "N":
             continue  # ie skip, to handle the 'N' spacer expected at m.3107
         elif rcrs_pos2ref[str(pos + 1)] == "N":
-            trinucleotide = rcrs_pos2ref[str(pos - 1)] + ref + rcrs_pos2ref[str(pos + 2)]
+            trinucleotide = rcrs_pos2ref[str(
+                pos - 1)] + ref + rcrs_pos2ref[str(pos + 2)]
         elif rcrs_pos2ref[str(pos - 1)] == "N":
-            trinucleotide = rcrs_pos2ref[str(pos - 2)] + ref + rcrs_pos2ref[str(pos + 1)]
+            trinucleotide = rcrs_pos2ref[str(
+                pos - 2)] + ref + rcrs_pos2ref[str(pos + 1)]
         else:
-            trinucleotide = rcrs_pos2ref[str(pos - 1)] + ref + rcrs_pos2ref[str(pos + 1)]
+            trinucleotide = rcrs_pos2ref[str(
+                pos - 1)] + ref + rcrs_pos2ref[str(pos + 1)]
         dict[str(pos)] = trinucleotide
     return dict
 
@@ -63,7 +70,8 @@ def gnomad_annotate(anno_file_path):
     for row in csv.DictReader(
             open(anno_file_path+'/required_files/databases/gnomad.genomes.v3.1.sites.chrM.reduced_annotations.tsv'), delimiter='\t'):
         if row["filters"] == "PASS":
-            dict[(row["ref"], row["position"], row["alt"])] = (row["max_observed_heteroplasmy"], row["AF_hom"], row["AF_het"], row["AC_hom"], row["AC_het"])
+            dict[(row["ref"], row["position"], row["alt"])] = (
+                row["max_observed_heteroplasmy"], row["AF_hom"], row["AF_het"], row["AC_hom"], row["AC_het"])
     return dict
 
 
@@ -91,29 +99,38 @@ def vep_annotate(anno_file_path):
             open(anno_file_path+"/required_files/synthetic_vcf/NC_012920.1_synthetic_vep_splitvarstwogenes.vcf"), delimiter="\t"):
         # gene or locus
         if (row["REF"], row["POS"], row["ALT"], "symbol") in vep:  # i.e. variant is in two genes
-            vep[(row["REF"], row["POS"], row["ALT"], "symbol")].append(row["SYMBOL"])
+            vep[(row["REF"], row["POS"], row["ALT"], "symbol")].append(
+                row["SYMBOL"])
         else:
             vep[(row["REF"], row["POS"], row["ALT"], "symbol")] = [row["SYMBOL"]]
         # consequences
         if (row["REF"], row["POS"], row["ALT"], "consequence") in vep:  # i.e. variant is in two genes
-            vep[(row["REF"], row["POS"], row["ALT"], "consequence")].append(row["Consequence"])
+            vep[(row["REF"], row["POS"], row["ALT"], "consequence")].append(
+                row["Consequence"])
         else:
-            vep[(row["REF"], row["POS"], row["ALT"], "consequence")] = [row["Consequence"]]
+            vep[(row["REF"], row["POS"], row["ALT"], "consequence")] = [
+                row["Consequence"]]
         # amino acids
         if (row["REF"], row["POS"], row["ALT"], "aa") in vep:  # i.e. variant is in two genes
-            vep[(row["REF"], row["POS"], row["ALT"], "aa")].append(row["Amino_acids"])
+            vep[(row["REF"], row["POS"], row["ALT"], "aa")].append(
+                row["Amino_acids"])
         else:
-            vep[(row["REF"], row["POS"], row["ALT"], "aa")] = [row["Amino_acids"]]
+            vep[(row["REF"], row["POS"], row["ALT"], "aa")] = [
+                row["Amino_acids"]]
         # protein position
         if (row["REF"], row["POS"], row["ALT"], "codon") in vep:  # i.e. variant is in two genes
-            vep[(row["REF"], row["POS"], row["ALT"], "codon")].append(row["Protein_position"])
+            vep[(row["REF"], row["POS"], row["ALT"], "codon")].append(
+                row["Protein_position"])
         else:
-            vep[(row["REF"], row["POS"], row["ALT"], "codon")] = [row["Protein_position"]]
+            vep[(row["REF"], row["POS"], row["ALT"], "codon")] = [
+                row["Protein_position"]]
         # codon change
         if (row["REF"], row["POS"], row["ALT"], "codon_change") in vep:  # i.e. variant is in two genes
-            vep[(row["REF"], row["POS"], row["ALT"], "codon_change")].append(row["Codons"])
+            vep[(row["REF"], row["POS"], row["ALT"],
+                 "codon_change")].append(row["Codons"])
         else:
-            vep[(row["REF"], row["POS"], row["ALT"], "codon_change")] = [row["Codons"]]
+            vep[(row["REF"], row["POS"], row["ALT"],
+                 "codon_change")] = [row["Codons"]]
     return vep
 
 
@@ -142,7 +159,8 @@ def RNA_domains_mods(anno_file_path):
         # handle the fact few bases are in two RNA genes
         if row["MODIFICATION"] != "#N/A":
             if "," in row["GENE"]:  # bases in two RNA genes coded together
-                dict[row["POS"], "modified"] = [row["MODIFICATION"], row["MODIFICATION"]]
+                dict[row["POS"], "modified"] = [
+                    row["MODIFICATION"], row["MODIFICATION"]]
             else:
                 dict[row["POS"], "modified"] = [row["MODIFICATION"]]
         if row["DOMAIN"]:
@@ -163,9 +181,11 @@ def RNA_base_type(anno_file_path):
     # first, create a dictionary for bases in pairs so can look-up if WC or not
     RNA_dict = {}
     for row in csv.DictReader(open(anno_file_path+'/required_files/other_annotations/all_RNA_bases.tsv'), delimiter='\t'):
-        if (row["Type"] == "b") and row["Pair_coordinate"]:  # type b excludes base m.3107N, filter to bases in pairs
+        # type b excludes base m.3107N, filter to bases in pairs
+        if (row["Type"] == "b") and row["Pair_coordinate"]:
             # note there are four bases in two tRNAs, hence using gene as second key
-            RNA_dict[(row["Genomic_coordinate"], row["file"])] = row["RNA.base"]
+            RNA_dict[(row["Genomic_coordinate"], row["file"])
+                     ] = row["RNA.base"]
     # now iterate through RNA bases
     dict = {}
     for row in csv.DictReader(open(anno_file_path+'/required_files/other_annotations/all_RNA_bases.tsv'), delimiter='\t'):
@@ -173,7 +193,8 @@ def RNA_base_type(anno_file_path):
             # first determine base type
             if row["Pair_coordinate"]:  # if in pair
                 base1 = RNA_dict[(row["Genomic_coordinate"], row["file"])]
-                base2 = RNA_dict[(row["Pair_coordinate"], row["file"])]  # pairing base
+                # pairing base
+                base2 = RNA_dict[(row["Pair_coordinate"], row["file"])]
                 if (base1 == 'A' and base2 == 'T') or (base1 == 'T' and base2 == 'A'):
                     base_type = "WC"
                 elif (base1 == 'C' and base2 == 'G') or (base1 == 'G' and base2 == 'C'):
@@ -201,17 +222,22 @@ def uniprot_annotations(anno_file_path):
     for row in csv.reader(open(anno_file_path+'/required_files/other_annotations/uniprot_beds_chrMT_combined_2025-04-03.txt'), delimiter='\t'):
         # restrict to annotations of interest
         if any(x in row[14] for x in ["binding", "metal"]):  # metal binding or binding site
-            annotation = "site:" + row[14].split("UP000005640_9606_")[1].split(".bed")[0] + "-" + row[13]
+            annotation = "site:" + \
+                row[14].split("UP000005640_9606_")[
+                    1].split(".bed")[0] + "-" + row[13]
             # per UniProt: start_coord = row[1] and end_coord = row[2], but there can be intervals/blocks between these
             # number of blocks representing the annotation is row[9]
             # row[10] are the block sizes, a comma separated list
             # row[11] are block starts, a comma separated list of block offsets relative to the annotation start
             nblock = list(range(1, int(row[9]) + 1))
             for block in nblock:
-                start = int(row[1]) + int(row[11].split(",")[(block - 1)]) + 1  # need the plus 1 offset
-                end = start + int(row[10].split(",")[(block - 1)]) - 1  # need the minus 1 offset
+                start = int(row[1]) + int(row[11].split(",")
+                                          [(block - 1)]) + 1  # need the plus 1 offset
+                # need the minus 1 offset
+                end = start + int(row[10].split(",")[(block - 1)]) - 1
                 if end > int(row[2]):
-                    sys.exit('Problem: the predicted end coordinate is greater than the provided')
+                    sys.exit(
+                        'Problem: the predicted end coordinate is greater than the provided')
                 for pos in list(range(1, 16570)):
                     if (pos >= start) and (pos <= end):
                         if pos in dict:
@@ -233,10 +259,12 @@ def curated_func_sites(anno_file_path):
     for row in csv.DictReader(
             open(anno_file_path+"/required_files/synthetic_vcf/NC_012920.1_synthetic_vep_splitvarstwogenes.vcf"), delimiter="\t"):
         if (row["SYMBOL"], row["Protein_position"]) not in res_to_pos:
-            res_to_pos[(row["SYMBOL"], row["Protein_position"])] = [int(row["POS"])]
+            res_to_pos[(row["SYMBOL"], row["Protein_position"])] = [
+                int(row["POS"])]
         else:
-            res_to_pos[(row["SYMBOL"], row["Protein_position"])].append(int(row["POS"]))
-    
+            res_to_pos[(row["SYMBOL"], row["Protein_position"])
+                       ].append(int(row["POS"]))
+
     dict = {}
     for row in csv.DictReader(
             open(anno_file_path+'/required_files/other_annotations/CI_proton_residues_PMID32972993.txt'), delimiter='\t'):
@@ -310,7 +338,7 @@ def in_helix(anno_file_path):
             pos = row["locus"].split("chrM:")[1]
             ref = row["alleles"].split("\"")[1]
             alt = row["alleles"].split("\"")[3]
-            
+
             # calculate maximum heteroplasmy, as only provided for variants observed at heteroplasmy
             if float(row["AF_hom"]) == 0:
                 max_het = float(row["max_ARF"])
@@ -326,17 +354,18 @@ def mitomap(anno_file_path):
     :return: a dictionary, where the key is a tuple of the ref, position and alt, and the value is the status
     """
     dict1, dict2 = {}, {}
-    for row in csv.DictReader(open(anno_file_path+'/required_files/databases/MITOMAP_disease_2025-04-03.cgi',encoding='ISO-8859-1'), delimiter='\t'):
+    for row in csv.DictReader(open(anno_file_path+'/required_files/databases/MITOMAP_disease_2025-04-03.cgi', encoding='ISO-8859-1'), delimiter='\t'):
         if ("Cfrm" in str(row["status"])) or ("Reported" in str(row["status"])):
             if (len(row["ref"]) == 1) and (len(row["alt"]) == 1) and row["alt"].isalpha() and (row["ref"] != row["alt"]):  # if SNVs
                 dict1[(row["ref"], row["pos"], row["alt"])] = (
                     row["status"], row["homoplasmy"], row["heteroplasmy"], row["disease"])
-    
+
     for row in csv.DictReader(open(anno_file_path+'/required_files/databases/MITOMAP_polymorphisms_2025-04-03.cgi', encoding='ISO-8859-1'), delimiter='\t'):
         if (len(row["ref"]) == 1) and (len(row["alt"]) == 1) and row["alt"].isalpha() and (row["ref"] != row["alt"]):  # if SNVs
             # 56910 is total number of gb sequences to convert to allele freq
-            dict2[(row["ref"], row["pos"], row["alt"])] = (int(row["gbcnt"]), (int(row["gbcnt"]) / 56910))
-    
+            dict2[(row["ref"], row["pos"], row["alt"])] = (
+                int(row["gbcnt"]), (int(row["gbcnt"]) / 56910))
+
     return dict1, dict2
 
 
@@ -352,9 +381,9 @@ def clinvar(anno_file_path):
         ref = row["Canonical SPDI"].split(':')[2]
         interp = row["Clinical significance (Last reviewed)"].split('(')[0]
         if (len(ref) == 1) and (len(alt) == 1) and (ref != alt):  # if SNVs
-            #if "no assertion criteria" not in row["Review status"]:
-                # exclude those only listed for cancer, some are cancer and mito diseases keep those
-                # there shouldn't be any however that are not 'no assertion criteria provided for release used
+            # if "no assertion criteria" not in row["Review status"]:
+            # exclude those only listed for cancer, some are cancer and mito diseases keep those
+            # there shouldn't be any however that are not 'no assertion criteria provided for release used
             # identified through manual inspection of conditions, those only annotated for cancer excluded
             if interp != "Conflicting interpretations of pathogenicity":
                 if row["Condition(s)"] != "Familial colorectal cancer" and \
@@ -364,10 +393,11 @@ def clinvar(anno_file_path):
                     dict[(ref, pos, alt)] = interp
     return dict
 
+
 def chimp_ref_lookup(anno_file_path):
     """Parse an alignment of the human and chimpanzee reference mtDNA sequences and determine the ancestral chimp allele.
     Note this uses a shifted version of the human reference sequence.
-    
+
     :return: a dictionary, where the key is a tuple of the ref and position, and the value is the chimp allele
     """
     # read in alignment file generated by the msa package in R
@@ -391,7 +421,7 @@ def chimp_ref_lookup(anno_file_path):
                 for base in sequence:
                     dict[('chimp', c_aln_pos)] = base
                     c_aln_pos += 1
-    
+
     # now parse dict to return chimp reference allele at each position
     # this is shifted human mtDNA, so starts at m.577 - this is to match the start position of the chimpanzee reference
     new_dict = {}
@@ -407,7 +437,7 @@ def chimp_ref_lookup(anno_file_path):
                 pos = 1  # to renumber
     return new_dict
 
-import gzip
+
 def open_file(file_path):
     """
     Open a file, regardless of whether it is gzipped or not.
@@ -432,6 +462,7 @@ def remove_common_suffix(s1, s2):
     new_s2 = new_s2 if new_s2 else s2
     return (new_s1, new_s2)
 
+
 def annotate(input_file, annotated_txt, annotated_vcf, anno_file_path):
     """Annotate the file with all possible mitochondrial mutations and their likelihood scores.
 
@@ -439,7 +470,8 @@ def annotate(input_file, annotated_txt, annotated_vcf, anno_file_path):
     """
     f = open(annotated_txt, "w")
     output_vcf = open(annotated_vcf, "w")
-    header_list = ['POS', 'REF', 'ALT', 'INFO', 'trinucleotide', 'symbol', 'consequence', 'amino_acids', 'protein_position', 'codon_change', 'gnomad_max_hl', 'gnomad_af_hom', 'gnomad_af_het', 'gnomad_ac_hom', 'gnomad_ac_het', 'in_phylotree', 'phyloP_score', 'tRNA_position', 'tRNA_domain', 'RNA_base_type', 'RNA_modified', 'rRNA_bridge_base', 'uniprot_annotation', 'other_prot_annotation', 'apogee_class', 'mitotip_class', 'hmtvar_class', 'helix_max_hl', 'helix_af_hom', 'helix_af_het', 'mitomap_gbcnt', 'mitomap_af', 'mitomap_status', 'mitomap_plasmy', 'mitomap_disease', 'clinvar_interp', 'chimp_ref']
+    header_list = ['POS', 'REF', 'ALT', 'INFO', 'trinucleotide', 'symbol', 'consequence', 'amino_acids', 'protein_position', 'codon_change', 'gnomad_max_hl', 'gnomad_af_hom', 'gnomad_af_het', 'gnomad_ac_hom', 'gnomad_ac_het', 'in_phylotree', 'phyloP_score', 'tRNA_position', 'tRNA_domain', 'RNA_base_type',
+                   'RNA_modified', 'rRNA_bridge_base', 'uniprot_annotation', 'other_prot_annotation', 'apogee_class', 'mitotip_class', 'hmtvar_class', 'helix_max_hl', 'helix_af_hom', 'helix_af_het', 'mitomap_gbcnt', 'mitomap_af', 'mitomap_status', 'mitomap_plasmy', 'mitomap_disease', 'clinvar_interp', 'chimp_ref']
     header = '\t'.join(header_list)
     f.write(header + '\n')
 
@@ -460,57 +492,87 @@ def annotate(input_file, annotated_txt, annotated_vcf, anno_file_path):
     mitomap_vars1, mitomap_vars2 = mitomap(anno_file_path)
     clinvar_vars = clinvar(anno_file_path)
     chimp_dict = chimp_ref_lookup(anno_file_path)
-    
+
     # for row in csv.DictReader(open(input_file), delimiter='\t'):
-    header=''
+    header = ''
     for line in open_file(input_file):
         if line.startswith('##'):
             output_vcf.write(line)
         elif line.startswith('#CHROM'):
-            print(f'##annotate_command=python annotate_vars_copy.py -i {input_file} -o {annotated_txt} -v {annotated_vcf} -d {anno_file_path}', file=output_vcf)
+            print(
+                f'##annotate_command=python annotate_vars_copy.py -i {input_file} -o {annotated_txt} -v {annotated_vcf} -d {anno_file_path}', file=output_vcf)
             output_vcf.write(line)
         else:
-            CHROM,POS,ID,REFs,ALTs,QUAL,FILTER,INFO,FORMAT, *SAMPLES = line.strip().split('\t')
-            REF_ALT_list = [remove_common_suffix(REF, ALT) for REF, ALT in list(zip_longest(REFs.split(','), ALTs.split(','), fillvalue=REFs.split(',')[0]))]
-            variant_list = [REF + POS + ALT for REF, ALT in REF_ALT_list ]
+            CHROM, POS, ID, REFs, ALTs, QUAL, FILTER, INFO, FORMAT, * \
+                SAMPLES = line.strip().split('\t')
+            REF_ALT_list = [remove_common_suffix(REF, ALT) for REF, ALT in list(
+                zip_longest(REFs.split(','), ALTs.split(','), fillvalue=REFs.split(',')[0]))]
+            variant_list = [REF + POS + ALT for REF, ALT in REF_ALT_list]
             var_tuple_list = [(REF, POS, ALT) for REF, ALT in REF_ALT_list]
 
-            in_phylo_list = [1 if "\n" + variant + "\n" in open(anno_file_path+'/required_files/databases/phylotree_variants.txt').read() else 0 for variant in variant_list]
-            max_hl_list = [gnomad[var_tuple][0] if var_tuple in gnomad else 0 for var_tuple in var_tuple_list]
-            gnomad_af_hom_list = [gnomad[var_tuple][1] if var_tuple in gnomad else 0 for var_tuple in var_tuple_list]
-            gnomad_af_het_list = [gnomad[var_tuple][2] if var_tuple in gnomad else 0 for var_tuple in var_tuple_list]
-            gnomad_ac_hom_list = [gnomad[var_tuple][3] if var_tuple in gnomad else 0 for var_tuple in var_tuple_list]
-            gnomad_ac_het_list = [gnomad[var_tuple][4] if var_tuple in gnomad else 0 for var_tuple in var_tuple_list]
+            in_phylo_list = [1 if "\n" + variant + "\n" in open(
+                anno_file_path+'/required_files/databases/phylotree_variants.txt').read() else 0 for variant in variant_list]
+            max_hl_list = [
+                gnomad[var_tuple][0] if var_tuple in gnomad else 0 for var_tuple in var_tuple_list]
+            gnomad_af_hom_list = [
+                gnomad[var_tuple][1] if var_tuple in gnomad else 0 for var_tuple in var_tuple_list]
+            gnomad_af_het_list = [
+                gnomad[var_tuple][2] if var_tuple in gnomad else 0 for var_tuple in var_tuple_list]
+            gnomad_ac_hom_list = [
+                gnomad[var_tuple][3] if var_tuple in gnomad else 0 for var_tuple in var_tuple_list]
+            gnomad_ac_het_list = [
+                gnomad[var_tuple][4] if var_tuple in gnomad else 0 for var_tuple in var_tuple_list]
             tRNA_pos = tRNA_position[POS] if POS in tRNA_position else ''
-            tRNA_dom = RNA_dom_mod[(POS, "domain")] if (POS, "domain") in RNA_dom_mod else ''
-            RNA_mod = RNA_dom_mod[(POS, "modified")] if (POS, "modified") in RNA_dom_mod else ''
-            RNA_base = str(RNA_type[POS]).strip('[]').replace("'", "").replace(" ", "") if POS in RNA_type else ''
-            RNA_bridge = "Yes" if ("\n" + POS + "\n") in open(anno_file_path+'/required_files/other_annotations/rRNA_bridge_bases.txt').read() else "No"
+            tRNA_dom = RNA_dom_mod[(POS, "domain")] if (
+                POS, "domain") in RNA_dom_mod else ''
+            RNA_mod = RNA_dom_mod[(POS, "modified")] if (
+                POS, "modified") in RNA_dom_mod else ''
+            RNA_base = str(RNA_type[POS]).strip('[]').replace(
+                "'", "").replace(" ", "") if POS in RNA_type else ''
+            RNA_bridge = "Yes" if ("\n" + POS + "\n") in open(anno_file_path +
+                                                              '/required_files/other_annotations/rRNA_bridge_bases.txt').read() else "No"
             uniprot_annot = str(uniprot[int(POS)]).strip('[]').replace("'", "").replace(" ", "") \
                 if int(POS) in uniprot else ''
             other_prot_annot = str(other_prot[int(POS)]).strip('[]').replace("'", "").replace(" ", "") \
                 if int(POS) in other_prot else ''
-            apogee_score_list = [str(apogee_scores[var_tuple]).strip('[]').replace("'", "").replace(" ", "") if var_tuple in apogee_scores else '' for var_tuple in var_tuple_list]
-            mitotip_score_list = [mitotip_scores[var_tuple] if var_tuple in mitotip_scores else '' for var_tuple in var_tuple_list]
-            helix_max_hl_list = [helix[var_tuple][0] if var_tuple in helix else 0 for var_tuple in var_tuple_list]
-            helix_af_hom_list = [helix[var_tuple][1] if var_tuple in helix else 0 for var_tuple in var_tuple_list]
-            helix_af_het_list = [helix[var_tuple][2] if var_tuple in helix else 0 for var_tuple in var_tuple_list]
-            mitomap_ac_list = [mitomap_vars2[var_tuple][0] if var_tuple in mitomap_vars2 else 0 for var_tuple in var_tuple_list]
-            mitomap_af_list = [mitomap_vars2[var_tuple][1] if var_tuple in mitomap_vars2 else 0 for var_tuple in var_tuple_list]
-            mitomap_status_list = [mitomap_vars1[var_tuple][0] if var_tuple in mitomap_vars1 else '' for var_tuple in var_tuple_list]
-            mitomap_plasmy_list = [(mitomap_vars1[var_tuple][1] + '/' + mitomap_vars1[var_tuple][2]) if var_tuple in mitomap_vars1 else '' for var_tuple in var_tuple_list]
-            mitomap_dz_list = [mitomap_vars1[var_tuple][3] if var_tuple in mitomap_vars1 else '' for var_tuple in var_tuple_list]
-            clinvar_int_list = [clinvar_vars[var_tuple] if var_tuple in clinvar_vars else '' for var_tuple in var_tuple_list]
-            
-            vep_symbol_list = [str(vep[(REF, POS, alt, "symbol")]).strip('[]').replace("'", "").replace(" ", "") if (REF, POS, alt, "symbol") in vep else '' for REF, POS, alt in var_tuple_list]
-            vep_conseq_list = [str(vep[(REF, POS, alt, "consequence")]).strip('[]').replace("'", "").replace(" ", "") if (REF, POS, alt, "consequence") in vep else '' for REF, POS, alt in var_tuple_list]
-            vep_aa_list = [str(vep[(REF, POS, alt, "aa")]).strip('[]').replace("'", "").replace(" ", "") if (REF, POS, alt, "aa") in vep else '' for REF, POS, alt in var_tuple_list]
-            vep_codon_list = [str(vep[(REF, POS, alt, "codon")]).strip('[]').replace("'", "").replace(" ", "") if (REF, POS, alt, "codon") in vep else '' for REF, POS, alt in var_tuple_list]
-            vep_codon_change_list = [str(vep[(REF, POS, alt, "codon_change")]).strip('[]').replace("'", "").replace(" ", "") if (REF, POS, alt, "codon_change") in vep else '' for REF, POS, alt in var_tuple_list]            
-            hmtvar_scores_list = [str(hmtvar_scores[(REF, POS, alt)]).strip('[]').replace("'", "").replace(" ", "") if (REF, POS, alt) in hmtvar_scores else '' for REF, POS, alt in var_tuple_list]
-            
+            apogee_score_list = [str(apogee_scores[var_tuple]).strip('[]').replace("'", "").replace(
+                " ", "") if var_tuple in apogee_scores else '' for var_tuple in var_tuple_list]
+            mitotip_score_list = [
+                mitotip_scores[var_tuple] if var_tuple in mitotip_scores else '' for var_tuple in var_tuple_list]
+            helix_max_hl_list = [
+                helix[var_tuple][0] if var_tuple in helix else 0 for var_tuple in var_tuple_list]
+            helix_af_hom_list = [
+                helix[var_tuple][1] if var_tuple in helix else 0 for var_tuple in var_tuple_list]
+            helix_af_het_list = [
+                helix[var_tuple][2] if var_tuple in helix else 0 for var_tuple in var_tuple_list]
+            mitomap_ac_list = [mitomap_vars2[var_tuple][0]
+                               if var_tuple in mitomap_vars2 else 0 for var_tuple in var_tuple_list]
+            mitomap_af_list = [mitomap_vars2[var_tuple][1]
+                               if var_tuple in mitomap_vars2 else 0 for var_tuple in var_tuple_list]
+            mitomap_status_list = [mitomap_vars1[var_tuple][0]
+                                   if var_tuple in mitomap_vars1 else '' for var_tuple in var_tuple_list]
+            mitomap_plasmy_list = [(mitomap_vars1[var_tuple][1] + '/' + mitomap_vars1[var_tuple][2])
+                                   if var_tuple in mitomap_vars1 else '' for var_tuple in var_tuple_list]
+            mitomap_dz_list = [mitomap_vars1[var_tuple][3]
+                               if var_tuple in mitomap_vars1 else '' for var_tuple in var_tuple_list]
+            clinvar_int_list = [
+                clinvar_vars[var_tuple] if var_tuple in clinvar_vars else '' for var_tuple in var_tuple_list]
+
+            vep_symbol_list = [str(vep[(REF, POS, alt, "symbol")]).strip('[]').replace("'", "").replace(
+                " ", "") if (REF, POS, alt, "symbol") in vep else '' for REF, POS, alt in var_tuple_list]
+            vep_conseq_list = [str(vep[(REF, POS, alt, "consequence")]).strip('[]').replace("'", "").replace(
+                " ", "") if (REF, POS, alt, "consequence") in vep else '' for REF, POS, alt in var_tuple_list]
+            vep_aa_list = [str(vep[(REF, POS, alt, "aa")]).strip('[]').replace("'", "").replace(
+                " ", "") if (REF, POS, alt, "aa") in vep else '' for REF, POS, alt in var_tuple_list]
+            vep_codon_list = [str(vep[(REF, POS, alt, "codon")]).strip('[]').replace("'", "").replace(
+                " ", "") if (REF, POS, alt, "codon") in vep else '' for REF, POS, alt in var_tuple_list]
+            vep_codon_change_list = [str(vep[(REF, POS, alt, "codon_change")]).strip('[]').replace("'", "").replace(
+                " ", "") if (REF, POS, alt, "codon_change") in vep else '' for REF, POS, alt in var_tuple_list]
+            hmtvar_scores_list = [str(hmtvar_scores[(REF, POS, alt)]).strip('[]').replace("'", "").replace(
+                " ", "") if (REF, POS, alt) in hmtvar_scores else '' for REF, POS, alt in var_tuple_list]
+
             f.write(
-                POS + '\t' + REFs + '\t' + ALTs + '\t' +INFO + '\t' +
+                POS + '\t' + REFs + '\t' + ALTs + '\t' + INFO + '\t' +
                 rcrs_pos2trinuc[POS] + '\t' +
                 ','.join(vep_symbol_list) + '\t' +
                 ','.join(vep_conseq_list) + '\t' +
@@ -546,8 +608,8 @@ def annotate(input_file, annotated_txt, annotated_vcf, anno_file_path):
                 chimp_dict[(REFs[0], int(POS))] + '\n')
             # output_vcf.write(line)
 
-            anno_info ="trinucleotide=" + rcrs_pos2trinuc[POS] + ';' + \
-                        "symbol=" + ','.join(vep_symbol_list) + ';' + \
+            anno_info = "trinucleotide=" + rcrs_pos2trinuc[POS] + ';' + \
+                "symbol=" + ','.join(vep_symbol_list) + ';' + \
                         "consequence=" + ','.join(vep_conseq_list) + ';' + \
                         "amino_acids=" + ','.join(vep_aa_list) + ';' + \
                         "protein_position=" + ','.join(vep_codon_list) + ';' + \
@@ -580,22 +642,33 @@ def annotate(input_file, annotated_txt, annotated_vcf, anno_file_path):
                         "clinvar_interp=" + ','.join(clinvar_int_list) + ';' + \
                         "chimp_ref=" + chimp_dict[(REFs[0], int(POS))]
             INFO = INFO.strip() + ';' + anno_info
-            line = '\t'.join([CHROM,POS,ID,REFs,ALTs,QUAL,FILTER,INFO,FORMAT, *SAMPLES])
+            line = '\t'.join([CHROM, POS, ID, REFs, ALTs,
+                             QUAL, FILTER, INFO, FORMAT, *SAMPLES])
             output_vcf.write(line + '\n')
 
 
 def main():
-    parser = argparse.ArgumentParser(description='To annotate the VCF file using the annotated files')
-    parser.add_argument('-i',"--input", type=str, help="The input VCF file")
-    parser.add_argument('-d',"--directory", type=str, help="The directory containing the annotated files")
-    parser.add_argument('-o',"--annotated_txt", type=str, help="The output annotated file in txt format")
-    parser.add_argument('-v',"--annotated_vcf", type=str, help="The output annotated file in vcf format containing the information about all samples")
+    parser = argparse.ArgumentParser(
+        description='To annotate the VCF file using the annotated files')
+    parser.add_argument('-i', "--input", type=str, help="The input VCF file")
+    parser.add_argument('-d', "--directory", type=str,
+                        help="The directory containing the annotated files")
+    parser.add_argument('-o', "--annotated_txt", type=str,
+                        help="The output annotated file in txt format")
+    parser.add_argument('-v', "--annotated_vcf", type=str,
+                        help="The output annotated file in vcf format containing the information about all samples")
     args = parser.parse_args()
+
     print(datetime.datetime.now(), "Annotating mitochondrial mutation!" + '\n')
-    annotate(input_file=args.input, annotated_txt=args.annotated_txt, annotated_vcf=args.annotated_vcf, anno_file_path=args.directory)
+
+    annotate(input_file=args.input, annotated_txt=args.annotated_txt,
+             annotated_vcf=args.annotated_vcf, anno_file_path=args.directory)
+
     subprocess.run(["bgzip", args.annotated_vcf])
     subprocess.run(["tabix", "-p", "vcf", args.annotated_vcf+".gz"])
+
     print(datetime.datetime.now(), "Script complete!" + '\n')
+
 
 if __name__ == "__main__":
     main()

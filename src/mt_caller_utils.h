@@ -224,8 +224,7 @@ VCFSampleAnnotation process_sample_variant(const VariantInfo& var_info,
                                            const std::vector<std::string>& ref_alt_order,
                                            double hf_cutoff);
 std::string format_sample_string(const VCFSampleAnnotation& anno, 
-                                 const VariantInfo& var_info,
-                                 bool alt_found);
+                                 const VariantInfo& var_info);
 
 std::string vcf_header_define(const std::string &ref_file_path, 
                               const std::vector<std::string> &samples,

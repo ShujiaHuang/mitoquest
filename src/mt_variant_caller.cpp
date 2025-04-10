@@ -31,8 +31,8 @@ MtVariantCaller::MtVariantCaller(int argc, char* argv[]) {
 
     Config config;
     // Set default values
-    config.min_mapq                = 20;
     config.min_baseq               = 20;
+    config.min_mapq                = 20;
     config.heteroplasmy_threshold  = 0.01;
     config.thread_count            = 1;
     config.chunk_size              = 1000;
@@ -582,7 +582,7 @@ void seek_position(const std::string &fa_seq,                               // m
 
                 // do not roll back position here
                 ab.ref_base  = aligned_pairs[i].ref_base;
-                ab.read_base = "-" + aligned_pairs[i].ref_base;  // aligned_pairs[i].ref_base 是做识别用的 (后面不直接用，要替换的)，因为可能有其他类型的 DEL 
+                ab.read_base = "-" + aligned_pairs[i].ref_base;  // aligned_pairs[i].ref_base 识别用的 (后面不直接用，要替换的)，同位点可以有多类型的 DEL 
 
                 // Need to convert the read_base to upper case if it is a deletion in case of the ref is lower case.
                 std::transform(ab.read_base.begin(), ab.read_base.end(), ab.read_base.begin(), ::toupper);
@@ -608,25 +608,25 @@ void seek_position(const std::string &fa_seq,                               // m
             // collected all the base informations of the read into the map.
             sample_posinfo_map[map_ref_pos].align_bases.push_back(ab);
 
-            // Record indels' reference position
-            if (!ab.read_base.empty() && (ab.read_base[0] == '-' || ab.read_base[0] == '+')) {
+            // Record the reference position for Indels
+            if (ab.read_base[0] == '-' || ab.read_base[0] == '+') {
                 indel_pos_set.insert(map_ref_pos);
             }
         }
     }
 
-    // 对于 Indel 位点，按照 Indel 优先的原则对位点的 map info 做修改
+    // 对于 Indel 位点，按照 Indel 优先的原则对位点的 align info 做修改
     for (auto pos: indel_pos_set) {
         uint32_t leftmost_pos = pos > 1 ? pos - 1 : pos; // roll back one position to the leftmost of Indels break point.
         AlignInfo raw_align_info = sample_posinfo_map[pos];
         sample_posinfo_map.erase(pos);
 
-        AlignInfo indel_info(raw_align_info.ref_id, leftmost_pos);  // record the leftmost position for Indels
+        AlignInfo indel_info(raw_align_info.ref_id, leftmost_pos);  // record Indels on the leftmost position
         AlignInfo non_indel_info(raw_align_info.ref_id, pos);       // raw position for non-indel variants
         for (auto ab: raw_align_info.align_bases) {
             if (ab.read_base[0] == '-' || ab.read_base[0] == '+') {
                 ab.ref_base = fa_seq[leftmost_pos - 1] + ab.ref_base;  // add one leftmost ref-base
-                indel_info.align_bases.push_back(ab);
+                indel_info.align_bases.push_back(ab); // 同位点可以有多类型的 DEL/INS
             } else {
                 non_indel_info.align_bases.push_back(ab);
             }
@@ -638,7 +638,7 @@ void seek_position(const std::string &fa_seq,                               // m
 
         double total_depth = double(indel_info.align_bases.size() + non_indel_info.align_bases.size());
         if (indel_info.align_bases.size() / total_depth >= min_af) {  // filter noise singnal
-            sample_posinfo_map[leftmost_pos] = indel_info;
+            sample_posinfo_map[leftmost_pos] = indel_info;  // replace
         }
 
         if (non_indel_info.align_bases.size() / total_depth >= min_af) {  // filter noise singnal
@@ -723,11 +723,6 @@ VCFRecord call_variant_in_pos(std::vector<VariantInfo> vvi, const double hf_cuto
         return VCFRecord(); // Return empty record if no variants
     }
 
-    if (hf_cutoff <= 0.0 || hf_cutoff > 1.0) {
-        std::cerr << "Error: Heteroplasmy threshold must be between 0 and 1\n";
-        exit(1);
-    }
-    
     // First pass: collect and normalized all alleles by using the longest REF
     AlleleInfo ai = collect_allele_info(vvi);  // vvi.alt_bases will be replaced by the normalized alleles
     if (ai.alts.empty()) {
@@ -750,6 +745,9 @@ VCFRecord call_variant_in_pos(std::vector<VariantInfo> vvi, const double hf_cuto
     
     // Process sample information
     vcf_record.format = "GT:GQ:DP:AD:HF:CI:HQ:LHF:SB:FS:SOR:VT";
+    int hom_ind_count = 0;
+    int het_ind_count = 0;
+    int total_available_ind_count = 0;
     for (const auto& smp_var_info : vvi) {
         // Collect and format sample information 
         auto sa = process_sample_variant(smp_var_info, ref_alt_order, hf_cutoff);
@@ -766,8 +764,23 @@ VCFRecord call_variant_in_pos(std::vector<VariantInfo> vvi, const double hf_cuto
         }
 
         // Format sample string
-        bool alt_found = !sa.sample_alts.empty();
-        vcf_record.samples.push_back(format_sample_string(sa, smp_var_info, alt_found));
+        vcf_record.samples.push_back(format_sample_string(sa, smp_var_info));
+
+        // Count the number of homozygous and heterozygous individuals
+        if (sa.gt_indices.size() > 0) {
+            // Check if the sample is homozygous or heterozygous
+            if ((sa.gt_indices.size() == 1) && (sa.gt_indices[0] != 0)) {  // non-reference
+                hom_ind_count++;
+            } else if (sa.gt_indices.size() > 1) {
+                het_ind_count++;
+            }
+            total_available_ind_count++;
+        }
+    }
+
+    if (total_available_ind_count == 0) {
+        throw std::runtime_error("[ERROR] No available individuals in this position: " +
+                                 vcf_record.chrom + ":" + std::to_string(vcf_record.pos));
     }
 
     // Set INFO field
@@ -778,9 +791,23 @@ VCFRecord call_variant_in_pos(std::vector<VariantInfo> vvi, const double hf_cuto
         ac_v.push_back(ai.allele_counts[alt]);
         af.push_back(format_double(ai.allele_counts[alt] / ai.total_alleles, 4)); 
     }
+
+    std::string pt; // plasmic type
+    if (hom_ind_count > 0 && het_ind_count == 0) {
+        pt = "Hom_only";
+    } else if (het_ind_count > 0 && hom_ind_count == 0) {
+        pt = "Het_only";
+    } else if (het_ind_count > 0 && hom_ind_count > 0) {
+        pt = "Both";
+    }
+
     vcf_record.info = "AF=" + ngslib::join(af, ",")   + ";"
                       "AC=" + ngslib::join(ac_v, ",") + ";"
-                      "AN=" + std::to_string(int(ai.total_alleles));
+                      "AN=" + std::to_string(int(ai.total_alleles)) + ";"
+                      "HOM_AF=" + format_double(double(hom_ind_count) / total_available_ind_count, 4) + ";"
+                      "HET_AF=" + format_double(double(het_ind_count) / total_available_ind_count, 4) + ";"
+                      "SUM_AF=" + format_double(double(hom_ind_count + het_ind_count) / total_available_ind_count, 4) + ";"
+                      "PT=" + pt;
 
     return vcf_record;
 }

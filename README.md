@@ -5,3 +5,5 @@ A cross-platform, efficient and practical human mitochondrial sequencing data an
 Scripts to analyze mitochondrial sequencing data.
 
 Seeking information like heteroplasmy, SNV, etc. on human  Mitochondrial genome from NGS data.
+
+> *"What I cannot create, I do not understand" — Richard Feynman*
