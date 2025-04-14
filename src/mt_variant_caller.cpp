@@ -767,11 +767,11 @@ VCFRecord call_variant_in_pos(std::vector<VariantInfo> vvi, const double hf_cuto
         vcf_record.samples.push_back(format_sample_string(sa, smp_var_info));
 
         // Count the number of homozygous and heterozygous individuals
-        if (sa.gt_indices.size() > 0) {
+        if (sa.gtcode.size() > 0) {
             // Check if the sample is homozygous or heterozygous
-            if ((sa.gt_indices.size() == 1) && (sa.gt_indices[0] != 0)) {  // non-reference
+            if ((sa.gtcode.size() == 1) && (sa.gtcode[0] != 0)) {  // non-reference
                 hom_ind_count++;
-            } else if (sa.gt_indices.size() > 1) {
+            } else if (sa.gtcode.size() > 1) {
                 het_ind_count++;
             }
             total_available_ind_count++;
@@ -807,9 +807,9 @@ VCFRecord call_variant_in_pos(std::vector<VariantInfo> vvi, const double hf_cuto
                       "HOM_N="   + std::to_string(hom_ind_count) + ";"
                       "HET_N="   + std::to_string(het_ind_count) + ";"
                       "Total_N=" + std::to_string(total_available_ind_count) + ";"
-                      "HOM_AF="  + format_double(double(hom_ind_count) / total_available_ind_count, 4) + ";"
-                      "HET_AF="  + format_double(double(het_ind_count) / total_available_ind_count, 4) + ";"
-                      "SUM_AF="  + format_double(double(hom_ind_count + het_ind_count) / total_available_ind_count, 4) + ";"
+                      "HOM_PF="  + format_double(double(hom_ind_count) / total_available_ind_count, 4) + ";"
+                      "HET_PF="  + format_double(double(het_ind_count) / total_available_ind_count, 4) + ";"
+                      "SUM_PF="  + format_double(double(hom_ind_count + het_ind_count) / total_available_ind_count, 4) + ";"
                       "PT=" + pt;
 
     return vcf_record;

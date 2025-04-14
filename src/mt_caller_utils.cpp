@@ -134,7 +134,7 @@ VCFSampleAnnotation process_sample_variant(const VariantInfo& var_info,
         const auto& alt = ref_alt_order[i];
         for (size_t j = 0; j < var_info.alt_bases.size(); j++) {
             if (var_info.alt_bases[j] == alt) {
-                sa.gt_indices.push_back(i);
+                sa.gtcode.push_back(i);
                 sa.sample_alts.push_back(alt);
                 sa.allele_depths.push_back(var_info.depths[j]);
                 
@@ -197,7 +197,7 @@ std::string format_sample_string(const VCFSampleAnnotation& sa, const VariantInf
         return ".:0:" + std::to_string(var_info.total_depth);  // No variants found
     }
 
-    std::string sample_info = ngslib::join(sa.gt_indices, "/")     + ":" +  // GT, genotype
+    std::string sample_info = ngslib::join(sa.gtcode, "/")         + ":" +  // GT, genotype
                               std::to_string(int(var_info.qual))   + ":" +  // GQ, genotype quality (Variant quality)
                               std::to_string(var_info.total_depth) + ":" +  // DP, total depth
                               ngslib::join(sa.allele_depths, ",")  + ":" +  // AD, active allele depth, so sum(AD) <= PD
@@ -236,13 +236,13 @@ std::string vcf_header_define(const std::string &ref_file_path, const std::vecto
         "##FORMAT=<ID=VT,Number=1,Type=String,Description=\"An ordered, comma delimited list of variant type: REF, SNV, INS, DEL, or MNV\">",
         "##INFO=<ID=AF,Number=A,Type=Float,Description=\"An ordered, comma delimited list of non-reference allele frequencies\">",
         "##INFO=<ID=AC,Number=A,Type=Integer,Description=\"An ordered, comma delimited list of non-reference allele count in genotypes\">",
-        "##INFO=<ID=AN,Number=1,Type=Integer,Description=\"Total number of ref and non-ref allele in called genotypes\">",
+        "##INFO=<ID=AN,Number=1,Type=Integer,Description=\"Total number of ref and non-reference allele in called genotypes\">",
         "##INFO=<ID=HOM_N,Number=1,Type=Integer,Description=\"Total number of individuals exhibiting the homoplasmic state for the non-reference allele in the population.\">",
         "##INFO=<ID=HET_N,Number=1,Type=Integer,Description=\"Total number of individuals exhibiting the heteroplasmic state for the non-reference allele in the population.\">",
         "##INFO=<ID=Total_N,Number=1,Type=Integer,Description=\"Available sample size in this record.\">",
-        "##INFO=<ID=HOM_AF,Number=1,Type=Float,Description=\"Total frequency of individuals exhibiting the homoplasmic state for the non-reference allele in the population.\">",
-        "##INFO=<ID=HET_AF,Number=1,Type=Float,Description=\"Total frequency of individuals exhibiting the heteroplasmic state for the non-reference allele in the population.\">",
-        "##INFO=<ID=SUM_AF,Number=1,Type=Float,Description=\"The frequency of HOM_AF+HET_AF.\">",
+        "##INFO=<ID=HOM_PF,Number=1,Type=Float,Description=\"Total frequency of individuals exhibiting the homoplasmic state for the non-reference allele in the population.\">",
+        "##INFO=<ID=HET_PF,Number=1,Type=Float,Description=\"Total frequency of individuals exhibiting the heteroplasmic state for the non-reference allele in the population.\">",
+        "##INFO=<ID=SUM_PF,Number=1,Type=Float,Description=\"Total frequency: HOM_PF+HET_PF.\">",
         "##INFO=<ID=PT,Number=1,Type=String,Description=\"Type of plasmicity observed in population: Hom_only, Het_only, or Both\">"
     };  // initial by common information of header
 
@@ -251,8 +251,7 @@ std::string vcf_header_define(const std::string &ref_file_path, const std::vecto
     for (size_t i(0); i < fa.nseq(); ++i) {
         std::string seqname = fa.iseq_name(i);
         uint32_t seqlen = fa.seq_length(seqname);
-        contigs.push_back("##contig=<ID=" + seqname + ",length=" + std::to_string(seqlen) + 
-                          ",assembly=" + ref_file_path + ">");
+        contigs.push_back("##contig=<ID=" + seqname + ",length=" + std::to_string(seqlen) + ",assembly=" + ref_file_path + ">");
     }
     header.insert(header.end(), contigs.begin(), contigs.end());
     header.push_back("##reference=file://" + ngslib::abspath(ref_file_path));

@@ -112,7 +112,7 @@ struct AlleleInfo {
 };
 
 struct VCFSampleAnnotation {
-    std::vector<size_t> gt_indices;       // Genotype indices
+    std::vector<size_t> gtcode;           // Genotype
     std::vector<std::string> sample_alts; 
     std::vector<int> allele_depths;       // AD, allele depth
     std::vector<int> hq;                  // HQ: phred quality score of homo-/hetero-phasmy allele
