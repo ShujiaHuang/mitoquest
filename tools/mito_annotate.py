@@ -9,7 +9,6 @@ import gzip
 import csv
 import datetime
 import json
-import subprocess
 from itertools import zip_longest
 
 
@@ -230,8 +229,8 @@ def uniprot_annotations(anno_file_path):
     # but no family or domains for mtDNA-encoded proteins in UniProt
     dict = {}
     with gzip.open(anno_file_path+"/other_annotations/uniprot_beds_chrMT_combined.20250403.txt.gz", "rt") as f:
-        reader = csv.DictReader(f, delimiter="\t")
-        for row in reader:
+        for line in f:
+            row = line.strip().split('\t')
             # restrict to annotations of interest
             if any(x in row[14] for x in ["binding", "metal"]):  # metal binding or binding site
                 annotation = "site:" + row[14].split("UP000005640_9606_")[1].split(".bed")[0] + "-" + row[13]
@@ -382,7 +381,7 @@ def mitomap(anno_file_path):
         for row in reader:
             if ("Cfrm" in str(row["status"])) or ("Reported" in str(row["status"])):
                 if (len(row["ref"]) == 1) and (len(row["alt"]) == 1) and row["alt"].isalpha() and (row["ref"] != row["alt"]):  # if SNVs
-                    dict1[(row["ref"], row["pos"], row["alt"])] = (row["status"], 
+                    dict1[(row["ref"], row["pos"], row["alt"])] = (row["status"].replace(";", "|"),  # replace ';' with '|' to prevent error in VCF INFO 
                                                                    row["homoplasmy"], 
                                                                    row["heteroplasmy"], 
                                                                    row["disease"])
@@ -503,8 +502,8 @@ def annotate(input_file, annotated_txt, annotated_vcf, anno_file_path):
     :param input_file: the file with mutation likelihood scores, output of composite_likelihood_mito.py
     """
     
-    f = open(annotated_txt, "w")
-    output_vcf = open(annotated_vcf, "w")
+    f = gzip.open(annotated_txt, "wt") if annotated_txt.endswith(".gz") else open(annotated_txt, "w")
+    output_vcf = gzip.open(annotated_vcf, "wt") if annotated_vcf.endswith(".gz") else open(annotated_vcf, "w")
     header_list = ['POS', 'REF', 'ALT', 'INFO', 'trinucleotide', 'symbol', 'consequence', 'amino_acids', 
                    'protein_position', 'codon_change', 'gnomad_max_hl', 'gnomad_af_hom', 'gnomad_af_het', 
                    'gnomad_ac_hom', 'gnomad_ac_het', 'in_phylotree', 'phyloP_score', 'tRNA_position', 
@@ -575,6 +574,8 @@ def annotate(input_file, annotated_txt, annotated_vcf, anno_file_path):
             output_vcf.write(line)
         else:
             CHROM, POS, ID, REFs, ALTs, QUAL, FILTER, INFO, FORMAT, *SAMPLES = line.strip().split('\t')
+            if POS not in rcrs_pos2trinuc:  # Skip the position of ref=='N'
+                continue
             
             REF_ALT_list = [remove_common_suffix(REF, ALT) for REF, ALT in list(
                 zip_longest(REFs.split(','), ALTs.split(','), fillvalue=REFs.split(',')[0]))]
@@ -693,6 +694,9 @@ def annotate(input_file, annotated_txt, annotated_vcf, anno_file_path):
             INFO = INFO.strip() + ';' + anno_info
             line = '\t'.join([CHROM, POS, ID, REFs, ALTs, QUAL, FILTER, INFO, FORMAT, *SAMPLES])
             output_vcf.write(line + '\n')
+    
+    f.close()
+    output_vcf.close()
 
 
 def main():
@@ -708,11 +712,8 @@ def main():
              annotated_vcf=args.annotated_vcf,
              anno_file_path=args.directory)
 
-    subprocess.run(["bgzip", args.annotated_vcf])
-    subprocess.run(["tabix", "-p", "vcf", args.annotated_vcf+".gz"])
-
 
 if __name__ == "__main__":
-    print(datetime.datetime.now(), "Annotating mitochondrial mutation!" + '\n')
+    print(datetime.datetime.now(), "Annotating the mitochondrial variants.")
     main()
-    print(datetime.datetime.now(), "Script complete!" + '\n')
+    print(datetime.datetime.now(), "All done!" + '\n')
