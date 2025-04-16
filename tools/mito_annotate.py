@@ -99,7 +99,7 @@ def phylop_annotate(anno_file_path):
     """
     dict = {}
     pos = 0  # to handle a header row
-    for row in open(anno_file_path+'/insilicos/chrM.phyloP100way.wigFix'):
+    for row in gzip.open(anno_file_path+'/insilicos/chrM.phyloP100way.wigFix.gz', 'rt'):
         dict[pos] = row.replace('\n', '')
         pos += 1
     return dict
