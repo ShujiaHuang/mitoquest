@@ -60,6 +60,19 @@ def rcrs_pos_to_trinucleotide(anno_file_path):
     return dict
 
 
+def dbSNP_annotate(anno_file_path):
+    """Generate dictionary with the rsid for each variant in dbSNP.
+    """
+    dict = {}
+    with gzip.open(anno_file_path+"/databases/dbSNP.chrM.vcf.gz", "rt") as f:
+        for line in f:
+            if line.startswith("#"): continue
+            chrom, pos, rsid, refs, alts, *_skip = line.strip().split('\t')
+            dict[(chrom, pos, refs, alts)] = rsid
+            
+    return dict
+
+
 def gnomad_annotate(anno_file_path):
     """Generate dictionary with the maximum observed heteroplasmy (max_hl) and other annotations for each variant in gnomAD.
     soure:https://gnomad.broadinstitute.org/downloads
@@ -516,6 +529,7 @@ def annotate(input_file, annotated_txt, annotated_vcf, anno_file_path):
 
     # generate required dictionaries
     rcrs_pos2trinuc = rcrs_pos_to_trinucleotide(anno_file_path)
+    dbsnp = dbSNP_annotate(anno_file_path)
     gnomad = gnomad_annotate(anno_file_path)
     phylop = phylop_annotate(anno_file_path)
     vep = vep_annotate(anno_file_path)
@@ -576,6 +590,9 @@ def annotate(input_file, annotated_txt, annotated_vcf, anno_file_path):
             CHROM, POS, ID, REFs, ALTs, QUAL, FILTER, INFO, FORMAT, *SAMPLES = line.strip().split('\t')
             if POS not in rcrs_pos2trinuc:  # Skip the position of ref=='N'
                 continue
+            
+            if (CHROM, POS, REFs, ALTs) in dbsnp:
+                ID = dbsnp[(CHROM, POS, REFs, ALTs)]
             
             REF_ALT_list = [remove_common_suffix(REF, ALT) for REF, ALT in list(
                 zip_longest(REFs.split(','), ALTs.split(','), fillvalue=REFs.split(',')[0]))]
