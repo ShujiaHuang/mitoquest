@@ -483,17 +483,6 @@ def chimp_ref_lookup(anno_file_path):
     return new_dict
 
 
-def open_file(file_path):
-    """
-    Open a file, regardless of whether it is gzipped or not.
-    """
-    if file_path.endswith('.gz'):
-        file = gzip.open(file_path, 'rt')
-    else:
-        file = open(file_path, 'r')
-    return file
-
-
 def remove_common_suffix(s1, s2):
     """
     Remove the common suffix of two strings.
@@ -546,47 +535,48 @@ def annotate(input_file, annotated_txt, annotated_vcf, anno_file_path):
     clinvar_vars = clinvar(anno_file_path)
     chimp_dict = chimp_ref_lookup(anno_file_path)
 
-    header = ''
-    for line in open_file(input_file):
-        if line.startswith('#'):
-            if line.startswith('#CHROM'):
-                output_vcf.write("##INFO=<ID=trinucleotide,Number=A,Type=String,Description=\"Position to its reference trinucleotide\">\n")
-                output_vcf.write("##INFO=<ID=symbol,Number=A,Type=String,Description=\"Gene symbol\">\n")
-                output_vcf.write("##INFO=<ID=consequence,Number=A,Type=String,Description=\"VEP consequence annotation\">\n")
-                output_vcf.write("##INFO=<ID=amino_acids,Number=A,Type=String,Description=\"VEP amino acids annotation\">\n")
-                output_vcf.write("##INFO=<ID=protein_position,Number=A,Type=String,Description=\"VEP protein position annotation\">\n")
-                output_vcf.write("##INFO=<ID=codon_change,Number=A,Type=String,Description=\"VEP codon change annotation\">\n")
-                output_vcf.write("##INFO=<ID=gnomad_max_hl,Number=A,Type=String,Description=\"Maximum observed mtDNA heteroplasmy (max_hl) in gnomAD\">\n")
-                output_vcf.write("##INFO=<ID=gnomad_af_hom,Number=A,Type=String,Description=\"Observed homoplasmy allele frequence in gnomAD\">\n")
-                output_vcf.write("##INFO=<ID=gnomad_af_het,Number=A,Type=String,Description=\"Observed heteroplasmy allele frequence in gnomAD\">\n")
-                output_vcf.write("##INFO=<ID=gnomad_ac_hom,Number=A,Type=String,Description=\"Observed homoplasmy allele count in gnomAD\">\n")
-                output_vcf.write("##INFO=<ID=gnomad_ac_het,Number=A,Type=String,Description=\"Observed heteroplasmy allele count in gnomAD\">\n")
-                output_vcf.write("##INFO=<ID=in_phylotree,Number=A,Type=String,Description=\"phylotree variants\">\n")
-                output_vcf.write("##INFO=<ID=phyloP_score,Number=A,Type=String,Description=\"phyloP scores for conservation\">\n")
-                output_vcf.write("##INFO=<ID=tRNA_position,Number=A,Type=String,Description=\"The tRNA position numbers (ranging from 1-73) encoded by mtDNA\">\n")
-                output_vcf.write("##INFO=<ID=tRNA_domain,Number=A,Type=String,Description=\"Modified tRNA domains encoded by mtDNA\">\n")
-                output_vcf.write("##INFO=<ID=RNA_base_type,Number=A,Type=String,Description=\"RNA base types encoded by mtDNA (Watson-Crick (WC), non-WC, or loop/other)\">\n")
-                output_vcf.write("##INFO=<ID=RNA_modified,Number=A,Type=String,Description=\"Modified RNA bases encoded by mtDNA\">\n")
-                output_vcf.write("##INFO=<ID=rRNA_bridge_base,Number=A,Type=String,Description=\"It's rRNA bridge base or not\">\n")
-                output_vcf.write("##INFO=<ID=uniprot_annotation,Number=A,Type=String,Description=\"The UniProt annotations for mtDNA-encoded proteins\">\n")
-                output_vcf.write("##INFO=<ID=other_prot_annotation,Number=A,Type=String,Description=\"Residues involved in complex I proton transfer, curated from PMID:32972993\">\n")
-                output_vcf.write("##INFO=<ID=apogee_class,Number=A,Type=String,Description=\"The APOGEE scores for missense\">\n")
-                output_vcf.write("##INFO=<ID=mitotip_class,Number=A,Type=String,Description=\"The MitoTip in silico scores for tRNA variants\">\n")
-                output_vcf.write("##INFO=<ID=hmtvar_class,Number=A,Type=String,Description=\"The HmtVar in silico scores for tRNA variants\">\n")
-                output_vcf.write("##INFO=<ID=helix_max_hl,Number=A,Type=String,Description=\"Maximum observed heteroplasmy (max_hl) in HelixMTdb\">\n")
-                output_vcf.write("##INFO=<ID=helix_af_hom,Number=A,Type=String,Description=\"Observed homoplasmy allele frequence in HelixMTdb\">\n")
-                output_vcf.write("##INFO=<ID=helix_af_het,Number=A,Type=String,Description=\"Observed heteroplasmy allele frequence in HelixMTdb\">\n")
-                output_vcf.write("##INFO=<ID=mitomap_gbcnt,Number=A,Type=String,Description=\"Total number of gb sequences to convert to allele freq in MITOMAP\">\n")
-                output_vcf.write("##INFO=<ID=mitomap_af,Number=A,Type=String,Description=\"AF in MITOMAP\">\n")
-                output_vcf.write("##INFO=<ID=mitomap_status,Number=A,Type=String,Description=\"Disease association status for variant in MITOMAP\">\n")
-                output_vcf.write("##INFO=<ID=mitomap_plasmy,Number=A,Type=String,Description=\"Plasmy in MITOMAP\">\n")
-                output_vcf.write("##INFO=<ID=mitomap_disease,Number=A,Type=String,Description=\"Disease in MITOMAP\">\n")
-                output_vcf.write("##INFO=<ID=clinvar_interp,Number=A,Type=String,Description=\"The clinical significance interpretation for variant in ClinVar\">\n")
-                output_vcf.write("##INFO=<ID=chimp_ref,Number=A,Type=String,Description=\"The ancestral chimpanzee allele for thsi position\">\n")
-                output_vcf.write(f"##annotate_command=python {' '.join(sys.argv)}\n")
+    with gzip.open(input_file, "rt") if input_file.endswith(".gz") else open(input_file, "r") as IN:
+        for line in IN:
+            if line.startswith('#'):
+                if line.startswith('#CHROM'):
+                    output_vcf.write("##INFO=<ID=trinucleotide,Number=A,Type=String,Description=\"Position to its reference trinucleotide\">\n")
+                    output_vcf.write("##INFO=<ID=symbol,Number=A,Type=String,Description=\"Gene symbol\">\n")
+                    output_vcf.write("##INFO=<ID=consequence,Number=A,Type=String,Description=\"VEP consequence annotation\">\n")
+                    output_vcf.write("##INFO=<ID=amino_acids,Number=A,Type=String,Description=\"VEP amino acids annotation\">\n")
+                    output_vcf.write("##INFO=<ID=protein_position,Number=A,Type=String,Description=\"VEP protein position annotation\">\n")
+                    output_vcf.write("##INFO=<ID=codon_change,Number=A,Type=String,Description=\"VEP codon change annotation\">\n")
+                    output_vcf.write("##INFO=<ID=gnomad_max_hl,Number=A,Type=String,Description=\"Maximum observed mtDNA heteroplasmy (max_hl) in gnomAD\">\n")
+                    output_vcf.write("##INFO=<ID=gnomad_af_hom,Number=A,Type=String,Description=\"Observed homoplasmy allele frequence in gnomAD\">\n")
+                    output_vcf.write("##INFO=<ID=gnomad_af_het,Number=A,Type=String,Description=\"Observed heteroplasmy allele frequence in gnomAD\">\n")
+                    output_vcf.write("##INFO=<ID=gnomad_ac_hom,Number=A,Type=String,Description=\"Observed homoplasmy allele count in gnomAD\">\n")
+                    output_vcf.write("##INFO=<ID=gnomad_ac_het,Number=A,Type=String,Description=\"Observed heteroplasmy allele count in gnomAD\">\n")
+                    output_vcf.write("##INFO=<ID=in_phylotree,Number=A,Type=String,Description=\"phylotree variants\">\n")
+                    output_vcf.write("##INFO=<ID=phyloP_score,Number=A,Type=String,Description=\"phyloP scores for conservation\">\n")
+                    output_vcf.write("##INFO=<ID=tRNA_position,Number=A,Type=String,Description=\"The tRNA position numbers (ranging from 1-73) encoded by mtDNA\">\n")
+                    output_vcf.write("##INFO=<ID=tRNA_domain,Number=A,Type=String,Description=\"Modified tRNA domains encoded by mtDNA\">\n")
+                    output_vcf.write("##INFO=<ID=RNA_base_type,Number=A,Type=String,Description=\"RNA base types encoded by mtDNA (Watson-Crick (WC), non-WC, or loop/other)\">\n")
+                    output_vcf.write("##INFO=<ID=RNA_modified,Number=A,Type=String,Description=\"Modified RNA bases encoded by mtDNA\">\n")
+                    output_vcf.write("##INFO=<ID=rRNA_bridge_base,Number=A,Type=String,Description=\"It's rRNA bridge base or not\">\n")
+                    output_vcf.write("##INFO=<ID=uniprot_annotation,Number=A,Type=String,Description=\"The UniProt annotations for mtDNA-encoded proteins\">\n")
+                    output_vcf.write("##INFO=<ID=other_prot_annotation,Number=A,Type=String,Description=\"Residues involved in complex I proton transfer, curated from PMID:32972993\">\n")
+                    output_vcf.write("##INFO=<ID=apogee_class,Number=A,Type=String,Description=\"The APOGEE scores for missense\">\n")
+                    output_vcf.write("##INFO=<ID=mitotip_class,Number=A,Type=String,Description=\"The MitoTip in silico scores for tRNA variants\">\n")
+                    output_vcf.write("##INFO=<ID=hmtvar_class,Number=A,Type=String,Description=\"The HmtVar in silico scores for tRNA variants\">\n")
+                    output_vcf.write("##INFO=<ID=helix_max_hl,Number=A,Type=String,Description=\"Maximum observed heteroplasmy (max_hl) in HelixMTdb\">\n")
+                    output_vcf.write("##INFO=<ID=helix_af_hom,Number=A,Type=String,Description=\"Observed homoplasmy allele frequence in HelixMTdb\">\n")
+                    output_vcf.write("##INFO=<ID=helix_af_het,Number=A,Type=String,Description=\"Observed heteroplasmy allele frequence in HelixMTdb\">\n")
+                    output_vcf.write("##INFO=<ID=mitomap_gbcnt,Number=A,Type=String,Description=\"Total number of gb sequences to convert to allele freq in MITOMAP\">\n")
+                    output_vcf.write("##INFO=<ID=mitomap_af,Number=A,Type=String,Description=\"AF in MITOMAP\">\n")
+                    output_vcf.write("##INFO=<ID=mitomap_status,Number=A,Type=String,Description=\"Disease association status for variant in MITOMAP\">\n")
+                    output_vcf.write("##INFO=<ID=mitomap_plasmy,Number=A,Type=String,Description=\"Plasmy in MITOMAP\">\n")
+                    output_vcf.write("##INFO=<ID=mitomap_disease,Number=A,Type=String,Description=\"Disease in MITOMAP\">\n")
+                    output_vcf.write("##INFO=<ID=clinvar_interp,Number=A,Type=String,Description=\"The clinical significance interpretation for variant in ClinVar\">\n")
+                    output_vcf.write("##INFO=<ID=chimp_ref,Number=A,Type=String,Description=\"The ancestral chimpanzee allele for thsi position\">\n")
+                    output_vcf.write(f"##annotate_command=python {' '.join(sys.argv)}\n")
 
-            output_vcf.write(line)
-        else:
+                output_vcf.write(line)
+                continue
+            
             CHROM, POS, ID, REFs, ALTs, QUAL, FILTER, INFO, FORMAT, *SAMPLES = line.strip().split('\t')
             if POS not in rcrs_pos2trinuc:  # Skip the position of ref=='N'
                 continue
