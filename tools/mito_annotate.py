@@ -403,8 +403,9 @@ def mitomap(anno_file_path):
         reader = csv.DictReader(f, delimiter="\t")
         for row in reader:
             if (len(row["ref"]) == 1) and (len(row["alt"]) == 1) and row["alt"].isalpha() and (row["ref"] != row["alt"]):  # if SNVs
-                # 56910 is total number of gb sequences to convert to allele freq
-                dict2[(row["ref"], row["pos"], row["alt"])] = (int(row["gbcnt"]), (int(row["gbcnt"]) / 56910))
+                # 61,883 is total number of gb sequences to convert to allele freq
+                # 2025-01-28: [GenBank Frequency Information. The current GenBank frequency data in our variant tables is derived from 61,883 human mitochondrial DNA](https://www.mitomap.org/MITOMAP/GBFreqInfo)
+                dict2[(row["ref"], row["pos"], row["alt"])] = (int(row["gbcnt"]), (int(row["gbcnt"]) / 61883))
 
     return dict1, dict2
 
