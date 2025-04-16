@@ -9,3 +9,6 @@
 
 ../../bin/mitoquest caller -t 4 -f chrM_rCRS.decoy.fa -r chrM:5745-5747 -o t smp4.cram
 
+## Annotation
+python ../../tools/mito_annotate.py -d ~/Projects/mitoquest/data -i tt_bak -o t.ann.txt -v t.ann.vcf
+
