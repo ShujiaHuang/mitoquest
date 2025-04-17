@@ -672,22 +672,20 @@ def annotate(input_file, annotated_txt, annotated_vcf, anno_file_path):
             in_phylo_list = [1 if "\n" + variant + "\n" in open(anno_file_path+'/databases/phylotree_variants.txt').read() else 0 for variant in variant_list]
             max_hl_list = [gnomad[var_tuple][0] if var_tuple in gnomad else 0 for var_tuple in var_tuple_list]
             
-            vep_csq_list = []
+            vep_csq_list    = []
             vep_symbol_list = []
             vep_conseq_list = []
-            vep_aa_list = []
-            vep_pp_list = []
+            vep_aa_list     = []
+            vep_pp_list     = []
             vep_codon_change_list = []
             for REF, POS, alt in var_tuple_list:
                 if (REF, POS, alt) in vep:
                     vep_csq_list.append("|".join([vep[(REF, POS, alt)][label] for label in vep_anno_list]))
-                    
                     vep_symbol_list.append(vep[(REF, POS, alt)]["SYMBOL"])
                     vep_conseq_list.append(vep[(REF, POS, alt)]["Consequence"])
                     vep_aa_list.append(vep[(REF, POS, alt)]["Amino_acids"])
                     vep_pp_list.append(vep[(REF, POS, alt)]["Protein_position"])
                     vep_codon_change_list.append(vep[(REF, POS, alt)]["Codons"])
-            
             
             gnomad_af_hom_list = [gnomad[var_tuple][1] if var_tuple in gnomad else 0 for var_tuple in var_tuple_list]
             gnomad_af_het_list = [gnomad[var_tuple][2] if var_tuple in gnomad else 0 for var_tuple in var_tuple_list]
@@ -699,33 +697,37 @@ def annotate(input_file, annotated_txt, annotated_vcf, anno_file_path):
             RNA_mod  = RNA_dom_mod[(POS, "modified")] if (POS, "modified") in RNA_dom_mod else ''
             RNA_base = str(RNA_type[POS]).strip('[]').replace("'", "").replace(" ", "") if POS in RNA_type else ''
             RNA_bridge = "Yes" if ("\n" + POS + "\n") in open(anno_file_path+'/other_annotations/rRNA_bridge_bases.txt').read() else "No"
+
             uniprot_annot = str(uniprot[int(POS)]).strip('[]').replace("'", "").replace(" ", "") if int(POS) in uniprot else ''
             other_prot_annot = str(other_prot[int(POS)]).strip('[]').replace("'", "").replace(" ", "") if int(POS) in other_prot else ''
             apogee_score_list = [str(apogee_scores[var_tuple]).strip('[]').replace("'", "").replace(" ", "") if var_tuple in apogee_scores else '' for var_tuple in var_tuple_list]
             mitotip_score_list = [mitotip_scores[var_tuple] if var_tuple in mitotip_scores else '' for var_tuple in var_tuple_list]
+            
             helix_max_hl_list = [helix[var_tuple][0] if var_tuple in helix else 0 for var_tuple in var_tuple_list]
             helix_af_hom_list = [helix[var_tuple][1] if var_tuple in helix else 0 for var_tuple in var_tuple_list]
             helix_af_het_list = [helix[var_tuple][2] if var_tuple in helix else 0 for var_tuple in var_tuple_list]
-            mitomap_ac_list = [mitomap_vars2[var_tuple][0] if var_tuple in mitomap_vars2 else 0 for var_tuple in var_tuple_list]
-            mitomap_af_list = [mitomap_vars2[var_tuple][1] if var_tuple in mitomap_vars2 else 0 for var_tuple in var_tuple_list]
+            
+            mitomap_ac_list     = [mitomap_vars2[var_tuple][0] if var_tuple in mitomap_vars2 else 0 for var_tuple in var_tuple_list]
+            mitomap_af_list     = [mitomap_vars2[var_tuple][1] if var_tuple in mitomap_vars2 else 0 for var_tuple in var_tuple_list]
             mitomap_status_list = [mitomap_vars1[var_tuple][0] if var_tuple in mitomap_vars1 else '' for var_tuple in var_tuple_list]
-            mitomap_plasmy_list = [(mitomap_vars1[var_tuple][1] + '/' + mitomap_vars1[var_tuple][2]) if var_tuple in mitomap_vars1 else '' for var_tuple in var_tuple_list]
-            mitomap_dz_list = [mitomap_vars1[var_tuple][3] if var_tuple in mitomap_vars1 else '' for var_tuple in var_tuple_list]
-            clinvar_int_list = [clinvar_vars[var_tuple] if var_tuple in clinvar_vars else '' for var_tuple in var_tuple_list]
-
-            hmtvar_scores_list = [str(hmtvar_scores[(REF, POS, alt)]).strip('[]').replace("'", "").replace(
-                " ", "") if (REF, POS, alt) in hmtvar_scores else '' for REF, POS, alt in var_tuple_list]
+            mitomap_plasmy_list = [(mitomap_vars1[var_tuple][1] + '/' + mitomap_vars1[var_tuple][2]) 
+                                   if var_tuple in mitomap_vars1 else '' for var_tuple in var_tuple_list]
+            mitomap_dz_list     = [mitomap_vars1[var_tuple][3] if var_tuple in mitomap_vars1 else '' for var_tuple in var_tuple_list]
+            clinvar_int_list    = [clinvar_vars[var_tuple] if var_tuple in clinvar_vars else '' for var_tuple in var_tuple_list]
+            hmtvar_scores_list  = [str(hmtvar_scores[(REF, POS, alt)]).strip('[]').replace("'", "").replace(" ", "") 
+                                   if (REF, POS, alt) in hmtvar_scores else '' for REF, POS, alt in var_tuple_list]
 
             tRNA_pos_str = str(tRNA_pos).strip('[]').replace("'", "").replace(" ", "")
             tRNA_dom_str = str(tRNA_dom).strip('[]').replace("'", "").replace(" ", "")
-            RNA_mod_str = str(RNA_mod).strip('[]').replace("'", "").replace(" ", "")
-            f.write(CHROM + '\t' + POS + '\t' + ID + '\t' + REFs + '\t' + ALTs + '\t' + INFO + '\t' +
+            RNA_mod_str  = str(RNA_mod).strip('[]').replace("'", "").replace(" ", "")
+            f.write(CHROM + '\t' + POS  + '\t' + ID        + '\t' + 
+                    REFs  + '\t' + ALTs + '\t' + INFO      + '\t' +
                     rcrs_pos2trinuc[POS]                   + '\t' +
                     ','.join(vep_symbol_list)              + '\t' + 
                     mitomap_locus_id                       + '\t' +
                     ','.join(vep_conseq_list)              + '\t' +
                     ','.join(vep_aa_list)                  + '\t' +
-                    ','.join(vep_pp_list)               + '\t' +
+                    ','.join(vep_pp_list)                  + '\t' +
                     ','.join(vep_codon_change_list)        + '\t' +
                     ','.join(map(str, max_hl_list))        + '\t' +
                     ','.join(map(str, gnomad_af_hom_list)) + '\t' +
