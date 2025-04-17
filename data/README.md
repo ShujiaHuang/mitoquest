@@ -7,7 +7,7 @@
 - MITOMAP dataset [from MITOMAP](https://www.mitomap.org/MITOMAP/resources).
 - Disease-associated variants [from MITOMAP](https://www.mitomap.org/MITOMAP/resources).
 - Disease-associated variants [from ClinVar](https://www.ncbi.nlm.nih.gov/clinvar/).
-- Haplogroup-associated variants extracted [from PhyloTree](https://www.phylotree.org/).
+- phylotree_variants.txt: Haplogroup-associated variants extracted [from PhyloTree](https://www.phylotree.org/).
 - List of loci in the mitochondrial genome [from MITOMAP](https://www.mitomap.org/foswiki/bin/view/MITOMAP/GenomeLoci).
 
 `insilicos`: 
