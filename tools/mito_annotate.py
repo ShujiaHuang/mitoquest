@@ -105,7 +105,38 @@ def phylop_annotate(anno_file_path):
     return dict
 
 
-def vep_annotate(anno_file_path):
+def vep_annotate(anno_file_path, anno_column_info=None):
+    """Create a dictionary of the VEP annotations for every possible single nucleotide variant in the mtDNA.
+
+    :return: dictionary where tuple of the variant and value identifier is key, and value is list of annotations
+    """
+    if anno_column_info is None:
+        return {}
+    
+    vep = {}
+    # use vcf where variants in two genes are split across two rows, for easy parsing
+    with gzip.open(anno_file_path+"/synthetic_vcf/NC_012920.1_synthetic_vep_splitvarstwogenes.vcf.gz", "rt") as f:
+        reader = csv.DictReader(f, delimiter="\t")
+        for row in reader:
+            csq = {}  # to store the VEP annotations for each variant in dictionary
+            for label in anno_column_info:
+                if label in row:
+                    if label == "Allele":
+                        # The `Allele` column is the first column in the VEP output, and the format is: 'CSQ=Allele' in the input file
+                        csq[label] = row[label].split("=")[-1]
+                    else:
+                        csq[label] = row[label]
+                else:
+                    csq[label] = ""
+            
+            # if (row["REF"], row["POS"], row["ALT"]) not in vep: 
+            #     vep[(row["REF"], row["POS"], row["ALT"])] = []
+            vep[(row["REF"], row["POS"], row["ALT"])] = csq  # if variant in two genes, will only keep the last one
+            
+    return vep
+
+
+def _old_vep_annotate(anno_file_path):
     """Create a dictionary of the VEP annotations for every possible single nucleotide variant in the mtDNA.
 
     :return: dictionary where tuple of the variant and value identifier is key, and value is list of annotations
@@ -550,11 +581,15 @@ def annotate(input_file, annotated_txt, annotated_vcf, anno_file_path):
     f.write(header + '\n')
 
     # generate required dictionaries
+    vep_anno_list = ["Allele", "Consequence", "IMPACT", "SYMBOL", "Gene", "Feature_type", "Feature", "BIOTYPE", "EXON", "INTRON", 
+                     "HGVSc", "HGVSp", "cDNA_position", "CDS_position", "Protein_position", "Amino_acids", "Codons", "Existing_variation", 
+                     "DISTANCE", "STRAND", "FLAGS", "VARIANT_CLASS", "SYMBOL_SOURCE", "HGNC_ID", "HGVS_OFFSET"]
+
     rcrs_pos2trinuc = rcrs_pos_to_trinucleotide(anno_file_path)
     dbsnp = dbSNP_annotate(anno_file_path)
     gnomad = gnomad_annotate(anno_file_path)
     phylop = phylop_annotate(anno_file_path)
-    vep = vep_annotate(anno_file_path)
+    vep = vep_annotate(anno_file_path, vep_anno_list)
     tRNA_position = tRNA_positions(anno_file_path)
     RNA_dom_mod = RNA_domains_mods(anno_file_path)
     RNA_type = RNA_base_type(anno_file_path)
@@ -577,10 +612,7 @@ def annotate(input_file, annotated_txt, annotated_vcf, anno_file_path):
                     output_vcf.write("##INFO=<ID=trinucleotide,Number=A,Type=String,Description=\"Position to its reference trinucleotide\">\n")
                     output_vcf.write("##INFO=<ID=symbol,Number=A,Type=String,Description=\"Gene symbol\">\n")
                     output_vcf.write("##INFO=<ID=mitomap_locus,Number=A,Type=String,Description=\"Mitochondrial DNA Function Locations in MITOMAP: https://www.mitomap.org/foswiki/bin/view/MITOMAP/GenomeLoci\">\n")
-                    output_vcf.write("##INFO=<ID=consequence,Number=A,Type=String,Description=\"VEP consequence annotation\">\n")
-                    output_vcf.write("##INFO=<ID=amino_acids,Number=A,Type=String,Description=\"VEP amino acids annotation\">\n")
-                    output_vcf.write("##INFO=<ID=protein_position,Number=A,Type=String,Description=\"VEP protein position annotation\">\n")
-                    output_vcf.write("##INFO=<ID=codon_change,Number=A,Type=String,Description=\"VEP codon change annotation\">\n")
+                    output_vcf.write(f"##INFO=<ID=VEP_CSQ,Number=.,Type=String,Description=\"Consequence annotations of Ensembl VEP. Format: {'|'.join(vep_anno_list)}\">\n")
                     output_vcf.write("##INFO=<ID=gnomad_max_hl,Number=A,Type=String,Description=\"Maximum observed mtDNA heteroplasmy (max_hl) in gnomAD\">\n")
                     output_vcf.write("##INFO=<ID=gnomad_af_hom,Number=A,Type=String,Description=\"Observed homoplasmy allele frequence in gnomAD\">\n")
                     output_vcf.write("##INFO=<ID=gnomad_af_het,Number=A,Type=String,Description=\"Observed heteroplasmy allele frequence in gnomAD\">\n")
@@ -624,14 +656,12 @@ def annotate(input_file, annotated_txt, annotated_vcf, anno_file_path):
             mitomap_locus_id = ''
             for i in range(ovlp_start_idx, len(mitomap_genome_loci)):
                 start, end, locus = mitomap_genome_loci[i]
-                if int(POS) > end:
-                    continue
-                elif int(POS) < start:
-                    break
-                else:
-                    ovlp_start_idx = i
-                    mitomap_locus_id = locus
-                    break
+                if int(POS) > end: continue
+                if int(POS) < start: break
+
+                ovlp_start_idx = i
+                mitomap_locus_id = locus
+                break
             
             REF_ALT_list = [remove_common_suffix(REF, ALT) for REF, ALT in list(
                 zip_longest(REFs.split(','), ALTs.split(','), fillvalue=REFs.split(',')[0]))]
@@ -641,6 +671,24 @@ def annotate(input_file, annotated_txt, annotated_vcf, anno_file_path):
 
             in_phylo_list = [1 if "\n" + variant + "\n" in open(anno_file_path+'/databases/phylotree_variants.txt').read() else 0 for variant in variant_list]
             max_hl_list = [gnomad[var_tuple][0] if var_tuple in gnomad else 0 for var_tuple in var_tuple_list]
+            
+            vep_csq_list = []
+            vep_symbol_list = []
+            vep_conseq_list = []
+            vep_aa_list = []
+            vep_pp_list = []
+            vep_codon_change_list = []
+            for REF, POS, alt in var_tuple_list:
+                if (REF, POS, alt) in vep:
+                    vep_csq_list.append("|".join([vep[(REF, POS, alt)][label] for label in vep_anno_list]))
+                    
+                    vep_symbol_list.append(vep[(REF, POS, alt)]["SYMBOL"])
+                    vep_conseq_list.append(vep[(REF, POS, alt)]["Consequence"])
+                    vep_aa_list.append(vep[(REF, POS, alt)]["Amino_acids"])
+                    vep_pp_list.append(vep[(REF, POS, alt)]["Protein_position"])
+                    vep_codon_change_list.append(vep[(REF, POS, alt)]["Codons"])
+            
+            
             gnomad_af_hom_list = [gnomad[var_tuple][1] if var_tuple in gnomad else 0 for var_tuple in var_tuple_list]
             gnomad_af_het_list = [gnomad[var_tuple][2] if var_tuple in gnomad else 0 for var_tuple in var_tuple_list]
             gnomad_ac_hom_list = [gnomad[var_tuple][3] if var_tuple in gnomad else 0 for var_tuple in var_tuple_list]
@@ -665,16 +713,6 @@ def annotate(input_file, annotated_txt, annotated_vcf, anno_file_path):
             mitomap_dz_list = [mitomap_vars1[var_tuple][3] if var_tuple in mitomap_vars1 else '' for var_tuple in var_tuple_list]
             clinvar_int_list = [clinvar_vars[var_tuple] if var_tuple in clinvar_vars else '' for var_tuple in var_tuple_list]
 
-            vep_symbol_list = [str(vep[(REF, POS, alt, "symbol")]).strip('[]').replace("'", "").replace(
-                " ", "") if (REF, POS, alt, "symbol") in vep else '' for REF, POS, alt in var_tuple_list]
-            vep_conseq_list = [str(vep[(REF, POS, alt, "consequence")]).strip('[]').replace("'", "").replace(
-                " ", "") if (REF, POS, alt, "consequence") in vep else '' for REF, POS, alt in var_tuple_list]
-            vep_aa_list = [str(vep[(REF, POS, alt, "aa")]).strip('[]').replace("'", "").replace(
-                " ", "") if (REF, POS, alt, "aa") in vep else '' for REF, POS, alt in var_tuple_list]
-            vep_codon_list = [str(vep[(REF, POS, alt, "codon")]).strip('[]').replace("'", "").replace(
-                " ", "") if (REF, POS, alt, "codon") in vep else '' for REF, POS, alt in var_tuple_list]
-            vep_codon_change_list = [str(vep[(REF, POS, alt, "codon_change")]).strip('[]').replace("'", "").replace(
-                " ", "") if (REF, POS, alt, "codon_change") in vep else '' for REF, POS, alt in var_tuple_list]
             hmtvar_scores_list = [str(hmtvar_scores[(REF, POS, alt)]).strip('[]').replace("'", "").replace(
                 " ", "") if (REF, POS, alt) in hmtvar_scores else '' for REF, POS, alt in var_tuple_list]
 
@@ -687,7 +725,7 @@ def annotate(input_file, annotated_txt, annotated_vcf, anno_file_path):
                     mitomap_locus_id                       + '\t' +
                     ','.join(vep_conseq_list)              + '\t' +
                     ','.join(vep_aa_list)                  + '\t' +
-                    ','.join(vep_codon_list)               + '\t' +
+                    ','.join(vep_pp_list)               + '\t' +
                     ','.join(vep_codon_change_list)        + '\t' +
                     ','.join(map(str, max_hl_list))        + '\t' +
                     ','.join(map(str, gnomad_af_hom_list)) + '\t' +
@@ -720,10 +758,7 @@ def annotate(input_file, annotated_txt, annotated_vcf, anno_file_path):
             anno_info = "trinucleotide="         + rcrs_pos2trinuc[POS]                   + ';' + \
                         "symbol="                + ','.join(vep_symbol_list)              + ';' + \
                         "mitomap_locus="         + mitomap_locus_id                       + ';' + \
-                        "consequence="           + ','.join(vep_conseq_list)              + ';' + \
-                        "amino_acids="           + ','.join(vep_aa_list)                  + ';' + \
-                        "protein_position="      + ','.join(vep_codon_list)               + ';' + \
-                        "codon_change="          + ','.join(vep_codon_change_list)        + ';' + \
+                        "VEP_CSQ="               + ','.join(vep_csq_list)                 + ';' + \
                         "gnomad_max_hl="         + ','.join(map(str, max_hl_list))        + ';' + \
                         "gnomad_af_hom="         + ','.join(map(str, gnomad_af_hom_list)) + ';' + \
                         "gnomad_af_het="         + ','.join(map(str, gnomad_af_het_list)) + ';' + \
