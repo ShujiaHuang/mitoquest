@@ -92,6 +92,18 @@ def vcf_info2dataframe(vcf_file):
     vcfdf = pd.DataFrame(vcf_list[1:], columns=vcf_list[0])
     return vcfdf
 
+def combine_df(df1, df2):
+    """
+    Combine two pandas dataframes, randomly sampling from one dataframe if necessary to ensure they have the same number of rows
+    """
+    if len(df1) > len(df2):
+        df1_sampled = df1.sample(n=len(df2), random_state=42)
+        final_df = pd.concat([df1_sampled, df2], ignore_index=True)
+    else:
+        df2_sampled = df2.sample(n=len(df1), random_state=42)
+        final_df = pd.concat([df1, df2_sampled], ignore_index=True)
+    return final_df
+
 def clean_data(data):
     """
     Retain values within ± 6 standard deviations of the mean
@@ -111,7 +123,7 @@ def GMM_fit(train_data, test_data, num_components, max_num_components):
     bics_A = []
     best_gmm_A = None
     best_bic_A = np.inf
-    n_range = range(1, max_num_components)
+    n_range = range(1, max_num_components+1)
     for n in n_range:
         logging.info(f"Fitting GMM with {n} components")
         gmm_A = GaussianMixture(n_components=n, random_state=0).fit(train_data)
@@ -178,7 +190,7 @@ def caculate_good_bad_ratio(df, label_col, LDD_col, good_ratio, bad_ratio ):
     df: pandas.DataFrame
         The input dataframe containing the label_col, LDD_col columns.
     label_col: str
-        The column name of labels gererated by good module, like 'Good' or 'Bad'.
+        The column name of labels gererated by good module, like 'Good' or 'Bad' or 'Unlabelled'.
     LDD_col: str
         The column name of LDD values, like 'LDD_score'.
     good_ratio: str
@@ -189,7 +201,7 @@ def caculate_good_bad_ratio(df, label_col, LDD_col, good_ratio, bad_ratio ):
     Returns:
     --------
     df: pandas.DataFrame
-        The input dataframe containing the good_ratio, bad_ratio columns.
+        The dataframe containing the good_ratio, bad_ratio columns.
     """
     labels = df[label_col].values
     values = df[LDD_col].values
@@ -213,59 +225,30 @@ def caculate_good_bad_ratio(df, label_col, LDD_col, good_ratio, bad_ratio ):
     
     return df
 
-def roc_curve_function(df, final_res_col, Goodmodule_res_col):
-    """
-    To calculate the optimal threshold for the GMM classifier based on the ROC curve.
-    :param df: the dataframe containing the predicted scores and true labels
-    :param cutoff: the cutoff value for the GMM classifier, default: the best inflection point
-    :param value_col: the column name of the predicted scores, default: 'LODR'
-    :return: the optimal threshold, ROC AUC, and the ROC curve data
-    """
-    def inflection_res(df):
-        if df[Goodmodule_res_col] == "Good" and df[final_res_col] == "Good":
-            return 1
-        elif df[Goodmodule_res_col] == "Good" and df[final_res_col] == "Bad":
-            return 1
-        elif df[Goodmodule_res_col] == "Bad" and df[final_res_col] == "Good":
-            return 0
-        elif df[Goodmodule_res_col] == "Bad" and df[final_res_col] == "Bad":
-            return 0
-        elif df[Goodmodule_res_col] == "Unlabelled" and df[final_res_col] == "Good":
-            return 1
-        elif df[Goodmodule_res_col] == "Unlabelled" and df[final_res_col] == "Bad":
-            return 0
-
-    df['inflection_res'] = df.apply(inflection_res, axis=1)
-    fpr, tpr, thresholds = roc_curve(df['inflection_res'], df['LODR'])
-    roc_auc = auc(fpr, tpr)
-    del df['inflection_res']
-    # youden_index = tpr - fpr
-    # optimal_idx = np.argmax(youden_index)
-    # optimal_threshold = thresholds[optimal_idx]
-    return roc_auc, fpr, tpr, df
 
 def plt_gmm_results(n_range, bics_A, best_gmm_A , bics_B, best_gmm_B, cutoff_dict,
-                    df_sorted, fpr, tpr, roc_auc, output_figure):
-    fig, ax = plt.subplots(figsize=(10, 8), nrows=2, ncols=2, constrained_layout=True)
+                    df_sorted, output_figure):
+    fig, ax = plt.subplots(figsize=(16, 4), nrows=1, ncols=3, constrained_layout=True)
     sns.set_style('ticks')
-    sns.scatterplot(x= n_range, y= bics_A, ax=ax[0,0])
-    sns.lineplot(x=n_range, y=bics_A, ax=ax[0,0])
-    ax[0,0].set(xlabel='Number of Components', ylabel='BIC', title='Good Models: BIC')
-    ax[0,0].scatter(n_range[best_gmm_A.n_components-1],bics_A[best_gmm_A.n_components-1],color='red', 
+    sns.scatterplot(x= n_range, y= bics_A, ax=ax[0])
+    sns.lineplot(x=n_range, y=bics_A, ax=ax[0])
+    ax[0].set(xlabel='Number of Components', ylabel='BIC', title='Good Models: BIC')
+    ax[0].scatter(n_range[best_gmm_A.n_components-1],bics_A[best_gmm_A.n_components-1],color='red', 
                 marker='x', s = 100, label='Optimal Number of Components')
-    ax[0,0].legend(loc='right')
+    ax[0].legend(loc='right')
 
-    sns.scatterplot(x= n_range, y= bics_B, ax=ax[0,1])
-    sns.lineplot(x=n_range, y=bics_B, ax=ax[0,1])
-    ax[0,1].set(xlabel='Number of Components', ylabel='BIC', title='Bad Model: BIC')
-    ax[0,1].scatter(n_range[best_gmm_B.n_components-1],bics_B[best_gmm_B.n_components-1],color='red', 
+    sns.scatterplot(x= n_range, y= bics_B, ax=ax[1])
+    sns.lineplot(x=n_range, y=bics_B, ax=ax[1])
+    ax[1].set(xlabel='Number of Components', ylabel='BIC', title='Bad Model: BIC')
+    ax[1].scatter(n_range[best_gmm_B.n_components-1],bics_B[best_gmm_B.n_components-1],color='red', 
                 marker='x', s = 100, label='Optimal Number of Components')
-    ax[0,1].legend(loc='right')
+    ax[1].legend(loc='right')
+    
 
-    sns.scatterplot(data=df_sorted, x="Bad_ratio", y="Good_ratio", label="different score_diff", s=5, alpha=0.4, ax=ax[1,0])
-    colors = [ 'blue','red','green', 'orange', 'purple', 'cyan', 'magenta', 'yellow', 'lime', 'pink']
+    sns.scatterplot(data=df_sorted, x="Bad_ratio", y="Good_ratio", label="different score_diff", s=5, alpha=0.4, ax=ax[2])
+    colors = [ 'blue','green','red', 'orange', 'purple', 'cyan', 'magenta', 'yellow', 'lime', 'pink']
     for i, cutoff_idx in enumerate(cutoff_dict):
-        ax[1,0].scatter(
+        ax[2].scatter(
             cutoff_dict[cutoff_idx][1],
             cutoff_dict[cutoff_idx][0],
             color=colors[i],
@@ -273,13 +256,8 @@ def plt_gmm_results(n_range, bics_A, best_gmm_A , bics_B, best_gmm_B, cutoff_dic
             marker="x",
             label=f"LODR={cutoff_dict[cutoff_idx][2]:.4f}\nGood ratio={cutoff_dict[cutoff_idx][0]:.2%}, Bad ratio={cutoff_dict[cutoff_idx][1]:.2%}")
 
-    ax[1,0].set(xlabel='Bad value ratio', ylabel='Good value ratio', title='Frequency of Good/Bad for per LODR', ylim=(0.94, 1.01))
-    ax[1,0].legend(loc='right')
-
-    sns.lineplot(x=fpr, y=tpr, color='darkorange', linewidth=2, label=f'ROC curve (AUC = {roc_auc:.4f})', ax=ax[1,1])
-    sns.lineplot(x=[0, 1], y=[0, 1], color='navy', linewidth=2, linestyle='--',  ax=ax[1,1])
-    ax[1,1].set(xlabel='False Positive Rate', ylabel='True Positive Rate', title='ROC Curve', ylim=(0.0, 1.01), xlim=(-0.01, 1.0))
-    ax[1,1].legend(loc='right')
+    ax[2].set(xlabel='Bad value ratio', ylabel='Good value ratio', title='Frequency of Good/Bad for per LODR', ylim=(0.94, 1.01))
+    ax[2].legend(loc='right')
     plt.savefig(output_figure)
 
 def output_info(df, colname, train_A_data, train_B_data_filtered, scores_A_cutoff, cutoff_dict, optimal_threshold_idx, logfilename):
@@ -288,11 +266,14 @@ def output_info(df, colname, train_A_data, train_B_data_filtered, scores_A_cutof
     """
     # Initial classification
     raw_good_count = (df[colname] == 1).sum()
-    # raw_uncertain_count = (df[colname] == 0).sum()
-
-    raw_good_POS = df[df[colname] == 1]['POS'].unique().size
-    # raw_uncertain_POS = df[df[colname] == 0]['POS'].unique().size
-
+    raw_good_POS = df[df[colname] == 1]['POS'].unique().__len__()
+    HQ_alt_count = df[(df['GT'] !='0') & (df[colname] == 1)].__len__()
+    HQ_ref_count = df[(df['GT'] =='0') & (df[colname] == 1)].__len__()
+    HQ_alt_POS = df[(df['GT'] !='0') & (df[colname] == 1)]['POS'].unique().__len__()
+    HQ_ref_POS = df[(df['GT'] =='0') & (df[colname] == 1)]['POS'].unique().__len__()
+    
+    selected_good_count = df[df['good_train_value'] == 1].__len__()
+    selected_good_POS = df[df['good_train_value'] == 1]['POS'].unique().__len__()
     # Retain values within ± 6 standard deviations of the mean for training Good module data
     filtered_good_count = train_A_data.shape[0]
 
@@ -309,9 +290,12 @@ def output_info(df, colname, train_A_data, train_B_data_filtered, scores_A_cutof
     with open(logfilename, 'w') as f:
         print("############### datasets information ###############", file=f)
         print (f"Total count:\t{df.shape[0]}\t unique POS: {df['POS'].unique().size}", file=f)
+        print(f"Good count:\t{raw_good_count}\tunique POS: {raw_good_POS}", file=f)
+        print(f"Good alt count:\t{HQ_alt_count}\tunique POS: {HQ_alt_POS}", file=f)
+        print(f"Good ref count:\t{HQ_ref_count}\tunique POS: {HQ_ref_POS}", file=f)
         
         print("\n############### information of Good module ###############", file=f)
-        print(f"Good training data:\t{raw_good_count}\tunique POS: {raw_good_POS}" , file=f)
+        print(f"Good training data:\t{selected_good_count}\tunique POS: {selected_good_POS}" , file=f)
         # print(f"Raw Uncertain count:\t {raw_uncertain_count}\tunique POS: {raw_uncertain_POS}", file=f)
         print(f"Filtered Good training data:\t{filtered_good_count}\t", file=f)
         
@@ -364,12 +348,12 @@ def main():
     parser.add_argument('-o', '--output_vcf_file', type=str, help='Output VCF file path', required=True)
     parser.add_argument('-c','--output_csv_file', type=str, help='Output CSV file path', required=True)
     parser.add_argument('-f','--figure_file', type=str, help='Output figure file path', required=True)
-    parser.add_argument('-mnc','--max_n_components', type=int, action='store',default=10, help='Maximum components for GMM model training')
+    parser.add_argument('-mnc','--max_n_components', type=int, action='store',default=10, help='Maximum components for GMM model training (default: 10)')
     parser.add_argument('-gnc', '--good_module_n_components', type=int, action='store', help='Number of components for Good GMM module if not specified, default is auto-selected')
     parser.add_argument('-bnc', '--bad_module_n_components', type=int, action='store',  help='Number of components for Bad GMM moduleif not specified, default is auto-selected')
-    parser.add_argument('-rgm', '--goodratio_in_goodmodule', type=float, action='store', default=0.98, help='Ratio of good values to total good values after Good module to select subdataset (Bad values) to train Bad GMM model')
-    parser.add_argument('-pr', '--pass_ratio', type=float, action='store', default=0.5, help='Ratio of Good Allels to total Allels per POS to label a site as PASS or LowQual')
-    parser.add_argument('-fmr', '--final_res_ratio', type=float, action='store', default=0.98, help='The Good ratio of the final result is used to determine whether the value is good or bad')
+    parser.add_argument('-rgm', '--goodratio_in_goodmodule', type=float, action='store', default=0.98, help='Ratio of good values to total good values after Good module to select subdataset (Bad values) to train Bad GMM model (default: 0.98)')
+    parser.add_argument('-pr', '--pass_ratio', type=float, action='store', default=0.5, help='Ratio of Good Allels to total Allels per POS to label a site as PASS or LowQual (default: 0.5)')
+    parser.add_argument('-fmr', '--final_res_ratio', type=float, action='store', default=0.99, help='The Good ratio of the final result is used to determine whether the value is good or bad (default: 0.99)')
     args = parser.parse_args()
     
     # load data
@@ -378,31 +362,37 @@ def main():
     dataset['gnomad_af'] = dataset['gnomad_af_het'] + dataset['gnomad_af_hom']
     dataset['helix_af'] = dataset['helix_af_het'] + dataset['helix_af_hom']
     dataset[['AF', 'gnomad_af', 'helix_af', 'mitomap_af', 'AD', 'HF', 'HQ']] = dataset[['AF', 'gnomad_af', 'helix_af', 'mitomap_af', 'AD', 'HF', 'HQ']].apply(pd.to_numeric, errors='coerce')
+    dataset['Sample_name_POS_GT'] = dataset['Sample_name'] + '_' + dataset['POS'] + '_' + dataset['GT']
 
     # select sites with good quality: 1 means good quality, 0 means bad quality
-    logging.info('Select Good module training subdataset with good quality, like reported, AF>0.05 in other database ...')
+    logging.info('Select high good quality datasets, like reported or AF>0.01 in other database ...')
     HQcolname = 'Reported_AFgt005'
     dataset[HQcolname] = dataset.apply(
     lambda row: 1 if ((row['mitomap_status'] != '') or 
-                        row['gnomad_af']>=0.05 or 
-                        row['helix_af']>=0.05 or
-                        row['mitomap_af']>=0.05 or 
+                        row['gnomad_af']>=0.01 or 
+                        row['helix_af']>=0.01 or
+                        row['mitomap_af']>=0.01 or 
                         row['AF']>=0.05) else 0,
                         axis=1)
     
-    logging.info('Z-score normalize data ...')
+    logging.info('Z-score normalize data and select good training data')
     dataset[['ADz', 'HFz', 'HQz']] = dataset[['AD', 'HF', 'HQ']].apply(zscore)
     all_data_scaled = np.array(dataset[['ADz', 'HFz', 'HQz']])
-    good_train_data = np.array(dataset[dataset[HQcolname] == 1][['ADz', 'HFz', 'HQz']])
+    
+    HQ_dataset = dataset[dataset[HQcolname] == 1]
+    # LQ_dataset = dataset[dataset[HQcolname] == 0]
+    HQ_dataset_alt = HQ_dataset[HQ_dataset['GT'] !='0']
+    HQ_dataset_ref = HQ_dataset[HQ_dataset['GT'] =='0']
+    tmp_good_train_data = combine_df(HQ_dataset_alt, HQ_dataset_ref)
+    good_train_value_list = tmp_good_train_data["Sample_name_POS_GT"].tolist()
+    dataset['good_train_value'] = dataset['Sample_name_POS_GT'].isin(good_train_value_list).astype(int)
+    good_train_data = np.array(tmp_good_train_data[['ADz', 'HFz', 'HQz']])
 
     logging.info('Retain values of good training data within ± 6 standard deviations of the mean')
     filtered_good_train_data = clean_data(good_train_data)
 
     logging.info('Build Good GMM model using filtered good training data and evaluate on test data')
-    if args.max_n_components:
-        max_n_components = int(args.max_n_components)+1
-    else:
-        max_n_components = 10
+    max_n_components = args.max_n_components
     if args.good_module_n_components:
         good_module_n_components = args.good_module_n_components
     else:
@@ -411,10 +401,7 @@ def main():
     dataset['scores_Good'] = scores_Good
     
     logging.info('Select the Bad training data set to build the Bad GMM model and evaluate on test data')
-    if args.goodratio_in_goodmodule:
-        scores_good_cutoff = find_threshold(dataset, HQcolname, 'scores_Good', target_ratio=args.goodratio_in_goodmodule)
-    else:
-        scores_good_cutoff = find_threshold(dataset, HQcolname, 'scores_Good', target_ratio=0.98)
+    scores_good_cutoff = find_threshold(dataset, HQcolname, 'scores_Good', target_ratio=args.goodratio_in_goodmodule)
     dataset['Good_module_res'] = dataset.apply(lambda row: label_uncertain(row, HQcolname, 'scores_Good', scores_good_cutoff), axis=1)
     Bad_train_data = np.array(dataset[(dataset['Good_module_res']=='Bad')][['ADz', 'HFz', 'HQz']])
     Bad_train_data_filtered = clean_data(Bad_train_data)
@@ -429,7 +416,6 @@ def main():
 
     logging.info('Calculate the ratio of Good and Bad values for each LODR')
     dataset = caculate_good_bad_ratio(dataset, 'Good_module_res', 'LODR', "Good_ratio", "Bad_ratio")
-    dataset.to_csv('tmp.csv', index=False)
     
     logging.info('Specify the Good ratio (0.95, 0.98, 0.99) corresponding to the final threshold')
     closest_95_idx = (dataset['Good_ratio'] - 0.95).abs().idxmin()
@@ -450,34 +436,25 @@ def main():
     cutoff_dict = {closest_95_idx:[closest_95_Good_ratio, closest_95_Bad_ratio, closest_95_LODR],
                 closest_98_idx:[closest_98_Good_ratio, closest_98_Bad_ratio, closest_98_LODR],
                 closest_99_idx:[closest_99_Good_ratio, closest_99_Bad_ratio, closest_99_LODR]}
-    if args.final_res_ratio:
-        optimal_threshold = closest_98_LODR
-        optimal_threshold_idx = closest_98_idx
-    else:
-        optimal_threshold_idx = (dataset['Good_ratio'] - args.final_res_ratio).abs().idxmin()
-        optimal_threshold = dataset.loc[optimal_threshold_idx, 'LODR']
+
+    optimal_threshold_idx = (dataset['Good_ratio'] - args.final_res_ratio).abs().idxmin()
+    optimal_threshold = dataset.loc[optimal_threshold_idx, 'LODR']
         
     logging.info('Output the final result using GMM model')
     dataset['GMM_res'] = dataset.apply(lambda x: 'Good' if x['LODR'] > optimal_threshold else 'Bad', axis=1)
-        
-    logging.info('Calculate the ROC curve')
-    roc_auc, fpr, tpr, dataset = roc_curve_function(dataset, 'GMM_res', 'Good_module_res')
     
     logging.info('Plot the results....')
     plt_gmm_results(n_range, bics_Good, best_gmm_Good, bics_Bad,best_gmm_Bad,
-                    cutoff_dict,dataset, fpr, tpr, roc_auc, args.figure_file)
+                    cutoff_dict,dataset, args.figure_file)
     
     logging.info('Output the log information....')
-    output_info(dataset, HQcolname, good_train_data, Bad_train_data_filtered, scores_good_cutoff,
+    output_info(dataset, HQcolname, filtered_good_train_data, Bad_train_data_filtered, scores_good_cutoff,
                 cutoff_dict, optimal_threshold_idx, args.output_csv_file.strip('.csv')+'.log')
         
     logging.info('Output the final result to VCF file....')
     POS_good_count_dict, VQSR_dict = df_info2dict(dataset)
     
-    if args.pass_ratio:
-        good_allele_ratio = args.pass_ratio
-    else:
-        good_allele_ratio = 0.5
+    good_allele_ratio = args.pass_ratio
     output_vcf_file = args.output_vcf_file.strip('.gz')
     POS_count = 0
     POS_pass_count = 0
@@ -496,8 +473,6 @@ def main():
                 CHROM,POS,ID,REFs,ALTs,QUAL,FILTER,INFO,FORMAT, *SAMPLES = line.strip().split('\t')
                 FORMAT = 'GT:GQ:DP:AD:HF:CI:HQ:LHF:SB:FS:SOR:VT:LODR'
                 AN = re.findall(r'AN=(.*?);', INFO)[0].split(',')[0]
-                # with open(args.output_csv_file.strip('.csv')+'.AF.txt', 'a') as tmpf:
-                #     print(POS,POS_good_count_dict[POS], AN, POS_good_count_dict[POS]/int(AN), file=tmpf)
                 if POS_good_count_dict[POS] / int(AN) >= good_allele_ratio:
                     FILTER = 'PASS'
                     POS_pass_count += 1
