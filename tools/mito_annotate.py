@@ -129,58 +129,8 @@ def vep_annotate(anno_file_path, anno_column_info=None):
                 else:
                     csq[label] = ""
             
-            # if (row["REF"], row["POS"], row["ALT"]) not in vep: 
-            #     vep[(row["REF"], row["POS"], row["ALT"])] = []
             vep[(row["REF"], row["POS"], row["ALT"])] = csq  # if variant in two genes, will only keep the last one
             
-    return vep
-
-
-def _old_vep_annotate(anno_file_path):
-    """Create a dictionary of the VEP annotations for every possible single nucleotide variant in the mtDNA.
-
-    :return: dictionary where tuple of the variant and value identifier is key, and value is list of annotations
-    """
-    vep = {}
-    # use vcf where variants in two genes are split across two rows, for easy parsing
-    with gzip.open(anno_file_path+"/synthetic_vcf/NC_012920.1_synthetic_vep_splitvarstwogenes.vcf.gz", "rt") as f:
-        reader = csv.DictReader(f, delimiter="\t")
-        for row in reader:
-            # gene or locus
-            if (row["REF"], row["POS"], row["ALT"], "symbol") not in vep: 
-                vep[(row["REF"], row["POS"], row["ALT"], "symbol")] = []
-                
-            if len(row["SYMBOL"]) != 0:
-                vep[(row["REF"], row["POS"], row["ALT"], "symbol")].append(row["SYMBOL"])
-                
-            # consequences
-            if (row["REF"], row["POS"], row["ALT"], "consequence") not in vep: 
-                vep[(row["REF"], row["POS"], row["ALT"], "consequence")] = []
-                
-            if len(row["Consequence"]) != 0:
-                vep[(row["REF"], row["POS"], row["ALT"], "consequence")].append(row["Consequence"])
-                
-            # amino acids
-            if (row["REF"], row["POS"], row["ALT"], "aa") not in vep: 
-                vep[(row["REF"], row["POS"], row["ALT"], "aa")] = []
-            
-            if len(row["Amino_acids"]) != 0:
-                vep[(row["REF"], row["POS"], row["ALT"], "aa")].append(row["Amino_acids"])
-                
-            # protein position
-            if (row["REF"], row["POS"], row["ALT"], "codon") not in vep: 
-                vep[(row["REF"], row["POS"], row["ALT"], "codon")] = []
-            
-            if len(row["Protein_position"]) != 0:
-                vep[(row["REF"], row["POS"], row["ALT"], "codon")].append(row["Protein_position"])
-                
-            # codon change
-            if (row["REF"], row["POS"], row["ALT"], "codon_change") not in vep:  # i.e. variant is in two genes
-                vep[(row["REF"], row["POS"], row["ALT"], "codon_change")] = []
-            
-            if len(row["Codons"]) != 0:
-                vep[(row["REF"], row["POS"], row["ALT"], "codon_change")].append(row["Codons"])
-                
     return vep
 
 
@@ -581,9 +531,10 @@ def annotate(input_file, annotated_txt, annotated_vcf, anno_file_path):
     f.write(header + '\n')
 
     # generate required dictionaries
-    vep_anno_list = ["Allele", "Consequence", "IMPACT", "SYMBOL", "Gene", "Feature_type", "Feature", "BIOTYPE", "EXON", "INTRON", 
-                     "HGVSc", "HGVSp", "cDNA_position", "CDS_position", "Protein_position", "Amino_acids", "Codons", "Existing_variation", 
-                     "DISTANCE", "STRAND", "FLAGS", "VARIANT_CLASS", "SYMBOL_SOURCE", "HGNC_ID", "HGVS_OFFSET"]
+    vep_anno_list = ["Allele", "Consequence", "IMPACT", "SYMBOL", "Gene", "Feature_type", "Feature", 
+                     "BIOTYPE", "EXON", "INTRON", "HGVSc", "HGVSp", "cDNA_position", "CDS_position", 
+                     "Protein_position", "Amino_acids", "Codons", "Existing_variation", "DISTANCE", 
+                     "STRAND", "FLAGS", "VARIANT_CLASS", "SYMBOL_SOURCE", "HGNC_ID", "HGVS_OFFSET"]
 
     rcrs_pos2trinuc = rcrs_pos_to_trinucleotide(anno_file_path)
     dbsnp = dbSNP_annotate(anno_file_path)
