@@ -1,5 +1,5 @@
 #include <iostream>
-#include "io/iobgzf.cpp"
+#include "io/iobgzf.h"
 
 // Example usage
 void example() {
