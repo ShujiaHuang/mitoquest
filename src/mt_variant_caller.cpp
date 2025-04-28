@@ -4,7 +4,6 @@
 void MtVariantCaller::usage(const Config &config) {
     std::cout << MITOQUEST_DESCRIPTION            << "\n"
               << "Version: " << MITOQUEST_VERSION << "\n\n"
-            //   << "Author: "  << MITOQUEST_AUTHOR << " <" << MITOQUEST_AUTHOR_EMAIL << ">\n\n"
 
               << "Usage: mitoquest caller [options] -f ref.fa -o output.vcf.gz in1.bam [in2.bam ...]\n\n"
               << "Required options:\n"
@@ -64,7 +63,7 @@ MtVariantCaller::MtVariantCaller(int argc, char* argv[]) {
     // Save the complete command line options in VCF header
     _cmdline_string = "##mitoquest_caller_command=";
     for (size_t i = 0; i < argc; ++i) {
-        _cmdline_string += (i >0 ) ? " " + std::string(argv[i]) : std::string(argv[i]);
+        _cmdline_string += (i > 0) ? " " + std::string(argv[i]) : std::string(argv[i]);
     }
 
     int opt;
@@ -91,11 +90,11 @@ MtVariantCaller::MtVariantCaller(int argc, char* argv[]) {
             case '1': config.filename_has_samplename = true; break;
             case 'h': 
                 usage(config); 
-                exit(0);
+                exit(EXIT_SUCCESS);
             
             default:
                 std::cerr << "Unknown argument: " << opt << std::endl;
-                exit(1);
+                abort();
         }
     }
 
@@ -108,13 +107,13 @@ MtVariantCaller::MtVariantCaller(int argc, char* argv[]) {
     if (config.reference_file.empty() || config.output_file.empty()) {
         std::cerr << "Error: Missing required arguments. \n\n";
         usage(config);
-        exit(1);
+        exit(EXIT_FAILURE);
     }
 
     if (config.bam_files.empty()) {
         std::cerr << "Error: Missing required BAM/CRAM files.\n\n";
         usage(config);
-        exit(1);
+        exit(EXIT_FAILURE);
     }
 
     if (config.min_baseq < 0) {
@@ -124,22 +123,22 @@ MtVariantCaller::MtVariantCaller(int argc, char* argv[]) {
 
     if (config.min_mapq < 0) {
         std::cerr << "Error: Mapping Quality score must be non-negative\n";
-        exit(1);
+        exit(EXIT_FAILURE);
     }
 
     if (config.heteroplasmy_threshold <= 0.0 || config.heteroplasmy_threshold > 1.0) {
         std::cerr << "Error: Heteroplasmy threshold must be between 0 and 1\n";
-        exit(1);
+        exit(EXIT_FAILURE);
     }
 
     if (config.thread_count < 1) {
         std::cerr << "Error: Thread count must be at least 1\n";
-        exit(1);
+        exit(EXIT_FAILURE);
     }
 
     if (config.chunk_size < 100) {
         std::cerr << "Error: Chunk size must be at least 100\n";
-        exit(1);
+        exit(EXIT_FAILURE);
     }
 
     // Output the commandline options
