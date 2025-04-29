@@ -87,9 +87,9 @@ namespace ngslib {
         }
 
         // Make stream operators friends
-        friend BGZFile& operator>>(BGZFile& file, std::string& data);
-        friend BGZFile& operator<<(BGZFile& file, const std::string& data);
-        friend BGZFile& operator<<(BGZFile& file, const char* data);
+        friend BGZFile& operator>>(BGZFile& file, std::string& data);       // read
+        friend BGZFile& operator<<(BGZFile& file, const std::string& data); // write
+        friend BGZFile& operator<<(BGZFile& file, const char* data);        // write
 
         // Template version for arithmetic types
         template<typename T>

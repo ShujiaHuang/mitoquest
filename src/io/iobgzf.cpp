@@ -2,7 +2,6 @@
 
 namespace ngslib {
     void BGZFile::_open(const std::string &fn, const std::string mode) {
-
         _fname = fn; 
         _mode = mode;
 
