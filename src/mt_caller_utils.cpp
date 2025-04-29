@@ -275,7 +275,7 @@ void merge_file_by_line(const std::vector<std::string> &infiles, const std::stri
         ngslib::BGZFile f(fn, "r");
         std::string line;
 
-        while (f.getline(line)) {
+        while (f.readline(line)) {
             if (line[0] == '#') continue;
             OUT << line << "\n";
         }

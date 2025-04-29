@@ -29,22 +29,16 @@ namespace ngslib {
         BGZF *_bgzf;         // file handle
         static const size_t DEFAULT_BUFFER_SIZE = 4096;
 
+        // Private method to open the file
+        void _open(const std::string &fn, const std::string mode);
+
         // Prevent copying
         BGZFile(const BGZFile &b) = delete;             // reject using copy constructor (C++11 style).
         BGZFile &operator=(const BGZFile &b) = delete;  // reject using copy/assignment operator (C++11 style).
 
     public:
-        BGZFile(): _bgzf(nullptr) {}  // default constructor, do nothing
-        explicit BGZFile(const std::string &fn, const std::string mode = "rb") {
-            open(fn, mode);  /* Open the specified file for reading or writing. */
-        }
-        ~BGZFile() { close(); /* call to close the file.*/ }
+        BGZFile(): _fname(""), _mode(""), _bgzf(nullptr) {}  // default constructor, do nothing
 
-        BGZFile& write(const std::string &data); // Write operations
-        BGZFile& read(std::string &data, size_t size = DEFAULT_BUFFER_SIZE); // Read Operations
-        bool getline(std::string &line, char delim = '\n');
-
-        // Utility methods
         /**
          * @brief call `bgzf_open` function to open file.
          * 
@@ -59,10 +53,21 @@ namespace ngslib {
          * 'ab', and 'x' and 'xb'.
          * 
          */
-        void open(const std::string &fn, const std::string mode);
-        void close();
+        explicit BGZFile(const std::string &fn, const std::string mode = "rb") {
+            _open(fn, mode);  /* Open the specified file for reading or writing. */
+        }
+        ~BGZFile() { close(); /* call to close the file.*/ }
+
+        // Read up to _size_ bytes from the file storing into _data_.
+        BGZFile& read_bytes(std::string &data, size_t size = DEFAULT_BUFFER_SIZE);
+        bool read(std::string &data, char delim = '\n'); 
+        bool readline(std::string &line) { return read(line, '\n'); } // Read a line from the file
+        BGZFile& write(const std::string &data); // Write operations
+
+        // Utility methods
         bool is_open() const { return _bgzf != nullptr; }
         bool eof() const { return bgzf_check_EOF(_bgzf); }
+        void close();
 
         /**
          * @brief Force writing of all buffered data to disk.
@@ -102,7 +107,7 @@ namespace ngslib {
 
     // Non-member operator overloads
     inline BGZFile& operator>>(BGZFile& file, std::string& data) {
-        return file.read(data);
+        return file.read_bytes(data);
     }
 
     inline BGZFile& operator<<(BGZFile& file, const std::string& data) {

@@ -29,9 +29,9 @@ void example() {
     ngslib::BGZFile infile("test.gz", "rb");  // "rb"
     std::string line;
     std::cout << "Output: " << std::endl;
-    infile.getline(line);
-        std::cout << "-- Read line: " << line << std::endl;
-    while (infile.getline(line)) {
+    infile.readline(line);
+    std::cout << "-- Read line: " << line << std::endl;
+    while (infile.readline(line)) {
         std::cout << "Read line: " << line << std::endl;
     }
 }

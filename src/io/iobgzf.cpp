@@ -1,7 +1,7 @@
 #include "iobgzf.h"
 
 namespace ngslib {
-    void BGZFile::open(const std::string &fn, const std::string mode) {
+    void BGZFile::_open(const std::string &fn, const std::string mode) {
 
         _fname = fn; 
         _mode = mode;
@@ -36,7 +36,7 @@ namespace ngslib {
     }
 
     // Read operations
-    BGZFile& BGZFile::read(std::string &data, size_t size) {
+    BGZFile& BGZFile::read_bytes(std::string &data, size_t size) {
         if (!_bgzf || _mode.find('r') == std::string::npos) {
             throw std::runtime_error("[iobgzf.cpp::BGZFile:read] File not open for reading");
         }
@@ -50,8 +50,8 @@ namespace ngslib {
         return *this;
     }
 
-    // Read a complete line
-    bool BGZFile::getline(std::string &line, char delim) {
+    // Read data by _delim_. default is a complete line
+    bool BGZFile::read(std::string &data, char delim) {
         if (!_bgzf || _mode.find('r') == std::string::npos) {
             throw std::runtime_error("File not open for reading");
         }
@@ -60,7 +60,7 @@ namespace ngslib {
         int ret = bgzf_getline(_bgzf, delim, &s);
         
         if (ret >= 0) {
-            line.assign(s.s, s.l);
+            data.assign(s.s, s.l);  // assign the read data to the string
             free(s.s);  // free the allocated memory
             return true;
         }
