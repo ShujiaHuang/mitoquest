@@ -143,8 +143,7 @@ MtVariantCaller::MtVariantCaller(int argc, char* argv[]) {
 
     // Output the commandline options
     std::cout <<
-        "[INFO] Arguments: "
-        "mitoquest caller -f " + config.reference_file + 
+        "[INFO] Arguments: mitoquest caller -f " + config.reference_file + 
         " -t " << config.thread_count           << ""
         " -Q " << config.min_baseq              << ""
         " -q " << config.min_mapq               << ""
