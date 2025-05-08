@@ -243,7 +243,7 @@ std::string vcf_header_define(const std::string &ref_file_path, const std::vecto
         "##INFO=<ID=HOM_PF,Number=1,Type=Float,Description=\"Total frequency of individuals exhibiting the homoplasmic state for the non-reference allele in the population.\">",
         "##INFO=<ID=HET_PF,Number=1,Type=Float,Description=\"Total frequency of individuals exhibiting the heteroplasmic state for the non-reference allele in the population.\">",
         "##INFO=<ID=SUM_PF,Number=1,Type=Float,Description=\"Total frequency: HOM_PF+HET_PF.\">",
-        "##INFO=<ID=PT,Number=1,Type=String,Description=\"Type of plasmicity observed in population: Hom_only, Het_only, or Both\">"
+        "##INFO=<ID=PT,Number=1,Type=String,Description=\"Type of plasmicity observed in population: Hom, Het, or Both(Hom and Het)\">"
     };  // initial by common information of header
 
     ngslib::Fasta fa = ref_file_path;

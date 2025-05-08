@@ -792,9 +792,9 @@ VCFRecord call_variant_in_pos(std::vector<VariantInfo> vvi, const double hf_cuto
 
     std::string pt; // plasmic type
     if (hom_ind_count > 0 && het_ind_count == 0) {
-        pt = "Hom_only";
+        pt = "Hom";
     } else if (het_ind_count > 0 && hom_ind_count == 0) {
-        pt = "Het_only";
+        pt = "Het";
     } else if (het_ind_count > 0 && hom_ind_count > 0) {
         pt = "Both";
     }
