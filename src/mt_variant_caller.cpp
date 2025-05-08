@@ -782,11 +782,11 @@ VCFRecord call_variant_in_pos(std::vector<VariantInfo> vvi, const double hf_cuto
     }
 
     // Set INFO field
-    std::vector<int> ac_v;
+    std::vector<int> ac;
     std::vector<std::string> af;
     for (const auto& alt : vcf_record.alt) { 
         // Only record the counts (AC) and frequencies (AF) of non-ref allele in INFO field
-        ac_v.push_back(ai.allele_counts[alt]);
+        ac.push_back(ai.allele_counts[alt]);
         af.push_back(format_double(ai.allele_counts[alt] / ai.total_alleles, 4)); 
     }
 
@@ -799,8 +799,8 @@ VCFRecord call_variant_in_pos(std::vector<VariantInfo> vvi, const double hf_cuto
         pt = "Both";
     }
 
-    vcf_record.info = "AF=" + ngslib::join(af, ",")   + ";"
-                      "AC=" + ngslib::join(ac_v, ",") + ";"
+    vcf_record.info = "AF=" + ngslib::join(af, ",") + ";"
+                      "AC=" + ngslib::join(ac, ",") + ";"
                       "AN=" + std::to_string(int(ai.total_alleles)) + ";"
                       "HOM_N="   + std::to_string(hom_ind_count) + ";"
                       "HET_N="   + std::to_string(het_ind_count) + ";"
