@@ -6,8 +6,8 @@
  * @date 2025-02-24
  * 
  */
-#ifndef _MT_CALLER_UTILS_H_
-#define _MT_CALLER_UTILS_H_
+#ifndef _MT_UTILS_H_
+#define _MT_UTILS_H_
 
 #include <cmath>   // use log function
 #include <sstream>
