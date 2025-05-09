@@ -408,9 +408,9 @@ def mitomap(anno_file_path):
             if ("Cfrm" in str(row["status"])) or ("Reported" in str(row["status"])):
                 if (len(row["ref"]) == 1) and (len(row["alt"]) == 1) and row["alt"].isalpha() and (row["ref"] != row["alt"]):  # if SNVs
                     dict1[(row["ref"], row["pos"], row["alt"])] = (row["status"].replace(";", "|"),  # replace ';' with '|' to prevent error in VCF INFO 
-                                                                   row["homoplasmy"], 
-                                                                   row["heteroplasmy"], 
-                                                                   row["disease"])
+                                                                   row["homoplasmy"].replace(";", "|"), 
+                                                                   row["heteroplasmy"].replace(";", "|"), 
+                                                                   row["disease"].replace(";", "|"))
 
     with gzip.open(anno_file_path+"/databases/MITOMAP_polymorphisms_20250403.txt.gz", "rt", encoding="ISO-8859-1") as f:
         reader = csv.DictReader(f, delimiter="\t")
