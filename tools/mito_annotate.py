@@ -232,7 +232,7 @@ def uniprot_annotations(anno_file_path):
             row = line.strip().split('\t')
             # restrict to annotations of interest
             if any(x in row[14] for x in ["binding", "metal"]):  # metal binding or binding site
-                annotation = "site:" + row[14].split("UP000005640_9606_")[1].split(".bed")[0] + "-" + row[13]
+                annotation = "site:" + row[14].split("UP000005640_9606_")[1].split(".bed")[0] + "-" + row[13].replace(";", "|")
                 # per UniProt: start_coord = row[1] and end_coord = row[2], but there can be intervals/blocks between these
                 # number of blocks representing the annotation is row[9]
                 # row[10] are the block sizes, a comma separated list
