@@ -153,6 +153,15 @@ namespace ngslib {
         VCFRecord subset_samples(const VCFHeader& hdr, std::vector<int>& sample_indices) const;
 
         /**
+         * @brief 更新记录的参考序列和替代等位基因
+         * @param hdr VCF 头信息
+         * @param ref 新的参考序列
+         * @param alts 新的替代等位基因列表
+         * @return 更新是否成功
+         */
+        bool update_alleles(const VCFHeader& hdr, const std::string& ref, const std::vector<std::string>& alts);
+
+        /**
          * @brief Gets the chromosome ID (rid). Use VCFHeader::seq_name to get the name.
          * @param hdr The VCFHeader associated with this record.
          * @return The chromosome ID, or -1 if invalid.

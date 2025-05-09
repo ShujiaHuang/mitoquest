@@ -5,7 +5,7 @@
 
 // Function to print usage information for the 'subsam' command
 void VCFSubsetSamples::print_usage() {
-    std::cerr << "Usage: mitoquest subsam [options] -i <input.vcf> -o <output.vcf> [-s <samplelist> <sample1> <sample2> ...]\n";
+    std::cerr << "Usage: mitoquest subsam [options] -i <input.vcf> -o <output.vcf> [-s <samplelist>] [<sample1> <sample2> ...]\n";
     std::cerr << "\n";
     std::cerr << "Options:\n";
     std::cerr << "  -i, --input FILE    Input VCF/BCF file (required).\n";
@@ -155,8 +155,8 @@ bool VCFSubsetSamples::recalculate_info(const ngslib::VCFHeader& hdr, ngslib::VC
     for (size_t i = 0; i < all_genotypes.size(); ++i) {
         // Get the genotype for this sample
         const std::vector<int>& gt = all_genotypes[i];
-
         std::vector<int> non_missing_al;
+
         // Count alleles for this sample
         for (int allele_code : gt) { // Allele code (0=REF, 1=ALT1, ...)
             if (allele_code >= 0) {  // Check if allele is not missing (bcf_gt_missing == -1)
@@ -192,6 +192,15 @@ bool VCFSubsetSamples::recalculate_info(const ngslib::VCFHeader& hdr, ngslib::VC
     }
 
     if ((!_keep_all_site) && (hom_ind_count + het_ind_count == 0)) return false;  // Non variants on this site
+
+    // 清理不再出现的 ALT 等位基因
+    // if (!_keep_all_site) {
+    //     if (!cleanup_alleles(hdr, rec, ac)) {
+    //         std::cerr << "Warning: Failed to clean up alleles at "
+    //                   << rec.chrom(hdr) << ":" << (rec.pos() + 1) << "\n";
+    //         return false;
+    //     }
+    // }
 
     // Update AC, AN, HOM_N, HET_N, Total_N in the record's INFO field
     rec.update_info_int(hdr, "AC", ac.data(), ac.size());
@@ -248,6 +257,52 @@ bool VCFSubsetSamples::recalculate_info(const ngslib::VCFHeader& hdr, ngslib::VC
 
     return true;
 }
+
+// bool VCFSubsetSamples::cleanup_alleles(const ngslib::VCFHeader& hdr, ngslib::VCFRecord& rec, 
+//                                        const std::vector<int>& ac) {
+//     // 确保记录已解包
+//     if (rec.unpack(BCF_UN_STR) < 0) {
+//         std::cerr << "Warning: Failed to unpack record for allele cleanup at "
+//                   << rec.chrom(hdr) << ":" << (rec.pos() + 1) << "\n";
+//         return false;
+//     }
+
+//     int n_alt = rec.n_alt();
+//     if (n_alt == 0) return true;  // 没有替代等位基因，无需清理
+
+//     // 找出需要保留的 ALT 等位基因
+//     std::vector<bool> keep_alt(n_alt, false);
+//     std::vector<std::string> new_alts;
+//     std::string ref = rec.ref();
+    
+//     std::vector<std::string> rec_alt = rec.alt();
+//     for (int i = 0; i < n_alt; ++i) {
+//         if (ac[i] > 0) {  // 如果这个 ALT 等位基因在子集中出现
+//             keep_alt[i] = true;
+//             new_alts.push_back(rec_alt[i]);
+//         }
+//     }
+
+//     // 如果所有 ALT 等位基因都要保留，无需更新
+//     if (std::all_of(keep_alt.begin(), keep_alt.end(), [](bool v) { return v; })) {
+//         return true;
+//     }
+
+//     // 更新记录的 ALT 等位基因
+//     if (new_alts.empty()) {
+//         // 所有 ALT 等位基因都不存在了，这种情况应该在之前就被过滤掉
+//         return false;
+//     }
+
+//     // 更新 ALT 列
+//     if (!rec.update_alleles(hdr, ref, new_alts)) {
+//         std::cerr << "Warning: Failed to update alleles at "
+//                   << rec.chrom(hdr) << ":" << (rec.pos() + 1) << "\n";
+//         return false;
+//     }
+
+//     return true;
+// }
 
 // Main execution logic
 void VCFSubsetSamples::run() {

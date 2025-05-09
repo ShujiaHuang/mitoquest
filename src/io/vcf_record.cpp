@@ -119,6 +119,41 @@ namespace ngslib {
         return subset_rec;
     }
 
+    bool VCFRecord::update_alleles(const VCFHeader& hdr, const std::string& ref, const std::vector<std::string>& alts) {
+        if (!is_valid_unsafe() || !hdr.is_valid()) return false;
+        
+        // 确保记录已解包
+        if (!(_b->unpacked & BCF_UN_STR)) {
+            if (bcf_unpack(_b.get(), BCF_UN_STR) < 0) {
+                return false;
+            }
+        }
+    
+        // 计算所有等位基因的数量（REF + ALTs）
+        const int n_alleles = 1 + alts.size();
+        
+        // 创建一个指针数组来存储所有等位基因字符串
+        std::vector<const char*> alleles(n_alleles);
+        
+        // 设置 REF 等位基因
+        alleles[0] = ref.c_str();
+        
+        // 设置 ALT 等位基因
+        for (size_t i = 0; i < alts.size(); ++i) {
+            alleles[i + 1] = alts[i].c_str();
+        }
+    
+        // 一次性更新所有等位基因，使用传入的 header
+        int ret = bcf_update_alleles(
+            hdr.hts_header(),  // 使用传入的 header
+            _b.get(),
+            alleles.data(),
+            n_alleles
+        );
+    
+        return (ret >= 0);
+    }
+
     int32_t VCFRecord::rid(const VCFHeader& hdr) const {
         if (!is_valid_unsafe() || !hdr.is_valid()) return -1;
         return _b->rid;
