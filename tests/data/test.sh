@@ -12,3 +12,7 @@
 ## Annotation
 python ../../tools/mito_annotate.py -d ~/Projects/mitoquest/data -i tt_bak -o t.ann.txt -v t.ann.vcf
 
+## subsam
+../../bin/mitoquest subsam -i tt -o tt.subsam 00115121204M17BFF2 
+../../bin/mitoquest subsam -i tt_bak -o tt.subsam 00115121204M17BFF2 15100105TLL4A 21200715BFF2A
+../../bin/mitoquest subsam -i tt_bak_1 --keep-all-site -o tt.subsam 21200715BFF2A 

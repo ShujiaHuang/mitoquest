@@ -17,4 +17,6 @@ g++ -O3 -fPIC test_algorithm.cpp ../src/algorithm.cpp ../htslib/libhts.a -I ../h
 gcc -O3 -Wall -I ../src -std=c++11 -lstdc++ -o test_combinations test_combinations.cpp && ./test_combinations && rm -f test_combinations
 
 g++ -O3 -fPIC test_hts_utils.cpp ../htslib/libhts.a -I ../htslib -I ../src -o test_hts_utils -lz -lbz2 -lm -llzma -lpthread -lcurl
-g++ -O3 -fPIC test_iobgzf.cpp ../htslib/libhts.a -I ../htslib -I ../src -o test_iobgzf -lz -lbz2 -lm -llzma -lpthread -lcurl
+g++ -O3 -fPIC test_iobgzf.cpp ../src/io/iobgzf.cpp ../htslib/libhts.a -I ../htslib -I ../src -o test_iobgzf -lz -lbz2 -lm -llzma -lpthread -lcurl
+
+g++ -O3 -fPIC test_vcf.cpp ../src/io/vcf.cpp ../src/io/vcf_header.cpp ../src/io/vcf_record.cpp ../src/io/utils.cpp ../htslib/libhts.a -I ../htslib -I ../src -o test_vcf -lz -lbz2 -lm -llzma -lpthread -lcurl && ./test_vcf && rm -f ./test_vcf

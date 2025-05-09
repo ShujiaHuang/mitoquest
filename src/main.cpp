@@ -14,6 +14,7 @@
 
 #include "version.h"
 #include "mt_variant_caller.h"
+#include "vcf_subset_samples.h"
 
 static int usage() {
     std::cout << MITOQUEST_DESCRIPTION << "\n"
@@ -21,6 +22,7 @@ static int usage() {
               << "Usage: mitoquest <command> [options]\n"
                  "Commands:\n"
                  "  caller    Mitochondrial variants and heteroplasmy/homoplasmy caller.\n"
+                 "  subsam    Extract mitochondrial variants for specified samples from VCF files and output a new VCF file.\n"
               << "\n" << std::endl;
     return 1;
 }
@@ -40,9 +42,8 @@ int main(int argc, char* argv[]) {
     }
 
     std::string cmd(argv[1]);
+    if(cmd != "-h" && cmd != "--help") std::cout << "Commandline: " + cmdline + "\n" << std::endl;
     if (cmd == "caller") {
-        
-        std::cout << "Commandline options: " + cmdline + "\n" << std::endl;
         try {
             MtVariantCaller caller(argc-1, argv+1);
             caller.run();
@@ -50,10 +51,22 @@ int main(int argc, char* argv[]) {
             std::cerr << "Error: " << e.what() << '\n';
             return 1;
         }
+
+    } else if (cmd == "subsam") {
+        try {
+            // For subsampling, we need at least 3 arguments: input file, output file, 
+            // and at least one sample name.
+            VCFSubsetSamples subsam(argc-1, argv+1);
+            subsam.run();
+
+        } catch (const std::exception& e) {
+            std::cerr << "Error: " << e.what() << '\n';
+            return 1;
+        }
     
     } else if (cmd == "-h" || cmd == "--help") {
         return usage();
-
+        
     } else {
         std::cout << "\nError: Unrecognizable option: " + cmd << std::endl;
         return 1;
@@ -63,7 +76,6 @@ int main(int argc, char* argv[]) {
     time_t now = time(0);
     std::string ct(ctime(&now));
     ct.pop_back();  // rm the trailing '\n' put by `asctime`
-
     std::cout << "\n[INFO] " + ct + ". Processes are all done, "
               << difftime(now, real_start_time) << " (CPU time: "
               << std::round((clock() - cpu_start_time) / CLOCKS_PER_SEC) 
