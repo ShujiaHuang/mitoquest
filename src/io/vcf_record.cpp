@@ -506,7 +506,6 @@ namespace ngslib {
     }
 
     // --- Modifiers ---
-
     void VCFRecord::set_pos(hts_pos_t pos) {
         if (is_valid_unsafe()) {
             _b->pos = pos;

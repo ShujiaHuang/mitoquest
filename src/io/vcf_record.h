@@ -133,35 +133,6 @@ namespace ngslib {
         // === Accessors for Core Fields ===
 
         /**
-         * @brief Subsets the record to include only specified samples
-         * 
-         * @param hdr The VCF header containing the subset information
-         * @param samples_to_keep Vector of sample names to keep
-         * @return VCFRecord A new record containing only the specified samples
-         * @throws std::runtime_error if record is invalid or subsetting fails
-         */
-        VCFRecord subset_samples(const VCFHeader& hdr, const std::vector<std::string>& samples_to_keep) const;
-
-        /**
-         * @brief Subsets the record to include only specified samples (by index)
-         * 
-         * @param hdr The VCF header containing the subset information
-         * @param sample_indices Vector of sample indices to keep
-         * @return VCFRecord A new record containing only the specified samples
-         * @throws std::runtime_error if record is invalid or subsetting fails
-         */
-        VCFRecord subset_samples(const VCFHeader& hdr, std::vector<int>& sample_indices) const;
-
-        /**
-         * @brief 更新记录的参考序列和替代等位基因
-         * @param hdr VCF 头信息
-         * @param ref 新的参考序列
-         * @param alts 新的替代等位基因列表
-         * @return 更新是否成功
-         */
-        bool update_alleles(const VCFHeader& hdr, const std::string& ref, const std::vector<std::string>& alts);
-
-        /**
          * @brief Gets the chromosome ID (rid). Use VCFHeader::seq_name to get the name.
          * @param hdr The VCFHeader associated with this record.
          * @return The chromosome ID, or -1 if invalid.
@@ -470,6 +441,15 @@ namespace ngslib {
         int update_format_string(const VCFHeader& hdr, const std::string& tag, const char** values);
 
         /**
+         * @brief 更新记录的参考序列和替代等位基因
+         * @param hdr VCF 头信息
+         * @param ref 新的参考序列
+         * @param alts 新的替代等位基因列表
+         * @return 更新是否成功
+         */
+        bool update_alleles(const VCFHeader& hdr, const std::string& ref, const std::vector<std::string>& alts);
+
+        /**
          * @brief Updates genotype (GT) FORMAT tag values. Requires unpack(BCF_UN_FMT).
          * @param hdr VCFHeader for tag ID lookup.
          * @param genotypes Pointer to the genotype data array (sample-major, allele-major within sample). Size must be n_samples * ploidy. Use bcf_gt_unphased() etc. to construct values.
@@ -477,6 +457,26 @@ namespace ngslib {
          * @return 0 on success, negative on error.
          */
         int update_genotypes(const VCFHeader& hdr, const int32_t* genotypes, int ploidy);
+
+        /**
+         * @brief Subsets the record to include only specified samples
+         * 
+         * @param hdr The VCF header containing the subset information
+         * @param samples_to_keep Vector of sample names to keep
+         * @return VCFRecord A new record containing only the specified samples
+         * @throws std::runtime_error if record is invalid or subsetting fails
+         */
+        VCFRecord subset_samples(const VCFHeader& hdr, const std::vector<std::string>& samples_to_keep) const;
+
+        /**
+         * @brief Subsets the record to include only specified samples (by index)
+         * 
+         * @param hdr The VCF header containing the subset information
+         * @param sample_indices Vector of sample indices to keep
+         * @return VCFRecord A new record containing only the specified samples
+         * @throws std::runtime_error if record is invalid or subsetting fails
+         */
+        VCFRecord subset_samples(const VCFHeader& hdr, std::vector<int>& sample_indices) const;
 
         // Friend function for output stream (basic representation)
         friend std::ostream& operator<<(std::ostream& os, const VCFRecord& rec);
