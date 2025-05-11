@@ -441,13 +441,13 @@ namespace ngslib {
         int update_format_string(const VCFHeader& hdr, const std::string& tag, const char** values);
 
         /**
-         * @brief 更新记录的参考序列和替代等位基因
-         * @param hdr VCF 头信息
-         * @param ref 新的参考序列
-         * @param alts 新的替代等位基因列表
-         * @return 更新是否成功
+         * @brief Updates the reference and alternate alleles. Requires header context.
+         * @param hdr The VCFHeader associated with this record.
+         * @param ref The new reference allele.
+         * @param alts Vector of new alternate alleles.
+         * @return 0 on success, negative on error.
          */
-        bool update_alleles(const VCFHeader& hdr, const std::string& ref, const std::vector<std::string>& alts);
+        int update_alleles(const VCFHeader& hdr, const std::string& ref, const std::vector<std::string>& alts);
 
         /**
          * @brief Updates genotype (GT) FORMAT tag values. Requires unpack(BCF_UN_FMT).
