@@ -122,7 +122,7 @@ VCFSubsetSamples::VCFSubsetSamples(int argc, char* argv[]) {
     parse_args(argc, argv);
 }
 
-// Recalculate INFO fields (AC, AN, AF)
+// Recalculate INFO fields
 bool VCFSubsetSamples::recalculate_info(const ngslib::VCFHeader& hdr, ngslib::VCFRecord& rec) 
 {
     // Requires GT field in FORMAT, and record unpacked for FORMAT and INFO
@@ -136,8 +136,8 @@ bool VCFSubsetSamples::recalculate_info(const ngslib::VCFHeader& hdr, ngslib::VC
     if (n_alt == 0) return true; // No ALT alleles, nothing to count
 
     // Get genotypes for all samples
-    std::vector<std::vector<int>> all_genotypes;
-    int max_ploidy = rec.get_genotypes(hdr, all_genotypes);
+    std::vector<std::vector<int>> genotypes;
+    int max_ploidy = rec.get_genotypes(hdr, genotypes);
     if (max_ploidy <= 0) {
         // GT field missing or error reading it, cannot recalculate
         std::cerr << "Warning: GT field missing or unreadable at "
@@ -151,11 +151,11 @@ bool VCFSubsetSamples::recalculate_info(const ngslib::VCFHeader& hdr, ngslib::VC
     int ref_ind_count = 0;         // Count of individuals with REF allele
     int hom_ind_count = 0;
     int het_ind_count = 0;
-    int total_available_ind_count = 0;
+    int available_ind_count = 0;
 
-    for (size_t i = 0; i < all_genotypes.size(); ++i) {
+    for (size_t i = 0; i < genotypes.size(); ++i) {
         // Get the genotype for this sample
-        const std::vector<int>& gt = all_genotypes[i];
+        const std::vector<int>& gt = genotypes[i];
         std::vector<int> non_missing_al;
 
         // Count alleles for this sample
@@ -189,7 +189,7 @@ bool VCFSubsetSamples::recalculate_info(const ngslib::VCFHeader& hdr, ngslib::VC
             } else if (non_missing_al.size() > 1) {
                 het_ind_count++;
             }
-            total_available_ind_count++;
+            available_ind_count++;
         }
     }
 
@@ -205,11 +205,18 @@ bool VCFSubsetSamples::recalculate_info(const ngslib::VCFHeader& hdr, ngslib::VC
     rec.update_info_int(hdr, "AN", &an, 1);
     rec.update_info_int(hdr, "HOM_N", &hom_ind_count, 1);
     rec.update_info_int(hdr, "HET_N", &het_ind_count, 1);
-    rec.update_info_int(hdr, "Total_N", &total_available_ind_count, 1);
+    rec.update_info_int(hdr, "Total_N", &available_ind_count, 1);
 
     // Update AF, HOM_PF, HET_PF, SUM_PF in the record's INFO field
+
+    // If AN is 0 (all kept samples had missing genotypes), set AF to missing or 0
+    std::vector<float> af(n_alt, 0.0f); // Or std::vector<float> af(n_alt, ngslib::VCFRecord::FLOAT_MISSING);
+
+    // If no available individuals, set PF fields to missing or 0
+    float hom_pf = 0.0f; // Or ngslib::VCFRecord::FLOAT_MISSING;
+    float het_pf = 0.0f; // Or ngslib::VCFRecord::FLOAT_MISSING;
+    float sum_pf = 0.0f; // Or ngslib::VCFRecord::FLOAT_MISSING;
     if (an > 0) {
-        std::vector<float> af(n_alt);
         for (int i = 0; i < n_alt; ++i) {
             af[i] = static_cast<float>(ac[i]) / an;
             // Handle potential NaN/Inf just in case, though unlikely here
@@ -217,28 +224,14 @@ bool VCFSubsetSamples::recalculate_info(const ngslib::VCFHeader& hdr, ngslib::VC
                 af[i] = 0.0f; // Or some other placeholder like VCFRecord::FLOAT_MISSING
             }
         }
-        rec.update_info_float(hdr, "AF", af.data(), af.size());
-
-        float hom_pf = static_cast<double>(hom_ind_count) / total_available_ind_count;
-        float het_pf = static_cast<double>(het_ind_count) / total_available_ind_count;
-        float sum_pf = static_cast<double>(hom_ind_count + het_ind_count) / total_available_ind_count;
-        rec.update_info_float(hdr, "HOM_PF", &hom_pf, 1);
-        rec.update_info_float(hdr, "HET_PF", &het_pf, 1);
-        rec.update_info_float(hdr, "SUM_PF", &sum_pf, 1);
-
-    } else {
-        // If AN is 0 (all kept samples had missing genotypes), set AF to missing or 0
-        std::vector<float> af_missing(n_alt, 0.0f); // Or std::vector<float> af_missing(n_alt, ngslib::VCFRecord::FLOAT_MISSING);
-        rec.update_info_float(hdr, "AF", af_missing.data(), af_missing.size());
-
-        // If no available individuals, set PF fields to missing or 0
-        float hom_pf = 0.0f; // Or ngslib::VCFRecord::FLOAT_MISSING;
-        float het_pf = 0.0f; // Or ngslib::VCFRecord::FLOAT_MISSING;
-        float sum_pf = 0.0f; // Or ngslib::VCFRecord::FLOAT_MISSING;
-        rec.update_info_float(hdr, "HOM_PF", &hom_pf, 1);
-        rec.update_info_float(hdr, "HET_PF", &het_pf, 1);
-        rec.update_info_float(hdr, "SUM_PF", &sum_pf, 1);
+        hom_pf = static_cast<double>(hom_ind_count) / available_ind_count;
+        het_pf = static_cast<double>(het_ind_count) / available_ind_count;
+        sum_pf = static_cast<double>(hom_ind_count + het_ind_count) / available_ind_count;
     }
+    rec.update_info_float(hdr, "AF", af.data(), af.size());
+    rec.update_info_float(hdr, "HOM_PF", &hom_pf, 1);
+    rec.update_info_float(hdr, "HET_PF", &het_pf, 1);
+    rec.update_info_float(hdr, "SUM_PF", &sum_pf, 1);
 
     // Update PT in the record's INFO field
     std::string pt; // plasmic type
