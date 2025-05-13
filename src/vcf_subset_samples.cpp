@@ -212,7 +212,7 @@ bool VCFSubsetSamples::recalculate_info(const ngslib::VCFHeader& hdr, ngslib::VC
     // If AN is 0 (all kept samples had missing genotypes), set AF to missing or 0
     std::vector<float> af(n_alt, 0.0f); // Or std::vector<float> af(n_alt, ngslib::VCFRecord::FLOAT_MISSING);
 
-    // If no available individuals, set PF fields to missing or 0
+    // If all kept samples had missing genotypes, set PF fields to 0 (or missing)
     float hom_pf = 0.0f; // Or ngslib::VCFRecord::FLOAT_MISSING;
     float het_pf = 0.0f; // Or ngslib::VCFRecord::FLOAT_MISSING;
     float sum_pf = 0.0f; // Or ngslib::VCFRecord::FLOAT_MISSING;
