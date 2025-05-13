@@ -743,6 +743,7 @@ VCFRecord call_variant_in_pos(std::vector<VariantInfo> vvi, const double hf_cuto
     
     // Process sample information
     vcf_record.format = "GT:GQ:DP:AD:HF:CI:HQ:LHF:SB:FS:SOR:VT";
+    int ref_ind_count = 0; // Count of individuals with REF allele
     int hom_ind_count = 0;
     int het_ind_count = 0;
     int total_available_ind_count = 0;
@@ -767,8 +768,12 @@ VCFRecord call_variant_in_pos(std::vector<VariantInfo> vvi, const double hf_cuto
         // Count the number of homozygous and heterozygous individuals
         if (sa.gtcode.size() > 0) {
             // Check if the sample is homozygous or heterozygous
-            if ((sa.gtcode.size() == 1) && (sa.gtcode[0] != 0)) {  // non-reference
-                hom_ind_count++;
+            if (sa.gtcode.size() == 1) {  // non-reference
+                if (sa.gtcode[0] != 0) {
+                    hom_ind_count++;
+                } else {
+                    ref_ind_count++;
+                }
             } else if (sa.gtcode.size() > 1) {
                 het_ind_count++;
             }
@@ -791,12 +796,16 @@ VCFRecord call_variant_in_pos(std::vector<VariantInfo> vvi, const double hf_cuto
     }
 
     std::string pt; // plasmic type
-    if (hom_ind_count > 0 && het_ind_count == 0) {
+    if (ref_ind_count > 0 && hom_ind_count + het_ind_count == 0) {
+        pt = "Ref";
+    } else if (hom_ind_count > 0 && het_ind_count == 0) {
         pt = "Hom";
     } else if (het_ind_count > 0 && hom_ind_count == 0) {
         pt = "Het";
     } else if (het_ind_count > 0 && hom_ind_count > 0) {
-        pt = "Both";
+        pt = "Mixed";
+    } else {
+        pt = "Unknown"; // Fallback case
     }
 
     vcf_record.info = "AF=" + ngslib::join(af, ",") + ";"
