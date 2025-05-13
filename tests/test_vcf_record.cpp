@@ -57,8 +57,8 @@ chrM	2	.	C	T	.	PASS	.	GT	0/1/2	1	0/1/2/3
         EXPECT_EQ(genotypes[1].size(), 1);  // Sample2: 单倍体
         EXPECT_EQ(genotypes[2].size(), 4);  // Sample3: 四倍体
 
-        // 检查 fmt->size
-        // 通过添加调试输出来验证 fmt->size 的值
+        // 检查 
+        // 通过添加调试输出来验证 的值
         std::cout << "Record 1 fmt->size: " << max_ploidy << std::endl;
         std::cout << "Record 2 fmt->size: " << max_ploidy << std::endl;
 

@@ -94,7 +94,7 @@ namespace ngslib {
          * Use with caution, as direct manipulation can affect shared instances.
          * @return A const pointer to the bcf1_t struct. Returns nullptr if invalid.
          */
-        const bcf1_t* hts_record() const { return _b.get(); }
+        bcf1_t* hts_record() const { return _b.get(); }
 
         /**
          * @brief Provides direct access to the underlying bcf1_t pointer (non-const).
@@ -128,7 +128,7 @@ namespace ngslib {
          *              BCF_UN_ALL unpacks all.
          * @return 0 on success, negative on error.
          */
-        int unpack(int which);
+        int unpack(int which) const;
 
         // === Accessors for Core Fields ===
 
@@ -314,6 +314,35 @@ namespace ngslib {
          */
         int get_format_string(const VCFHeader& hdr, const std::string& tag, std::vector<std::string>& values) const;
 
+        /**
+         * @brief Gets the index for a specific tag in the FORMAT field.
+         * @param hdr The VCFHeader associated with this record.
+         * @param tag The FORMAT tag name (e.g., "GT").
+         * @return The ID of the FORMAT field, or -1 if not found.
+         */
+        int get_format_idx(const VCFHeader& hdr, const std::string& tag) const;
+
+        /**
+         * @brief Gets the ploidy for a specific sample. 
+         * @param hdr The VCFHeader associated with this record.
+         * @return The ploidy, or -1 if invalid.
+        */
+        int get_sample_ploidy(const VCFHeader& hdr, int sample_idx) const;
+
+        /**
+         * @brief Gets the ploidy for all samples.
+         * @param hdr The VCFHeader associated with this record.
+         * @return A vector of integers representing the ploidy for each sample. Returns empty vector if invalid.
+         */
+        std::vector<int> get_sample_ploidies(const VCFHeader& hdr) const;
+
+        /**
+         * @brief Gets the maximum ploidy across all samples.
+         * @param hdr The VCFHeader associated with this record.
+         * @return The maximum ploidy, or -1 if invalid.
+         */
+        int get_max_ploidy(const VCFHeader& hdr) const;
+
 
         // === Modifiers ===
         // Note: These modify the underlying record. Use copy_record() first if needed.
@@ -441,6 +470,14 @@ namespace ngslib {
         int update_format_string(const VCFHeader& hdr, const std::string& tag, const char** values);
 
         /**
+         * @brief Cleans up alleles (REF and ALT) to remove invalid or missing values.
+         * This is a helper function for update_alleles.
+         * @param hdr The VCFHeader associated with this record.
+         * @return True if cleanup was successful, false if the record is invalid.
+         */
+        bool cleanup_alleles(const ngslib::VCFHeader& hdr);
+
+        /**
          * @brief Updates the reference and alternate alleles. Requires header context.
          * @param hdr The VCFHeader associated with this record.
          * @param ref The new reference allele.
@@ -452,11 +489,10 @@ namespace ngslib {
         /**
          * @brief Updates genotype (GT) FORMAT tag values. Requires unpack(BCF_UN_FMT).
          * @param hdr VCFHeader for tag ID lookup.
-         * @param genotypes Pointer to the genotype data array (sample-major, allele-major within sample). Size must be n_samples * ploidy. Use bcf_gt_unphased() etc. to construct values.
-         * @param ploidy Number of alleles per sample (e.g., 2 for diploid).
+         * @param genotypes Vector of vectors containing genotype data (sample-major, allele-major within sample). Use bcf_gt_unphased() etc. to construct values.
          * @return 0 on success, negative on error.
          */
-        int update_genotypes(const VCFHeader& hdr, const int32_t* genotypes, int ploidy);
+        int update_genotypes(const VCFHeader& hdr, const std::vector<std::vector<int>>& genotypes);
 
         /**
          * @brief Subsets the record to include only specified samples

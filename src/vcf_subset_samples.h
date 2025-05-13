@@ -55,7 +55,6 @@ private:
      */
     //  * @param sample_indices Indices of the samples being kept in the original header.
     bool recalculate_info(const ngslib::VCFHeader& hdr, ngslib::VCFRecord& rec);
-    // bool cleanup_alleles(const ngslib::VCFHeader& hdr, ngslib::VCFRecord& rec, const std::vector<int>& ac);
 
 public:
     /**

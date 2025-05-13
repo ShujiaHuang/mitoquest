@@ -75,50 +75,12 @@ namespace ngslib {
         }
     }
 
-    int VCFRecord::unpack(int which) {
+    int VCFRecord::unpack(int which) const {
         if (!is_valid_unsafe()) return -1; // Or some other error code
         return bcf_unpack(_b.get(), which);
     }
 
     // --- Accessors for Core Fields ---
-    VCFRecord VCFRecord::subset_samples(const VCFHeader& hdr, const std::vector<std::string>& samples_to_keep) const {
-        if (!is_valid()) {
-            throw std::runtime_error("Cannot subset an invalid VCF record");
-        }
-    
-        // Create index mapping
-        std::vector<int> sample_indices;
-        sample_indices.reserve(samples_to_keep.size());
-        
-        for (const auto& name : samples_to_keep) {
-            int idx = hdr.sample_index(name);
-            if (idx < 0) {
-                throw std::runtime_error("Sample '" + name + "' not found in VCF record");
-            }
-            sample_indices.push_back(idx);
-        }
-    
-        return subset_samples(hdr, sample_indices);
-    }
-    
-    VCFRecord VCFRecord::subset_samples(const VCFHeader& hdr, std::vector<int>& sample_indices) const {
-        if (!is_valid()) {
-            throw std::runtime_error("Cannot subset an invalid VCF record");
-        }
-    
-        // Create a copy of the record for subsetting
-        VCFRecord subset_rec = copy_record();
-        
-        // Call bcf_subset with indices
-        // Note: bcf_subset modifies the record in place, so we need to pass the copy
-        // Signature: int bcf_subset(const bcf_hdr_t *h, bcf1_t *v, int n, int *imap);
-        if (bcf_subset(hdr.hts_header(), subset_rec._b.get(), sample_indices.size(), sample_indices.data()) != 0) {
-            throw std::runtime_error("Failed to subset record at " + chrom(hdr) + ":" + std::to_string(pos()+1));
-        }
-    
-        return subset_rec;
-    }
-
     int32_t VCFRecord::rid(const VCFHeader& hdr) const {
         if (!is_valid_unsafe() || !hdr.is_valid()) return -1;
         return _b->rid;
@@ -138,20 +100,20 @@ namespace ngslib {
         if (!is_valid_unsafe()) return STRING_MISSING;
         // Ensure shared fields are unpacked before accessing id
         // Although bcf_get_id doesn't strictly require it, it's good practice
-        // bcf_unpack(_b.get(), BCF_UN_SHR); // Caller should ensure this if needed
+        unpack(BCF_UN_SHR); // Caller should ensure this if needed
         return (_b->d.id ? std::string(_b->d.id) : STRING_MISSING);
     }
 
     std::string VCFRecord::ref() const {
         if (!is_valid_unsafe() || _b->n_allele == 0) return "";
-        // bcf_unpack(_b.get(), BCF_UN_STR); // Alleles are usually available without unpack
+        unpack(BCF_UN_STR); // Alleles are usually available without unpack
         return (_b->d.allele[0] ? std::string(_b->d.allele[0]) : "");
     }
 
     std::vector<std::string> VCFRecord::alt() const {
         std::vector<std::string> alleles;
         if (!is_valid_unsafe() || _b->n_allele <= 1) return alleles;
-        // bcf_unpack(_b.get(), BCF_UN_STR); // Alleles usually available
+        unpack(BCF_UN_STR); // Alleles usually available
         alleles.reserve(_b->n_allele - 1);
         for (int i = 1; i < _b->n_allele; ++i) {
              alleles.push_back(_b->d.allele[i] ? std::string(_b->d.allele[i]) : "");
@@ -278,7 +240,8 @@ namespace ngslib {
              // Ideally, unpack should be called by the user beforehand.
              // We'll proceed assuming it might be unpacked, but this isn't ideal const-correctness.
              // A better design might involve a non-const getter or requiring prior unpack.
-             if (bcf_unpack(const_cast<bcf1_t*>(_b.get()), BCF_UN_INFO) != 0) {
+            //  if (bcf_unpack(const_cast<bcf1_t*>(_b.get()), BCF_UN_INFO) != 0) {
+             if (unpack(BCF_UN_INFO) != 0) {
                  // Consider logging a warning here instead of returning an error code,
                  // as the failure might be due to the const context.
                  // For now, return an error code consistent with htslib.
@@ -332,56 +295,53 @@ namespace ngslib {
         return n_values; // Return number of strings pushed (0 or 1 in this simple case)
     }
 
-
     // --- FORMAT Field Accessors ---
     int VCFRecord::get_genotypes(const VCFHeader& hdr, std::vector<std::vector<int>>& genotypes) const {
         genotypes.clear();
         if (!is_valid_unsafe() || !hdr.is_valid() || n_samples() == 0) 
-            return BCF_ERR_TAG_INVALID;
-    
-        // 确保 FORMAT 字段已解包
-        if (!((_b->unpacked & BCF_UN_FMT))) {
-            if (bcf_unpack(_b.get(), BCF_UN_FMT) < 0) {
-                return BCF_ERR_TAG_INVALID;
-            }
-        }
-    
-        // 查找 GT 字段
-        int gt_fmt_id = -1;
-        for (int i = 0; i < _b->n_fmt; ++i) {
-            if (_b->d.fmt[i].id == bcf_hdr_id2int(hdr.hts_header(), BCF_DT_ID, "GT")) {
-                gt_fmt_id = i;
-                break;
-            }
-        }
+            return -1;
         
-        if (gt_fmt_id < 0) return BCF_ERR_TAG_INVALID;  // GT 字段不存在
-    
-        bcf_fmt_t *fmt = &_b->d.fmt[gt_fmt_id];
-        int n_samp = n_samples();
-        genotypes.resize(n_samp);
-    
-        // 处理每个样本
-        for (int i = 0; i < n_samp; ++i) {
-            // 获取当前样本的基因型数据起始位置, 这比使用 bcf_get_genotypes 更灵活，更适合处理可变倍性的情况
-            uint8_t *curr_sample = fmt->p + i * fmt->size;
+        // 无需在此确保 FORMAT 字段是否已解包, bcf_get_genotypes 会处理
+        // if (!((_b->unpacked & BCF_UN_FMT))) {
+        //     if (unpack(BCF_UN_FMT) < 0) {
+        //         return -1;
+        //     }
+        // }
+        int* gt_arr = nullptr;
+        int n_gt_arr = 0;
+        int ret = bcf_get_genotypes(hdr.hts_header(), _b.get(), &gt_arr, &n_gt_arr);
 
-            // 根据最大倍性分配空间并填充数据
-            genotypes[i].reserve(fmt->size);
-            for (int j = 0; j < fmt->size; ++j) {
-                // 处理基因型数据
-                int allele = static_cast<int>(curr_sample[j]);
-                if (allele == bcf_int8_vector_end + 256) break; // 处理向量结束,此处不可以用 continue       
-                
-                if (allele == bcf_int8_missing) { // 处理缺失值: '.'
-                    genotypes[i].push_back(-1);   // 使用 -1 表示缺失
-                } else {
-                    genotypes[i].push_back(bcf_gt_allele(allele));  // 存等位基因值
-                }
-            }
+        // 使用 RAII 确保 gt_arr 被释放
+        std::unique_ptr<int, void(*)(void*)> gt_guard(gt_arr, free);
+        if (ret < 0) {
+            return -1; // Error or tag not found
         }
 
-        return fmt->size; // max ploidy
+        int n_samp = n_samples();
+        int ploidy = ret / n_samp;
+
+        genotypes.resize(n_samp);
+        // 对每个样本单独处理
+        for (int i = 0; i < n_samp; ++i) {
+            int smp_ploidy = get_sample_ploidy(hdr, i);
+
+            // 根据实际倍性调整该样本的向量大小
+            genotypes[i].reserve(smp_ploidy); 
+
+             // 填充基因型数据
+            for (int j = 0; j < smp_ploidy; ++j) {
+                int32_t allele_val = gt_arr[i * ploidy + j];
+
+                // if true, the sample has smaller ploidy
+                if (allele_val == bcf_int32_vector_end) {
+                    break; // 处理向量结束
+                }
+
+                genotypes[i].push_back(bcf_gt_allele(allele_val));
+            }
+        }
+    
+        return ploidy; // This is the max ploidy
     }
 
     int VCFRecord::get_format_int(const VCFHeader& hdr, const std::string& tag, std::vector<int32_t>& values) const {
@@ -468,6 +428,108 @@ namespace ngslib {
              free(buffer);
         }
         return n_values_per_sample; // Usually 1 for strings
+    }
+
+    int VCFRecord::get_format_idx(const VCFHeader& hdr, const std::string& tag) const {
+        if (!is_valid_unsafe() || !hdr.is_valid()) {
+            return -1;
+        }
+    
+        // 确保 FORMAT 字段已解包
+        if (!(_b->unpacked & BCF_UN_FMT)) {
+            if (unpack(BCF_UN_FMT) < 0) {
+                return -1;
+            }
+        }
+    
+        // 获取 tag 字段在 FORMAT 中的 ID. 这里 tag 是一个字符串，可能是 "GT" 或其他格式字段
+        int fmt_id = bcf_hdr_id2int(hdr.hts_header(), BCF_DT_ID, tag.data());
+        if (fmt_id < 0) {
+            return -1;  // 字段未定义
+        }
+    
+        // 在记录的 FORMAT 字段中查找 tag
+        for (int i = 0; i < _b->n_fmt; ++i) {
+            if (_b->d.fmt[i].id == fmt_id) {
+                return i;  // 返回 tag 在 FORMAT 中的索引位置
+            }
+        }
+    
+        return -1;  // tag 字段不存在于当前记录中
+    }
+
+    int VCFRecord::get_sample_ploidy(const VCFHeader& hdr, int sample_idx) const {
+        // 安全性检查
+        if (!is_valid_unsafe() || !hdr.is_valid() || 
+            sample_idx < 0 || sample_idx >= n_samples()) {
+            return -1;
+        }
+    
+        // 获取 GT 字段索引
+        int gt_idx = get_format_idx(hdr, "GT");
+        if (gt_idx < 0) return -1;
+    
+        // 获取 fmt 结构
+        bcf_fmt_t *fmt_gt = &_b->d.fmt[gt_idx];
+        if (!fmt_gt) return -1;
+    
+        // 计算实际倍性（找到第一个 vector_end 或遍历完所有位置）
+        int i, j, actual_ploidy = 0;
+        #define BRANCH(type_t, convert, vector_end) { \
+            /* 获取当前样本的基因型数据 */ \
+            uint8_t *ptr = fmt_gt->p + sample_idx*fmt_gt->size; \
+            for (j=0; j < fmt_gt->n; j++) { \
+                if (convert(&ptr[j * sizeof(type_t)]) == vector_end) break; \
+            } \
+            actual_ploidy = j; \
+        }
+        switch (fmt_gt->type) {
+            case BCF_BT_INT8:  BRANCH(int8_t,  le_to_i8,  bcf_int8_vector_end); break;
+            case BCF_BT_INT16: BRANCH(int16_t, le_to_i16, bcf_int16_vector_end); break;
+            case BCF_BT_INT32: BRANCH(int32_t, le_to_i32, bcf_int32_vector_end); break;
+            default:
+                throw std::runtime_error("Unexpected case: " + std::to_string(fmt_gt->type) + "\n"); 
+        }
+
+        return actual_ploidy;
+    }
+
+    std::vector<int> VCFRecord::get_sample_ploidies(const VCFHeader& hdr) const {
+        std::vector<int> ploidies;
+        if (!is_valid_unsafe() || !hdr.is_valid()) {
+            return ploidies;
+        }
+    
+        int n_samp = n_samples();
+        ploidies.reserve(n_samp);
+    
+        for (int i = 0; i < n_samp; ++i) {
+            ploidies.push_back(get_sample_ploidy(hdr, i));
+        }
+    
+        return ploidies;
+    }
+
+    int VCFRecord::get_max_ploidy(const VCFHeader& hdr) const {
+        if (!is_valid_unsafe() || !hdr.is_valid()) {
+            return -1;
+        }
+    
+        int gt_idx = get_format_idx(hdr, "GT");
+        if (gt_idx < 0) return -1;
+    
+        bcf_fmt_t *fmt = &_b->d.fmt[gt_idx];
+        if (!fmt) return -1;
+    
+        int max_ploidy = 0;
+        int n_samp = n_samples();
+    
+        for (int i = 0; i < n_samp; ++i) {
+            int ploidy = get_sample_ploidy(hdr, i);
+            max_ploidy = std::max(max_ploidy, ploidy);
+        }
+    
+        return max_ploidy;
     }
 
     // --- Modifiers ---
@@ -613,48 +675,290 @@ namespace ngslib {
         return bcf_update_format_string(hdr.hts_header(), _b.get(), tag.c_str(), values, n_samples());
     }
 
-
-    int VCFRecord::update_alleles(const VCFHeader& hdr, const std::string& ref, const std::vector<std::string>& alts) {
-        if (!is_valid_unsafe() || !hdr.is_valid()) return -1;
+    VCFRecord VCFRecord::subset_samples(const VCFHeader& hdr, const std::vector<std::string>& samples_to_keep) const {
+        if (!is_valid()) {
+            throw std::runtime_error("Cannot subset an invalid VCF record");
+        }
+    
+        // Create index mapping
+        std::vector<int> sample_indices;
+        sample_indices.reserve(samples_to_keep.size());
         
-        // 确保记录已解包
+        for (const auto& name : samples_to_keep) {
+            int idx = hdr.sample_index(name);
+            if (idx < 0) {
+                throw std::runtime_error("Sample '" + name + "' not found in VCF record");
+            }
+            sample_indices.push_back(idx);
+        }
+    
+        return subset_samples(hdr, sample_indices);
+    }
+    
+    VCFRecord VCFRecord::subset_samples(const VCFHeader& hdr, std::vector<int>& sample_indices) const {
+        if (!is_valid()) {
+            throw std::runtime_error("Cannot subset an invalid VCF record");
+        }
+    
+        // Create a copy of the record for subsetting
+        VCFRecord subset_rec = copy_record();
+        
+        // Call bcf_subset with indices
+        // Note: bcf_subset modifies the record in place, so we need to pass the copy
+        // Signature: int bcf_subset(const bcf_hdr_t *h, bcf1_t *v, int n, int *imap);
+        if (bcf_subset(hdr.hts_header(), subset_rec._b.get(), sample_indices.size(), sample_indices.data()) != 0) {
+            throw std::runtime_error("Failed to subset record at " + chrom(hdr) + ":" + std::to_string(pos()+1));
+        }
+    
+        return subset_rec;
+    }
+
+    bool VCFRecord::cleanup_alleles(const ngslib::VCFHeader& hdr) {
+        // 1. 基本检查
+        if (!is_valid_unsafe() || !hdr.is_valid()) return false;
+    
+        // 2. 确保记录已解包
         if (!(_b->unpacked & BCF_UN_STR)) {
-            if (bcf_unpack(_b.get(), BCF_UN_STR) < 0) {
+            if (unpack(BCF_UN_STR) < 0) {
+                return false;
+            }
+        }
+    
+        // 3. 获取当前的等位基因信息
+        std::string current_ref = ref();
+        std::vector<std::string> current_alts = alt();
+        if (current_ref.empty()) return false;
+    
+        // 4. 获取基因型数据
+        std::vector<std::vector<int>> genotypes;
+        int max_ploidy = get_genotypes(hdr, genotypes);
+        if (max_ploidy <= 0) return false;
+    
+        // 5. 标记使用的等位基因
+        std::vector<bool> allele_used(1 + current_alts.size(), false);
+        allele_used[0] = true;  // REF 总是保留
+        for (const auto& sample_gt : genotypes) {
+            for (int gt : sample_gt) {
+                if (gt >= 0 && gt < allele_used.size()) {
+                    allele_used[gt] = true;
+                }
+            }
+        }
+    
+        // 6. 检查是否需要清理
+        if (std::all_of(allele_used.begin(), allele_used.end(), [](bool v){ return v; })) {
+            return true;  // 所有等位基因都在使用，无需清理
+        }
+    
+        // 7. 创建新的等位基因列表
+        std::vector<std::string> new_alts;
+        std::vector<int> allele_map(allele_used.size(), -1);
+        allele_map[0] = 0;  // REF 映射到自身
+        int new_index = 1;
+        
+        for (size_t i = 0; i < current_alts.size(); ++i) {
+            if (allele_used[i + 1]) {
+                new_alts.push_back(current_alts[i]);
+                allele_map[i + 1] = new_index++;
+            }
+        }
+    
+        // 8. 更新基因型数据
+        std::vector<std::vector<int>> new_genotypes;
+        new_genotypes.reserve(genotypes.size());
+        
+        for (const auto& sample_gt : genotypes) {
+            std::vector<int> new_gt;
+            new_gt.reserve(sample_gt.size());
+            for (int gt : sample_gt) {  
+
+                if (gt >= 0 &&  // gt may be missing
+                    gt < allele_used.size() && 
+                    allele_used[gt]) 
+                {
+                    new_gt.push_back(allele_map[gt]);  // 映射到新的等位基因索引
+                } else {
+                    // new_gt.push_back(-1);  // 保持缺失值
+                    // new_gt.push_back(bcf_gt_missing);  // 保持缺失值
+                    new_gt.push_back(bcf_int32_missing);  // 保持缺失值
+                }
+            }
+            new_genotypes.push_back(std::move(new_gt));
+        }
+    
+        // 9. 更新记录
+        // 先更新等位基因列表
+        if (!new_alts.empty() && update_alleles(hdr, current_ref, new_alts) < 0) {
+            return false;
+        }
+    
+        // 然后更新基因型数据
+        if (update_genotypes(hdr, new_genotypes) < 0) {
+            return false;
+        }
+    
+        return true;
+    }
+
+    int VCFRecord::update_alleles(const VCFHeader& hdr, const std::string& ref, 
+                                  const std::vector<std::string>& alts) {
+        // 1. 安全性检查
+        if (!is_valid_unsafe() || !hdr.is_valid() || alts.empty()) return -1;
+        
+        // 2. 确保记录已解包
+        if (!(_b->unpacked & BCF_UN_STR)) {
+            if (unpack(BCF_UN_STR) < 0) {
                 return -1;
             }
         }
     
-        // 计算所有等位基因的数量（REF + ALTs）
-        const int n_alleles = 1 + alts.size();
+        // 3. 简化 REF 和 ALT 序列
+        std::string simplified_ref = ref;
+        std::vector<std::string> simplified_alts = alts;
         
-        // 创建一个指针数组来存储所有等位基因字符串
-        std::vector<const char*> alleles(n_alleles);
+        // 3.1 找到所有序列共同的前缀长度
+        size_t prefix_len = 0;
+        while (prefix_len < ref.length()) {
+            char c = ref[prefix_len];
+            bool has_prefix = true;
+            for (const auto& alt : alts) {
+                if ((alt.length() != ref.length()) || (prefix_len >= alt.length()) || (alt[prefix_len] != c)) {
+                    has_prefix = false;
+                    break;
+                }
+            }
+
+            if (has_prefix) { // 如果有共同前缀，增加长度
+                prefix_len++;
+            } else { // 否则，退出循环
+                break;
+            }
+        }
         
-        // 设置 REF 等位基因
-        alleles[0] = ref.c_str();
-        
-        // 设置 ALT 等位基因
-        for (size_t i = 0; i < alts.size(); ++i) {
-            alleles[i + 1] = alts[i].c_str();
+        // 3.2 找到所有序列共同的后缀长度
+        size_t suffix_len = 0;
+        while (prefix_len + suffix_len < ref.length()) {
+            size_t pos = ref.length() - 1 - suffix_len;
+            char c = ref[pos];
+            bool has_suffix = true;
+            for (const auto& alt : alts) {
+                if ((prefix_len + suffix_len >= alt.length()) || (alt[alt.length() - 1 - suffix_len] != c)) {
+                    has_suffix = false;
+                    break;
+                }
+            }
+
+            if (has_suffix) {
+                suffix_len++;
+            } else {
+                break;
+            }
         }
     
-        // 一次性更新所有等位基因，使用传入的 header
+        // 3.3 如果有共同前缀或后缀，删除它们（前缀保留一个碱基）
+        if (prefix_len > 1 || suffix_len > 0) {
+            prefix_len = prefix_len > 1 ? prefix_len - 1 : 0;  // 前缀保留一个碱基
+            size_t new_len = ref.length() - prefix_len - suffix_len;
+            simplified_ref = ref.substr(prefix_len, new_len);
+            
+            for (size_t i = 0; i < alts.size(); ++i) {
+                new_len = alts[i].length() - prefix_len - suffix_len;
+                simplified_alts[i] = alts[i].substr(prefix_len, new_len);
+            }
+        }
+    
+        // 4. 准备等位基因数组
+        const int n_alleles = 1 + simplified_alts.size();
+        std::vector<const char*> alleles(n_alleles);
+        
+        // 5. 设置 REF 和 ALT 等位基因
+        alleles[0] = simplified_ref.c_str();
+        for (size_t i = 0; i < simplified_alts.size(); ++i) {
+            alleles[i + 1] = simplified_alts[i].c_str();
+        }
+    
+        // 6. 调用 htslib 函数更新等位基因
         int ret = bcf_update_alleles(
-            hdr.hts_header(),  // 使用传入的 header
+            hdr.hts_header(),
             _b.get(),
             alleles.data(),
             n_alleles
         );
+
+        // 7. 如果前缀被删除，需要更新位置
+        if (prefix_len > 0) {
+            _b->pos += prefix_len;  // 更新变异位置
+        }
     
-        return (ret >= 0) ? 0 : -1; // 返回 0 表示成功，-1 表示失败
+        return (ret >= 0) ? 0 : -1;
     }
 
-    int VCFRecord::update_genotypes(const VCFHeader& hdr, const int32_t* genotypes, int ploidy) {
+    int VCFRecord::update_genotypes(const VCFHeader& hdr, const std::vector<std::vector<int>>& genotypes) {
+        // 1. 安全性检查
         if (!is_valid_unsafe() || !hdr.is_valid()) return -1;
-        // Correct signature: bcf_update_genotypes(const bcf_hdr_t *hdr, bcf1_t *line, const int32_t *gt_arr, int n_sample_ploidy)
-        // Requires BCF_UN_FMT
-        // GT tag ID is not needed for this specific function
-        return bcf_update_genotypes(hdr.hts_header(), _b.get(), genotypes, n_samples() * ploidy);
+        
+        // 2. 确保 FORMAT 字段已解包
+        if (!((_b->unpacked & BCF_UN_FMT))) {
+            if (unpack(BCF_UN_FMT) < 0) {
+                return -1;
+            }
+        }
+        
+        // 3. 找到 GT 字段
+        int gt_idx = get_format_idx(hdr, "GT");
+        if (gt_idx < 0) return -1;  // GT 未在头文件中定义
+        
+        bcf_fmt_t *fmt_gt = &_b->d.fmt[gt_idx];
+        int original_ploidy = fmt_gt->n; // 记录原始大小
+        
+        // 4. 计算需要的总空间
+        int n_samp = n_samples();
+        if (genotypes.size() != n_samp) return -1; // n_samples 与 genotypes.size() 不匹配
+        
+        // 5. 找到最大倍性
+        int max_ploidy = 0;
+        for (const auto& sample_gt : genotypes) {
+            max_ploidy = std::max(max_ploidy, static_cast<int>(sample_gt.size()));
+        }
+        if (max_ploidy <= 0) return -1;
+        
+        // 为所有按照最大倍性样本分配空间
+        std::vector<int32_t> gt_arr(n_samp * max_ploidy);
+        
+        // 6. 为每个样本设置基因型
+        for (int i = 0; i < n_samp; ++i) {
+            const auto& sample_gt = genotypes[i];
+            int32_t* curr_sample = gt_arr.data() + i * max_ploidy;
+            
+            // 设置该样本的基因型
+            for (size_t j = 0; j < max_ploidy; ++j) {
+                if (j < sample_gt.size()) {
+                    // 实际的基因型值
+                    if (sample_gt[j] < 0) {
+                        curr_sample[j] = bcf_int32_missing;
+                    } else {
+                        // curr_sample[j] = bcf_gt_is_phased(sample_gt[j]) ? bcf_gt_phased(sample_gt[j]) : bcf_gt_unphased(sample_gt[j]);
+                        curr_sample[j] = bcf_gt_unphased(sample_gt[j]);
+                    }
+                } else {
+                    // 对于倍性较低的样本，用向量结束标记填充
+                    curr_sample[j] = bcf_int32_vector_end;
+                }
+            }
+        }
+
+        // 7. 更新记录中的基因型数据
+        int ret = bcf_update_genotypes(hdr.hts_header(), _b.get(), gt_arr.data(), n_samp * max_ploidy);
+
+        // 检查格式大小是否改变
+        if (ret >= 0 && _b->n_fmt > 0) {
+            bcf_fmt_t *fmt = &_b->d.fmt[gt_idx];
+            if (get_max_ploidy(hdr) != original_ploidy) {
+                std::cout << "Warning: Ploidy changed from " << original_ploidy 
+                          << " to " << get_max_ploidy(hdr)   << std::endl;
+            }
+        }
+        return (ret >= 0) ? max_ploidy : ret;
     }
 
     // --- Output Stream ---

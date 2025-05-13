@@ -67,3 +67,13 @@ target_link_libraries(mitoquest ${HTSLIB} ${COMMON_SYS_LIB})
 # add_executable(count_align_fragments ${CMAKE_CURRENT_SOURCE_DIR}/scripts/count_align_fragments.cpp)
 # add_dependencies(count_align_fragments Buildhts)
 # target_link_libraries(count_align_fragments ${HTSLIB} ${COMMON_SYS_LIB})
+
+# # 添加测试可执行文件
+# add_executable(mitoquest_tests
+#     tests/test_vcf_record.cpp
+# )
+# # 链接测试库
+# target_link_libraries(mitoquest_tests ${HTSLIB} ${COMMON_SYS_LIB} GTest::GTest GTest::Main)
+# # 启用测试
+# enable_testing()
+# add_test(NAME mitoquest_tests COMMAND mitoquest_tests)
