@@ -6,7 +6,8 @@
 
 - 改进 VCF 处理模块
 - 添加按照实际的样本，对 REF 和 ATL 中多余的基因型进行清理的功能
-- 修复已知 bug 
+- INFO 中 `PT` 的标签内容改名为：`Hom`, `Het` 和 `Mixed`, 并增加一个 `Ref` 用于标记纯粹 REF 的记录
+- 修复已知 bug
 
 ## [1.5.3] - 2025-05-09
 
@@ -17,7 +18,7 @@
 
 - 添加 `-Q` 用于指定过滤测序质量值
 - INFO 添加 `HOM_AF`, `HET_AF` 和 `SUM_AF` 记录携带非 REF 的同质性、异质性、同质性+异质性的人群频率
-- INFO 添加 `Plasmicity_type: 缩写PT` 用来记录该位点在群体中是 Hom_only/Het_only/Both
+- INFO 添加 `Plasmicity_type: 缩写PT` 用来记录该位点在群体中是 `Hom_only/Het_only/Both`
 
 ## [1.5.0] - 2025-03-25
 
