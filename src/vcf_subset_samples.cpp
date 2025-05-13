@@ -311,7 +311,7 @@ void VCFSubsetSamples::run() {
                     + subset_rec.chrom(subset_hdr) + ":" + std::to_string(subset_rec.pos() + 1));
             }  
 
-            // Recalculate INFO fields (AC, AN, AF, ...) based on the subset of samples
+            // Recalculate INFO fields (AC, AN, AF, ...) based on the kept samples
             if (_update_info) {
                 // Note: This will modify the subset_rec in place
                 bool is_valid = recalculate_info(subset_hdr, subset_rec);
@@ -343,9 +343,7 @@ void VCFSubsetSamples::run() {
             throw std::runtime_error("Error reading input VCF file.");
         }
 
-        // 5. Cleanup (done by destructors of VcfReader, VcfWriter)
         std::cout << "[INFO] VCF subsetting finished successfully.\n";
-
     } catch (const std::exception& e) {
         // Rethrow to be caught by main
         throw std::runtime_error("Error during VCF subsetting: " + std::string(e.what()));

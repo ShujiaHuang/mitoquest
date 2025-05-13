@@ -515,12 +515,6 @@ namespace ngslib {
             return -1;
         }
     
-        int gt_idx = get_format_idx(hdr, "GT");
-        if (gt_idx < 0) return -1;
-    
-        bcf_fmt_t *fmt = &_b->d.fmt[gt_idx];
-        if (!fmt) return -1;
-    
         int max_ploidy = 0;
         int n_samp = n_samples();
     
@@ -683,7 +677,6 @@ namespace ngslib {
         // Create index mapping
         std::vector<int> sample_indices;
         sample_indices.reserve(samples_to_keep.size());
-        
         for (const auto& name : samples_to_keep) {
             int idx = hdr.sample_index(name);
             if (idx < 0) {
