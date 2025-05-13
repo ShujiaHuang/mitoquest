@@ -6,7 +6,7 @@ set(CMAKE_CXX_STANDARD 17)  # C++ 17
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Set the project name
-project (MITOQUEST VERSION 1.5.3 LANGUAGES CXX)
+project (MITOQUEST VERSION 1.5.4 LANGUAGES CXX)
 
 # Add project metadata
 set(PROJECT_AUTHOR "Shujia Huang")
