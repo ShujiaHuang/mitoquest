@@ -323,7 +323,7 @@ void VCFSubsetSamples::run() {
                 // Note: This will modify the subset_rec in place
                 bool is_valid = recalculate_info(subset_hdr, subset_rec);
                 if (!is_valid) {
-                    std::cerr << "[INFO] No valid genotypes for any kept samples at "
+                    std::cout << "[INFO] No valid genotypes for any kept samples at "
                               << subset_rec.chrom(subset_hdr) << ":" << (subset_rec.pos() + 1)
                               << ". Skipping this record.\n";
                     continue; // Skip this record

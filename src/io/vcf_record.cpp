@@ -954,8 +954,9 @@ namespace ngslib {
         if (ret >= 0 && _b->n_fmt > 0) {
             bcf_fmt_t *fmt = &_b->d.fmt[gt_idx];
             if (get_max_ploidy(hdr) != original_ploidy) {
-                std::cout << "Warning: Ploidy changed from " << original_ploidy 
-                          << " to " << get_max_ploidy(hdr)   << std::endl;
+                std::cerr << "[Warning]: Ploidy changed from " << original_ploidy << " to " 
+                          << get_max_ploidy(hdr) << " at " << chrom(hdr) << ":" << pos() + 1 
+                          << "\n";
             }
         }
         return (ret >= 0) ? max_ploidy : ret;
