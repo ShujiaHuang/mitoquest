@@ -68,12 +68,45 @@ target_link_libraries(mitoquest ${HTSLIB} ${COMMON_SYS_LIB})
 # add_dependencies(count_align_fragments Buildhts)
 # target_link_libraries(count_align_fragments ${HTSLIB} ${COMMON_SYS_LIB})
 
-# # 添加测试可执行文件
-# add_executable(mitoquest_tests
-#     tests/test_vcf_record.cpp
-# )
-# # 链接测试库
-# target_link_libraries(mitoquest_tests ${HTSLIB} ${COMMON_SYS_LIB} GTest::GTest GTest::Main)
-# # 启用测试
-# enable_testing()
-# add_test(NAME mitoquest_tests COMMAND mitoquest_tests)
+option(BUILD_TESTING "Build the testing tree" OFF)  # 默认关闭测试构建
+
+if(BUILD_TESTING)
+    # 只有当启用测试选项时才查找 GTest
+    find_package(GTest REQUIRED)
+    
+    # 创建测试库 (包含所有要测试的源文件)
+    add_library(mitoquest_lib STATIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/io/vcf.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/io/vcf_header.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/io/vcf_record.cpp
+        # ...添加其他需要测试的源文件
+    )
+    
+    # 设置测试库的包含目录
+    target_include_directories(mitoquest_lib PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+        ${CMAKE_CURRENT_SOURCE_DIR}/htslib
+    )
+    
+    # 链接测试库和 htslib
+    target_link_libraries(mitoquest_lib PUBLIC
+        ${HTSLIB}
+        ${COMMON_SYS_LIB}
+    )
+    
+    # 添加测试可执行文件
+    add_executable(mitoquest_tests
+        tests/test_vcf_record.cpp
+    )
+    
+    # 链接所有需要的库
+    target_link_libraries(mitoquest_tests PRIVATE
+        mitoquest_lib
+        GTest::GTest
+        GTest::Main
+    )
+    
+    # 启用测试
+    enable_testing()
+    add_test(NAME mitoquest_tests COMMAND mitoquest_tests)
+endif()
