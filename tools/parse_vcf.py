@@ -20,6 +20,20 @@ def open_file(file_path):
         file = open(file_path, 'r')
     return file
 
+def remove_common_suffix(s1, s2):
+    """
+    Remove the common suffix of two strings.
+    """
+    i = 0
+    while i < min(len(s1), len(s2)) and s1[-1 - i] == s2[-1 - i]:
+        i += 1
+
+    new_s1 = s1[:-i] if i > 0 else s1
+    new_s2 = s2[:-i] if i > 0 else s2
+    new_s1 = new_s1 if new_s1 else s1
+    new_s2 = new_s2 if new_s2 else s2
+    return (new_s1, new_s2)
+
 inputf = open_file(vcf_file)
 with open(parse_file, 'w') as outputf:
     print("Sample_name","allGT", "snv_type", "CHROM", "POS", "REF", "ALT", "GT", "AD", "HF", "HQ", "LHF", "SB", "VT", sep='\t', file=outputf)
@@ -50,6 +64,8 @@ with open(parse_file, 'w') as outputf:
                     lhf = float(LHF.split(',')[i])
                     sb = SB.split(';')[i]
                     vt = VT.split(',')[i]
-                    print(sample_name,GT, snv_type,CHROM,POS,REF,alt,gt,ad,hf,hq,lhf,sb,vt, sep='\t', file=outputf)
+                    
+                    REF_simplified, alt_simplified = remove_common_suffix(REF, alt)
+                    print(sample_name,GT, snv_type,CHROM,POS,REF_simplified,alt_simplified,gt,ad,hf,hq,lhf,sb,vt, sep='\t', file=outputf)
 
 inputf.close()
