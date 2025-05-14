@@ -600,6 +600,15 @@ def annotate(input_file, annotated_txt, annotated_vcf, anno_file_path):
             if POS not in rcrs_pos2trinuc:  # Skip the position of ref=='N'
                 continue
             
+            REF_ALT_list = [remove_common_suffix(REF, ALT) for REF, ALT in list(
+                zip_longest(REFs.split(','), ALTs.split(','), fillvalue=REFs.split(',')[0]))]
+            
+            # check if REF is same after removing common suffix
+            first_elements = [item[0] for item in REF_ALT_list]
+            if len(set(first_elements)) == 1:
+                REFs = first_elements[0]
+                ALTs = ','.join([item[1] for item in REF_ALT_list])
+            
             if (CHROM, POS, REFs, ALTs) in dbsnp:
                 ID = dbsnp[(CHROM, POS, REFs, ALTs)]
             
@@ -613,9 +622,6 @@ def annotate(input_file, annotated_txt, annotated_vcf, anno_file_path):
                 ovlp_start_idx = i
                 mitomap_locus_id = locus
                 break
-            
-            REF_ALT_list = [remove_common_suffix(REF, ALT) for REF, ALT in list(
-                zip_longest(REFs.split(','), ALTs.split(','), fillvalue=REFs.split(',')[0]))]
             
             variant_list = [REF + POS + ALT for REF, ALT in REF_ALT_list]
             var_tuple_list = [(REF, POS, ALT) for REF, ALT in REF_ALT_list]
