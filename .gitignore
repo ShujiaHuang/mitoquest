@@ -3,6 +3,8 @@
 
 build/
 learn_from/
+bin/mitoquest
+bin/mitoquest_tests
 
 .vscode/
 .ipynb_checkpoints/
