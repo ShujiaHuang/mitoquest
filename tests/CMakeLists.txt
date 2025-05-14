@@ -40,4 +40,4 @@ target_link_libraries(mitoquest_tests PRIVATE
 )
 
 # Register tests
-add_test(NAME VCFRecordTests COMMAND mitoquest_tests)
+add_test(NAME AllTests COMMAND mitoquest_tests)

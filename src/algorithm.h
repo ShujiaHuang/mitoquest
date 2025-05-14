@@ -40,17 +40,20 @@ inline size_t argmax(ForwardIterator first, ForwardIterator last) {
 // sum the value for all the data which could call '+' operator
 template<typename T> // T must be a numeric type
 typename std::enable_if<std::is_arithmetic<T>::value, T>::type
-sum(const std::vector<T> &value) {
-    return std::accumulate(value.begin(), value.end(), T(0));
+sum(const std::vector<T> &values) {
+    if (values.empty()) {
+        return T(0);
+    }
+    return std::accumulate(values.begin(), values.end(), T(0));
 }
 
 // mean the value for all the data which could call '+' operator
 template<typename T>  // T must be a numeric type
-double mean(const std::vector<T> &value) {
-    if (value.empty()) {
+double mean(const std::vector<T> &values) {
+    if (values.empty()) {
         throw std::invalid_argument("Cannot calculate mean of empty vector");
     }
-    return static_cast<double>(sum(value)) / value.size();
+    return static_cast<double>(sum(values)) / values.size();
 }
 
 // median the value for all the data which could call '+' operator
@@ -67,8 +70,9 @@ double median(std::vector<T> &value) {
     }
 }
 
-// Helper function for inverse error function used in z-score calculation
-// This is a simple approximation - use a statistical library for more precision
+// Helper function for inverse error function is used in confidence interval calculations
+// Note: This is a simple approximation and may not be accurate for all values.
+// For more precision, consider using a statistical library or a more accurate approximation.
 double _erfinv(double x);
 
 /**
@@ -123,8 +127,7 @@ double fisher_exact_test(int n11, int n12, int n21, int n22, TestSide test_side=
 
 struct ContingencyTable {
     int n11, n12, n21, n22;
-    ContingencyTable(int a, int b, int c, int d) 
-        : n11(a), n12(b), n21(c), n22(d) {
+    ContingencyTable(int a, int b, int c, int d) : n11(a), n12(b), n21(c), n22(d) {
         if (n11 < 0 || n12 < 0 || n21 < 0 || n22 < 0) {
             throw std::invalid_argument("Contingency table entries must be non-negative");
         }
