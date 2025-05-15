@@ -1,8 +1,9 @@
 /**
- * The main program entry point for the mtvariantcaller command-line tool.
+ * @brief The main entry point for human mtDNA analysis.
  * 
- * @brief 
- * @file main.cpp
+ * We have many important functions in mitoquest while this one 
+ * is the lord to rule them all, in a word, it's "The Ring". 
+ * 
  * @author Shujia Huang (hshujia@qq.com)
  * @date 2025-02-11
  * 
