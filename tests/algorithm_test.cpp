@@ -24,10 +24,10 @@ TEST(AlgorithmTest, BasicTest) {
 
     std::array<int, 7> numbers{ 2, 4, 8, 0, 6, -1, 3};
 	int minIndex = argmin(numbers.begin(), numbers.end());
-	std::cout << "MinIndex: " << minIndex << '\n';
-	std::vector<float> prices = { 12.5f, 8.9f, 100.0f, 24.5f, 30.0f };
+	std::cout << "{2, 4, 8, 0, 6, -1, 3} MinIndex: " << minIndex << '\n';
+	std::vector<float> prices = {12.5f, 8.9f, 100.0f, 24.5f, 30.0f};
 	float maxIndex = argmax(prices.begin(), prices.end());
-	std::cout << "MaxIndex: " <<  maxIndex << '\n' << std::endl;
+	std::cout << "{12.5f, 8.9f, 100.0f, 24.5f, 30.0f} MaxIndex: " <<  maxIndex << '\n' << std::endl;
 
     // Test for calculating confidencel interval
     struct TestCase {
@@ -48,7 +48,6 @@ TEST(AlgorithmTest, BasicTest) {
     std::cout << std::fixed << std::setprecision(4);
     std::cout << "Confidence Interval Test Examples\n";
     std::cout << "================================\n\n";
-    
     for (const auto& test : tests) {
         try {
             auto [lower, upper] = calculate_confidence_interval(test.x, test.n, test.confidence);
@@ -65,35 +64,6 @@ TEST(AlgorithmTest, BasicTest) {
                       << e.what() << "\n\n";
         }
     }
-    
-    /*
-    // Interactive test
-    std::cout << "Interactive test:\n";
-    int successes, n;
-    double confidence;
-    
-    std::cout << "Enter number of successes: ";
-    std::cin >> successes;
-    std::cout << "Enter sample size (n): ";
-    std::cin >> n;
-    std::cout << "Enter confidence level (0-1, e.g., 0.95 for 95%): ";
-    std::cin >> confidence;
-    
-    try {
-        auto [lower, upper] = calculate_confidence_interval(successes, n, confidence);
-        
-        std::cout << "\nResults:\n";
-        std::cout << (confidence * 100) << "% Confidence interval: [" 
-                  << lower << ", " << upper << "] or [" 
-                  << (lower * 100) << "%, " << (upper * 100) << "%]\n";
-        std::cout << "Interval width: " << (upper - lower) << "\n";
-        std::cout << "Method used: " << (n >= 40 ? "Agresti-Coull" : "Wilson score") << "\n";
-    }
-    catch (const std::exception& e) {
-        std::cout << "Error: " << e.what() << "\n";
-    }
-    */
-
 }
 
 TEST(StatsTest, MeanCalculation) {
@@ -162,5 +132,6 @@ TEST(FisherExactTest, ExtremeCaseTest) {
     // 测试极端情况
     ContingencyTable table(100, 0, 0, 100);
     double p_value = fisher_exact_test(table, TestSide::TWO_SIDED);
+    std::cout << "fisher_exact_test(100, 0, 0, 100, TestSide::TWO_SIDED): " << p_value << "\n";
     EXPECT_LT(p_value, 0.0001);  // 期望 p 值非常小
 }
