@@ -1,28 +1,39 @@
+"""
+========================================================================
+= Variant quality score recalibrator (VQSR) for mitochondrial variants =
+========================================================================
+Date: 2025-05-15
+"""
+import argparse
+import gzip
+import re
+
+import logging
+import warnings
+import subprocess
+
 import numpy as np
 import pandas as pd
+from scipy.stats import zscore
 from sklearn.mixture import GaussianMixture
 from sklearn.metrics import roc_curve, auc
+from collections import defaultdict
+
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 plt.style.use('default')
 import seaborn as sns
-import argparse
-from scipy.stats import zscore
-import gzip
-import warnings
-import re
-import subprocess
-from collections import defaultdict
+
 warnings.filterwarnings("ignore", category=RuntimeWarning)
 warnings.filterwarnings("ignore", message="divide by zero encountered in divide")
-import logging
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S"
 )
+
 
 def open_file(file_path):
     """
@@ -33,6 +44,8 @@ def open_file(file_path):
     else:
         file = open(file_path, 'r')
     return file
+
+
 def vcf_info2dataframe(vcf_file):
     """
     Read vcf file and convert some information to pandas dataframe.
@@ -92,6 +105,7 @@ def vcf_info2dataframe(vcf_file):
     vcfdf = pd.DataFrame(vcf_list[1:], columns=vcf_list[0])
     return vcfdf
 
+
 def combine_df(df1, df2):
     """
     Combine two pandas dataframes, randomly sampling from one dataframe if necessary to ensure they have the same number of rows
@@ -104,6 +118,7 @@ def combine_df(df1, df2):
         final_df = pd.concat([df1, df2_sampled], ignore_index=True)
     return final_df
 
+
 def clean_data(data):
     """
     Retain values within ± 6 standard deviations of the mean
@@ -115,6 +130,7 @@ def clean_data(data):
     mask = np.all((data >= lower_bound) & (data <= upper_bound), axis=1)
     filtered_data = data[mask]
     return filtered_data
+
 
 def GMM_fit(train_data, test_data, num_components, max_num_components):
     """
@@ -174,6 +190,7 @@ def find_threshold(df, colnameA, colnameB, target_ratio=0.98):
         raise ValueError("No threshold found to satisfy the condition")
     return threshold
 
+
 def label_uncertain(row, colname, scores_A, threshold):
     if row[scores_A] < threshold:
         return 'Bad'
@@ -181,6 +198,7 @@ def label_uncertain(row, colname, scores_A, threshold):
         return 'Good'
     else:
         return 'Unlabelled'
+
 
 def caculate_good_bad_ratio(df, label_col, LDD_col, good_ratio, bad_ratio ):
     """
@@ -260,6 +278,7 @@ def plt_gmm_results(n_range, bics_A, best_gmm_A , bics_B, best_gmm_B, cutoff_dic
     ax[2].legend(loc='right')
     plt.savefig(output_figure)
 
+
 def output_info(df, colname, train_A_data, train_B_data_filtered, scores_A_cutoff, cutoff_dict, optimal_threshold_idx, logfilename):
     """
     Output the log information.
@@ -323,6 +342,7 @@ def output_info(df, colname, train_A_data, train_B_data_filtered, scores_A_cutof
         _pos_count = df[(df[colname]==1) & (df['GMM_res'] == 'Bad')]['POS'].unique().__len__()
         print(f"Good training data in final bad result:\t{_value_count}\tunique POS\t{_pos_count}", file=f)
 
+
 def df_info2dict(final_df):
     """
     Convert the information in the final dataframe to dictionaries
@@ -341,6 +361,7 @@ def df_info2dict(final_df):
     for idx, row in final_df.iterrows():
         VQSR_dict[row['POS']][row['Sample_name']][row['GT']].extend([round(float(row['LODR']), 4), row['GMM_res']])
     return POS_good_count_dict, VQSR_dict
+
 
 def main():
     parser = argparse.ArgumentParser(description='Build GMM model using AD, HF, HQ information of mtDNA data to filter out bad sites values.')
@@ -520,6 +541,7 @@ def main():
     subprocess.run(["bgzip", "-f", output_vcf_file])
     subprocess.run(["tabix", "-p", "vcf", output_vcf_file+".gz"])
     logging.info('Done!')
+
 
 if __name__ == '__main__':
     main()
