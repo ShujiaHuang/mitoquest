@@ -2,16 +2,16 @@ name: Build MitoQuest
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
   pull_request:
-    branches: [ main ]
+    branches: [main]
   release:
     types: [created]
 
 jobs:
   build:
-    name: Build on ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
+    name: Build on ${{matrix.os}}
+    runs-on: ${{matrix.os}}
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest]
@@ -41,7 +41,8 @@ jobs:
     - name: Configure CMake
       run: |
         cmake -B ${{github.workspace}}/build \
-              -DCMAKE_BUILD_TYPE=Release
+              -DCMAKE_BUILD_TYPE=Release \
+              -DBUILD_TESTING=ON
 
     - name: Build
       run: cmake --build ${{github.workspace}}/build --config Release
@@ -53,24 +54,24 @@ jobs:
     - name: Prepare artifacts
       run: |
         mkdir -p dist
-        cp bin/mitoquest dist/${{ matrix.artifact_name }}
+        cp bin/mitoquest dist/${{matrix.artifact_name}}
         
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: ${{ matrix.artifact_name }}
-        path: dist/${{ matrix.artifact_name }}
+        name: ${{matrix.artifact_name}}
+        path: dist/${{matrix.artifact_name}}
 
     - name: Upload Release Assets
       if: github.event_name == 'release'
       uses: softprops/action-gh-release@v1
       with:
-        files: dist/${{ matrix.artifact_name }}
+        files: dist/${{matrix.artifact_name}}
     
     - name: Show artifact location
       run: |
         echo "Build artifacts have been uploaded to:"
-        echo "- Actions tab: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-        if [[ "${{ github.event_name }}" == "release" ]]; then
-          echo "- Release page: ${{ github.server_url }}/${{ github.repository }}/releases/latest"
+        echo "- Actions tab: ${{github.server_url}}/${{github.repository}}/actions/runs/${{github.run_id}}"
+        if [["${{github.event_name}}" == "release"]]; then
+          echo "- Release page: ${{github.server_url}}/${{github.repository}}/releases/latest"
         fi
