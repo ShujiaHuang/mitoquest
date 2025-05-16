@@ -1,9 +1,14 @@
+#include <gtest/gtest.h>
 #include <iostream>
+#include <string>
+
 #include "io/iobgzf.h"
 
-// Example usage
-void example() {
-    ngslib::BGZFile file("test.gz", "w");  // "wb" "uw"
+
+TEST(iobgzfTest, BasicTest) {
+
+    std::string temp_filename = "test.gz";
+    ngslib::BGZFile file(temp_filename, "w");  // "wb" "uw"
     
     // Strings
     file << "Hello";               // 使用 const char* 重载
@@ -26,7 +31,7 @@ void example() {
     // file << p;                 // 使用通用类型模板
 
     // Reading by lines
-    ngslib::BGZFile infile("test.gz", "rb");  // "rb"
+    ngslib::BGZFile infile(temp_filename, "rb");  // "rb"
     std::string line;
     std::cout << "Output: " << std::endl;
     infile.readline(line);
@@ -34,10 +39,7 @@ void example() {
     while (infile.readline(line)) {
         std::cout << "Read line: " << line << std::endl;
     }
-}
 
-int main(int argc, char* argv[]) {
-    example();
-    return 0;
+    std::remove(temp_filename.c_str());
 }
 

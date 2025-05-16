@@ -2,6 +2,7 @@
 add_library(mitoquest_lib STATIC
     ${CMAKE_SOURCE_DIR}/src/algorithm.cpp
     
+    ${CMAKE_SOURCE_DIR}/src/io/iobgzf.cpp
     ${CMAKE_SOURCE_DIR}/src/io/vcf.cpp
     ${CMAKE_SOURCE_DIR}/src/io/vcf_header.cpp
     ${CMAKE_SOURCE_DIR}/src/io/vcf_record.cpp
@@ -23,6 +24,9 @@ target_link_libraries(mitoquest_lib PUBLIC
 # Create test executable
 add_executable(mitoquest_tests
     algorithm_test.cpp
+
+    io/iobgzf_test.cpp
+    io/vcf_test.cpp
     io/vcf_record_test.cpp
     # Add other test files here as they are created
 )

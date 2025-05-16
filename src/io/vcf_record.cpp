@@ -964,10 +964,10 @@ namespace ngslib {
         // This provides a very basic representation.
         // For full VCF line, need header context and bcf_format
         os << "VCFRecord(rid=" << rec._b->rid
-           << ", pos=" << rec.pos()
-           << ", n_allele=" << rec._b->n_allele
-           << ", qual=" << rec.qual()
-           << ", n_sample=" << rec.n_samples()
+           << ", pos="         << rec.pos() + 1
+           << ", n_allele="    << rec._b->n_allele
+           << ", qual="        << rec.qual()
+           << ", n_sample="    << rec.n_samples()
            << ")";
         return os;
     }
