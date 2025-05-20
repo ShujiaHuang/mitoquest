@@ -1,6 +1,6 @@
 ## The functions and usage of scripts
 
-#### mito_classifier.py
+#### mito_vqsr.py (原: mito_classifier.py)
 ##### 1. 功能：通过每个样本中每个位点的AD，HF和HQ值构建高斯混合模型（GMM）对mtDNA的变异VCF文件进行位点上的分类和筛选
 ##### 2. 构建流程介绍：
 - 1. 通过公开数据库中的已报导的变异位点、群体变异频率AF>0.01以及自身数据集AF>0.05的位点作为高质量训练集，构建Good GMM模型。

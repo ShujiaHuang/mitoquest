@@ -10,7 +10,6 @@ import re
 
 import logging
 import warnings
-import subprocess
 
 import numpy as np
 import pandas as pd
@@ -27,7 +26,6 @@ import seaborn as sns
 
 warnings.filterwarnings("ignore", category=RuntimeWarning)
 warnings.filterwarnings("ignore", message="divide by zero encountered in divide")
-
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -35,75 +33,74 @@ logging.basicConfig(
 )
 
 
-def open_file(file_path):
-    """
-    Open a file, regardless of whether it is gzipped or not.
-    """
-    if file_path.endswith('.gz'):
-        file = gzip.open(file_path, 'rt')
-    else:
-        file = open(file_path, 'r')
-    return file
-
-
-def vcf_info2dataframe(vcf_file):
-    """
-    Read vcf file and convert some information to pandas dataframe.
-    """
+def load_data(input_vcf_file):
+    """Read vcf file and convert some information to pandas dataframe."""
+    
     vcf_list = []
-    colname = ["Sample_name","allGT", "snv_type", "CHROM", "POS", "REF", "ALT", "GT", "AD", "HF", "HQ", "LHF", "SB", "VT",'AF',
-                'gnomad_af_hom','gnomad_af_het','in_phylotree', 'helix_af_hom','helix_af_het', 'mitomap_af','mitomap_status']
-    vcf_list.append(colname)
-    vcff = open_file(vcf_file)
-    for line in vcff:
-        if line.startswith('##'):
-            continue
-        elif line.startswith('#CHROM'):
-            _CHROM,_POS,_ID,_REF,_ALT,_QUAL,_FILTER,_INFO,_FORMAT,*SAMPLES = line.strip().split('\t')
-        else:
-            CHROM,POS,ID,REF,ALT,QUAL,FILTER,INFO,FORMAT,*samples = line.strip().split('\t')
+    SAMPLES = []
+    with gzip.open(input_vcf_file, "rt") if input_vcf_file.endswith(".gz") else open(input_vcf_file, "r") as IN_VCF:
+        for line in IN_VCF:
+            if line.startswith('##'):
+                continue
+            
+            if line.startswith('#CHROM'):
+                SAMPLES = line.strip().split('\t')[9:]
+                continue
+
+            CHROM, POS, ID, REF, ALT, QUAL, FILTER, INFO, FORMAT, *samples = line.strip().split('\t')
             for sample_name, sample_data in zip(SAMPLES, samples):
-                if sample_data.startswith('.'):
+                if sample_data.startswith('.'): 
                     continue
-                af_list = re.findall(r'AF=(.*?);', INFO)[0].split(',')
-                gnomad_af_hom_list = re.findall(r'gnomad_af_hom=(.*?);', INFO)[0].split(',')
-                gnomad_af_het_list = re.findall(r'gnomad_af_het=(.*?);', INFO)[0].split(',')
-                in_phylotree_list = re.findall(r'in_phylotree=(.*?);', INFO)[0].split(',')
-                helix_af_hom_list = re.findall(r'helix_af_hom=(.*?);', INFO)[0].split(',')
-                helix_af_het_list = re.findall(r'helix_af_het=(.*?);', INFO)[0].split(',')
-                mitomap_af_list = re.findall(r'mitomap_af=(.*?);', INFO)[0].split(',')
-                mitomap_status_list = re.findall(r'mitomap_status=(.*?);mitomap_plasmy', INFO)[0].split(',')
+                
+                # af_list = re.findall(r'AF=(.*?);', INFO)[0].split(',')  # Do not use `.*?` to match all
+                af_list = re.findall(r';?AF=([^;]+)', INFO)[0].split(',')
+                ref_af = 1.0 - sum([float(i) for i in af_list])
+                
+                gnomad_af_hom_list  = re.findall(r';?gnomad_af_hom=([^;]+)', INFO)[0].split(',')
+                gnomad_af_het_list  = re.findall(r';?gnomad_af_het=([^;]+)', INFO)[0].split(',')
+                in_phylotree_list   = re.findall(r';?in_phylotree=([^;]+)', INFO)[0].split(',')
+                helix_af_hom_list   = re.findall(r';?helix_af_hom=([^;]+)', INFO)[0].split(',')
+                helix_af_het_list   = re.findall(r';?helix_af_het=([^;]+)', INFO)[0].split(',')
+                mitomap_af_list     = re.findall(r';?mitomap_af=([^;]+)', INFO)[0].split(',')
+                mitomap_status_list = re.findall(r';?mitomap_status=([^;]+)', INFO)[0].split(',')
+                
                 GT,GQ,DP,AD,HF,CI,HQ,LHF,SB,FS,SOR,VT = sample_data.split(':')
                 GT_list = GT.split('/')
-                if len(GT_list) == 1 and GT != '0':
-                    snv_type = 'SNP'
-                else:
-                    snv_type = 'HF'
+                snv_type = 'SNP' if (len(GT_list) == 1 and GT != '0') else 'HF'
+
                 for i in range(len(GT_list)):
+
+                    alt_idx = int(GT_list[i]) - 1
                     if GT_list[i] == '0':
                         gt = '0'
                         alt = REF
                     else:
                         gt = GT_list[i]
-                        alt = ALT.split(',')[int(gt)-1]
+                        alt = ALT.split(',')[alt_idx]
+                        
                     ad = int(AD.split(',')[i])
                     hf = float(HF.split(',')[i])
                     hq = HQ.split(',')[i]
                     lhf = float(LHF.split(',')[i])
                     sb = SB.split(';')[i]
                     vt = VT.split(',')[i]
-                    af = float(af_list[int(gt)-1])
-                    gnomad_af_hom = float(gnomad_af_hom_list[int(gt)-1])
-                    gnomad_af_het = float(gnomad_af_het_list[int(gt)-1])
-                    in_phylotree = in_phylotree_list[int(gt)-1]
-                    helix_af_hom = float(helix_af_hom_list[int(gt)-1])
-                    helix_af_het = float(helix_af_het_list[int(gt)-1])
-                    mitomap_af = float(mitomap_af_list[int(gt)-1])
-                    mitomap_status = mitomap_status_list[int(gt)-1]
-                    vcf_list.append([sample_name,GT, snv_type,CHROM,POS,REF,alt,gt,ad,hf,hq,lhf,sb,vt,af,
-                                        gnomad_af_hom,gnomad_af_het,in_phylotree,helix_af_hom,helix_af_het,mitomap_af,mitomap_status])
-    vcfdf = pd.DataFrame(vcf_list[1:], columns=vcf_list[0])
-    return vcfdf
+
+                    af = float(af_list[alt_idx] if alt_idx > -1 else ref_af)
+                    gnomad_af_hom  = float(gnomad_af_hom_list[alt_idx]) if alt_idx > -1 else 1 - sum([float(i) for i in gnomad_af_hom_list])
+                    gnomad_af_het  = float(gnomad_af_het_list[alt_idx]) if alt_idx > -1 else 1 - sum([float(i) for i in gnomad_af_het_list])
+                    helix_af_hom   = float(helix_af_hom_list[alt_idx])  if alt_idx > -1 else 1 - sum([float(i) for i in helix_af_hom_list])
+                    helix_af_het   = float(helix_af_het_list[alt_idx])  if alt_idx > -1 else 1 - sum([float(i) for i in helix_af_het_list])
+                    mitomap_af     = float(mitomap_af_list[alt_idx])    if alt_idx > -1 else 1 - sum([float(i) for i in mitomap_af_list])
+                    mitomap_status = mitomap_status_list[alt_idx]       if alt_idx > -1 else ''
+                    in_phylotree   = in_phylotree_list[alt_idx]         if alt_idx > -1 else ''
+
+                    vcf_list.append([sample_name,GT,snv_type,CHROM,POS,REF,alt,gt,ad,hf,hq,lhf,sb,vt,af,
+                                     gnomad_af_hom,gnomad_af_het,in_phylotree,helix_af_hom,helix_af_het,
+                                     mitomap_af,mitomap_status])
+
+    colname = ["Sample_name","allGT", "snv_type", "CHROM", "POS", "REF", "ALT", "GT", "AD", "HF", "HQ", "LHF", "SB", "VT",'AF',
+               'gnomad_af_hom','gnomad_af_het','in_phylotree', 'helix_af_hom','helix_af_het', 'mitomap_af','mitomap_status']
+    return pd.DataFrame(vcf_list, columns=colname)
 
 
 def combine_df(df1, df2):
@@ -132,36 +129,34 @@ def clean_data(data):
     return filtered_data
 
 
-def GMM_fit(train_data, test_data, num_components, max_num_components):
+def GenerateModel(train_data, test_data, num_components, max_num_components):
+    """Fit a GMM model to the data and return the predicted labels and probabilities
     """
-    Fit a GMM model to the data and return the predicted labels and probabilities
-    """
-    bics_A = []
-    best_gmm_A = None
-    best_bic_A = np.inf
-    n_range = range(1, max_num_components+1)
-    for n in n_range:
+    best_gmm = None
+    best_bic = np.inf
+    bics = []
+    for n in range(max_num_components):
         logging.info(f"Fitting GMM with {n} components")
-        gmm_A = GaussianMixture(n_components=n, random_state=0).fit(train_data)
-        gmm_bic_A = gmm_A.bic(train_data)
-        bics_A.append(gmm_bic_A)
-        bic_A = gmm_bic_A
-        if bic_A < best_bic_A:
-            best_bic_A = bic_A
-            best_gmm_A = gmm_A
-    if num_components == '':
-        scores_A = best_gmm_A.score_samples(test_data) / np.log(10)
-    else:
-        gmm_A = GaussianMixture(n_components=num_components, random_state=0).fit(train_data)
-        best_gmm_A = gmm_A
-        gmm_bic_A = gmm_A.bic(train_data)
-        scores_A = gmm_A.score_samples(test_data) / np.log(10)
-    return scores_A, n_range, bics_A, best_gmm_A
+        gmm = GaussianMixture(n_components=n+1, random_state=0).fit(train_data)
+        bic = gmm.bic(train_data)
+        bics.append(bic)
+        if bic < best_bic:
+            best_bic = bic
+            best_gmm = gmm
+
+    if num_components:
+        best_gmm = GaussianMixture(n_components=num_components, random_state=0).fit(train_data)
+
+    if best_gmm is None:
+        raise RuntimeError("No valid GMM model was fitted. Please check your input data.")
+    
+    this_lod = best_gmm.score_samples(test_data) / np.log(10)
+    return this_lod, range(1, max_num_components+1), bics, best_gmm
 
 
-def find_threshold(df, colnameA, colnameB, target_ratio=0.98):
+def calculate_worst_lod_cutoff(df, colnameA, colnameB, target_ratio=0.98):
     """
-    Find a threshold, if score is greater than this threshold, then the quantity of specified elements in columnA 
+    Find a threshold, if score is greater than this threshold, the quantity of specified elements in columnA 
     will account for 0.95 of the overall elements of that type.
     
     df: pandas DataFrame
@@ -171,9 +166,9 @@ def find_threshold(df, colnameA, colnameB, target_ratio=0.98):
     """
     if not {colnameA, colnameB}.issubset(df.columns):
         raise ValueError(f"DataFrame must contain columns {colnameA} and {colnameB}")
+
     total_ones = (df[colnameA] == 1).sum()
-    if total_ones == 0:
-        raise ValueError(f"No rows with {colnameA} == 1 found")
+    if total_ones == 0: raise ValueError(f"No rows with {colnameA} == 1 found")
     
     target_ones = int(total_ones * target_ratio)
     sorted_df = df[[colnameA, colnameB]].sort_values(by=colnameB, ascending=False)
@@ -183,11 +178,14 @@ def find_threshold(df, colnameA, colnameB, target_ratio=0.98):
     for index, row in sorted_df.iterrows():
         if row[colnameA] == 1:
             current_ones += 1
+            
         if current_ones >= target_ones:
             threshold = row[colnameB]
             break
+        
     if threshold is None:
         raise ValueError("No threshold found to satisfy the condition")
+    
     return threshold
 
 
@@ -365,75 +363,82 @@ def df_info2dict(final_df):
 
 def main():
     parser = argparse.ArgumentParser(description='Build GMM model using AD, HF, HQ information of mtDNA data to filter out bad sites values.')
-    parser.add_argument('-i','--input_vcf_file', type=str, help='Input VCF file path', required=True)
+    parser.add_argument('-i', '--input_vcf_file', type=str, help='Input VCF file path', required=True)
     parser.add_argument('-o', '--output_vcf_file', type=str, help='Output VCF file path', required=True)
-    parser.add_argument('-c','--output_csv_file', type=str, help='Output CSV file path', required=True)
-    parser.add_argument('-f','--figure_file', type=str, help='Output figure file path', required=True)
-    parser.add_argument('-mnc','--max_n_components', type=int, action='store',default=10, help='Maximum components for GMM model training (default: 10)')
+    parser.add_argument('-c', '--output_csv_file', type=str, help='Output CSV file path', required=True)
+    parser.add_argument('-f', '--figure_file', type=str, help='Output figure file path', required=True)
+    # parser.add_argument('-T', '--resource', type=str, required=True, action='append', default=[],  
+    #                     help='A list of sites for which to apply a prior probability of being correct but which aren\'t '
+    #                          'used by the algorithm (training and truth sets are required to run). Specified at least once. Required.')
+    # parser.add_argument('-an', '--annotation', type=str, required=True, action='append', default=['AD', 'HF', 'HQ'], 
+    #                     help='The names of the annotations which should used for calculations. '
+    #                          'This argument must be specified at least once.')
+    parser.add_argument('--max-gaussians', dest='max_gaussians', type=int, action='store', default=10, 
+                        help='Maximum number of Gaussians that will be used for the positive recalibration model in VQSR (default: 10)')
+    parser.add_argument('--max-neg-gaussians', dest='max_neg_gaussians', type=int, action='store',default=6, 
+                        help='Maximum number of Gaussians that will be used for the negative recalibration model in VQSR (default: 10)')
     parser.add_argument('-gnc', '--good_module_n_components', type=int, action='store', help='Number of components for Good GMM module if not specified, default is auto-selected')
     parser.add_argument('-bnc', '--bad_module_n_components', type=int, action='store',  help='Number of components for Bad GMM moduleif not specified, default is auto-selected')
-    parser.add_argument('-rgm', '--goodratio_in_goodmodule', type=float, action='store', default=0.98, help='Ratio of good values to total good values after Good module to select subdataset (Bad values) to train Bad GMM model (default: 0.98)')
+
+    parser.add_argument('-rgm', '--positive_to_negative_rate', type=float, action='store', default=0.98, 
+                        help='Ratio of good values to total good values after Good module to select subdataset (Bad values) to train Bad GMM model (default: 0.98)')
     parser.add_argument('-pr', '--pass_ratio', type=float, action='store', default=0.5, help='Ratio of Good Allels to total Allels per POS to label a site as PASS or LowQual (default: 0.5)')
     parser.add_argument('-fmr', '--final_res_ratio', type=float, action='store', default=0.99, help='The Good ratio of the final result is used to determine whether the value is good or bad (default: 0.99)')
+
     args = parser.parse_args()
     
     # load data
     logging.info('Loading data ...')
-    dataset = vcf_info2dataframe(args.input_vcf_file)
-    dataset['gnomad_af'] = dataset['gnomad_af_het'] + dataset['gnomad_af_hom']
-    dataset['helix_af'] = dataset['helix_af_het'] + dataset['helix_af_hom']
-    dataset[['AF', 'gnomad_af', 'helix_af', 'mitomap_af', 'AD', 'HF', 'HQ']] = dataset[['AF', 'gnomad_af', 'helix_af', 'mitomap_af', 'AD', 'HF', 'HQ']].apply(pd.to_numeric, errors='coerce')
+
+    dataset = load_data(args.input_vcf_file)
     dataset['Sample_name_POS_GT'] = dataset['Sample_name'] + '_' + dataset['POS'] + '_' + dataset['GT']
+    dataset['gnomad_af'] = dataset['gnomad_af_het'] + dataset['gnomad_af_hom']
+    dataset['helix_af']  = dataset['helix_af_het'] + dataset['helix_af_hom']
+    dataset[['AF', 'gnomad_af', 'helix_af', 'mitomap_af', 'AD', 'HF', 'HQ']] = dataset[['AF', 'gnomad_af', 'helix_af', 'mitomap_af', 'AD', 'HF', 'HQ']].apply(pd.to_numeric, errors='coerce')
 
     # select sites with good quality: 1 means good quality, 0 means bad quality
     logging.info('Select high good quality datasets, like reported or AF>0.01 in other database ...')
-    HQcolname = 'Reported_AFgt005'
-    dataset[HQcolname] = dataset.apply(
-    lambda row: 1 if ((row['mitomap_status'] != '') or 
-                        row['gnomad_af']>=0.01 or 
-                        row['helix_af']>=0.01 or
-                        row['mitomap_af']>=0.01 or 
-                        row['AF']>=0.05) else 0,
-                        axis=1)
+    HQcolname = 'is_training_site'
+    dataset[HQcolname] = dataset.apply(lambda row: 1 if (row['gnomad_af']  >=0.01 or # row['mitomap_status'] != '' or 
+                                                         row['helix_af']   >=0.01 or # row['AF']>=0.05 or
+                                                         row['mitomap_af'] >=0.01) else 0, axis=1)
     
     logging.info('Z-score normalize data and select good training data')
     dataset[['ADz', 'HFz', 'HQz']] = dataset[['AD', 'HF', 'HQ']].apply(zscore)
-    all_data_scaled = np.array(dataset[['ADz', 'HFz', 'HQz']])
+    dataset_zscore = np.array(dataset[['ADz', 'HFz', 'HQz']])
     
     HQ_dataset = dataset[dataset[HQcolname] == 1]
-    # LQ_dataset = dataset[dataset[HQcolname] == 0]
     HQ_dataset_alt = HQ_dataset[HQ_dataset['GT'] !='0']
     HQ_dataset_ref = HQ_dataset[HQ_dataset['GT'] =='0']
     tmp_good_train_data = combine_df(HQ_dataset_alt, HQ_dataset_ref)
     good_train_value_list = tmp_good_train_data["Sample_name_POS_GT"].tolist()
-    dataset['good_train_value'] = dataset['Sample_name_POS_GT'].isin(good_train_value_list).astype(int)
     good_train_data = np.array(tmp_good_train_data[['ADz', 'HFz', 'HQz']])
+    dataset['good_train_value'] = dataset['Sample_name_POS_GT'].isin(good_train_value_list).astype(int)
 
     logging.info('Retain values of good training data within ± 6 standard deviations of the mean')
     filtered_good_train_data = clean_data(good_train_data)
 
     logging.info('Build Good GMM model using filtered good training data and evaluate on test data')
-    max_n_components = args.max_n_components
-    if args.good_module_n_components:
-        good_module_n_components = args.good_module_n_components
-    else:
-        good_module_n_components = ''
-    scores_Good, n_range, bics_Good, best_gmm_Good = GMM_fit(filtered_good_train_data, all_data_scaled, good_module_n_components, max_n_components)
-    dataset['scores_Good'] = scores_Good
+    good_module_n_components = args.good_module_n_components if args.good_module_n_components else None
+    good_lod, n_range, bics_Good, best_gmm_Good = GenerateModel(filtered_good_train_data, 
+                                                                dataset_zscore, 
+                                                                good_module_n_components, 
+                                                                args.max_gaussians)
+    dataset['good_lod'] = good_lod
     
     logging.info('Select the Bad training data set to build the Bad GMM model and evaluate on test data')
-    scores_good_cutoff = find_threshold(dataset, HQcolname, 'scores_Good', target_ratio=args.goodratio_in_goodmodule)
-    dataset['Good_module_res'] = dataset.apply(lambda row: label_uncertain(row, HQcolname, 'scores_Good', scores_good_cutoff), axis=1)
-    Bad_train_data = np.array(dataset[(dataset['Good_module_res']=='Bad')][['ADz', 'HFz', 'HQz']])
-    Bad_train_data_filtered = clean_data(Bad_train_data)
-    if args.bad_module_n_components:
-        bad_module_n_components = args.bad_module_n_components
-    else:
-        bad_module_n_components = ''
-    scores_Bad, n_range, bics_Bad, best_gmm_Bad = GMM_fit(Bad_train_data_filtered, all_data_scaled, bad_module_n_components, max_n_components)
-    score_diff = scores_Good - scores_Bad
-    dataset['scores_Bad'] = scores_Bad
-    dataset['LODR'] = score_diff
+    bad_lod_cutoff = calculate_worst_lod_cutoff(dataset, HQcolname, 'good_lod', target_ratio=args.positive_to_negative_rate)
+    dataset['Good_module_res'] = dataset.apply(lambda row: label_uncertain(row, HQcolname, 'good_lod', bad_lod_cutoff), axis=1)
+    bad_train_data = np.array(dataset[(dataset['Good_module_res']=='Bad')][['ADz', 'HFz', 'HQz']])
+    bad_train_data_filtered = clean_data(bad_train_data)
+    
+    bad_module_n_components = args.bad_module_n_components if args.bad_module_n_components else None
+    bad_lod, n_range, bics_Bad, best_gmm_Bad = GenerateModel(bad_train_data_filtered, 
+                                                             dataset_zscore, 
+                                                             bad_module_n_components, 
+                                                             args.max_neg_gaussians)
+    dataset['LODR'] = good_lod - bad_lod
+    dataset['bad_lod'] = bad_lod
 
     logging.info('Calculate the ratio of Good and Bad values for each LODR')
     dataset = caculate_good_bad_ratio(dataset, 'Good_module_res', 'LODR', "Good_ratio", "Bad_ratio")
@@ -455,8 +460,8 @@ def main():
     closest_99_LODR = dataset.loc[closest_99_idx, 'LODR']
     
     cutoff_dict = {closest_95_idx:[closest_95_Good_ratio, closest_95_Bad_ratio, closest_95_LODR],
-                closest_98_idx:[closest_98_Good_ratio, closest_98_Bad_ratio, closest_98_LODR],
-                closest_99_idx:[closest_99_Good_ratio, closest_99_Bad_ratio, closest_99_LODR]}
+                   closest_98_idx:[closest_98_Good_ratio, closest_98_Bad_ratio, closest_98_LODR],
+                   closest_99_idx:[closest_99_Good_ratio, closest_99_Bad_ratio, closest_99_LODR]}
 
     optimal_threshold_idx = (dataset['Good_ratio'] - args.final_res_ratio).abs().idxmin()
     optimal_threshold = dataset.loc[optimal_threshold_idx, 'LODR']
@@ -469,59 +474,64 @@ def main():
                     cutoff_dict,dataset, args.figure_file)
     
     logging.info('Output the log information....')
-    output_info(dataset, HQcolname, filtered_good_train_data, Bad_train_data_filtered, scores_good_cutoff,
+    output_info(dataset, HQcolname, filtered_good_train_data, bad_train_data_filtered, bad_lod_cutoff,
                 cutoff_dict, optimal_threshold_idx, args.output_csv_file.strip('.csv')+'.log')
         
     logging.info('Output the final result to VCF file....')
     POS_good_count_dict, VQSR_dict = df_info2dict(dataset)
     
     good_allele_ratio = args.pass_ratio
-    output_vcf_file = args.output_vcf_file.strip('.gz')
     POS_count = 0
     POS_pass_count = 0
     POS_lowqual = []
-    with open(output_vcf_file, 'w') as output_vcf:
-        for line in open_file(args.input_vcf_file):
-            if line.startswith('#'):
-                if line.startswith('#CHROM'):
-                    output_vcf.write(f'##FORMAT=<ID=LODR,Number=R,Type=Float,Description="An ordered, comma delimited Log-Likelihood Difference for non-reference allele alleles in the order listed">\n')
-                    # output_vcf.write(f'##FORMAT=<ID=FILTER,Number=R,Type=String,Description="An ordered, comma delimited list of non-reference allele filtration situation ">\n')
-                    output_vcf.write(f'##mito_classifier_command=python GMM_classifier.py -i {args.input_vcf_file} -o {args.output_vcf_file} -c {args.output_csv_file} -f {args.figure_file}\n')
-                    _CHROM,_POS,_ID,_REF,_ALT,_QUAL,_FILTER,_INFO,_FORMAT,*_SAMPLES = line.strip().split('\t')
-                output_vcf.write(line)
-            else:
-                POS_count += 1
-                CHROM,POS,ID,REFs,ALTs,QUAL,FILTER,INFO,FORMAT, *SAMPLES = line.strip().split('\t')
-                FORMAT = 'GT:GQ:DP:AD:HF:CI:HQ:LHF:SB:FS:SOR:VT:LODR'
-                AN = re.findall(r'AN=(.*?);', INFO)[0].split(',')[0]
-                if POS_good_count_dict[POS] / int(AN) >= good_allele_ratio:
-                    FILTER = 'PASS'
-                    POS_pass_count += 1
+    _SAMPLES = []
+    with gzip.open(args.output_vcf_file, "wt") if args.output_vcf_file.endswith(".gz") else open(args.output_vcf_file, "w") as OUT_VCF:
+        with gzip.open(args.input_vcf_file, "rt") if args.input_vcf_file.endswith(".gz") else open(args.input_vcf_file, "r") as IN_VCF:
+            for line in IN_VCF:
+                if line.startswith('#'):
+                    if line.startswith('#CHROM'):
+                        OUT_VCF.write(f'##FORMAT=<ID=LODR,Number=R,Type=Float,Description="An ordered, comma delimited Log-Likelihood Difference for non-reference allele alleles in the order listed">\n')
+                        OUT_VCF.write(f'##mito_classifier_command=python GMM_classifier.py -i {args.input_vcf_file} -o {args.output_vcf_file} -c {args.output_csv_file} -f {args.figure_file}\n')
+                        _SAMPLES = line.strip().split('\t')[9:]
+                        
+                    OUT_VCF.write(line)
                 else:
-                    FILTER = 'LowQual'
-                    POS_lowqual.append(POS)
-                newSAMPLES = []
-                for sample_name, sample_data in zip(_SAMPLES, SAMPLES):
-                    if sample_data.startswith('.'):
-                        continue
-                    GT,GQ,DP,AD,HF,CI,HQ,LHF,SB,FS,SOR,VT = sample_data.split(':')
-                    LODR_list = []
-                    GT_list = []
-                    for gt in GT.split('/'):
-                        LODR_list.append(str(VQSR_dict[POS][sample_name][gt][0]))
-                        if VQSR_dict[POS][sample_name][gt][1] == 'Bad':
-                            GT_list.append('.')
-                        else:
-                            GT_list.append(gt)
-                    GT = '/'.join(GT_list)
-                    LODR = ','.join(LODR_list)
-                    new_sample_data = f'{GT}:{GQ}:{DP}:{AD}:{HF}:{CI}:{HQ}:{LHF}:{SB}:{FS}:{SOR}:{VT}:{LODR}'
-                    newSAMPLES.append(new_sample_data)
-                print(CHROM,POS,ID,REFs,ALTs,QUAL,FILTER,INFO,FORMAT, *newSAMPLES, sep='\t', file=output_vcf)
+                    POS_count += 1
+                    CHROM,POS,ID,REFs,ALTs,QUAL,FILTER,INFO,FORMAT, *SAMPLES = line.strip().split('\t')
+                    FORMAT = 'GT:GQ:DP:AD:HF:CI:HQ:LHF:SB:FS:SOR:VT:LODR'
+                    # AN = re.findall(r'AN=(.*?);', INFO)[0].split(',')[0]   # This is not a good way to match
+                    AN = re.findall(r';?AN=([^;]+)', INFO)[0].split(',')[0]  # do not use `.*?` to match all
+                    if POS_good_count_dict[POS] / int(AN) >= good_allele_ratio:
+                        FILTER = 'PASS'
+                        POS_pass_count += 1
+                    else:
+                        FILTER = 'LowQual'
+                        POS_lowqual.append(POS)
+
+                    newSAMPLES = []
+                    for sample_name, sample_data in zip(_SAMPLES, SAMPLES):
+                        if sample_data.startswith('.'):
+                            continue
+                        
+                        GT,GQ,DP,AD,HF,CI,HQ,LHF,SB,FS,SOR,VT = sample_data.split(':')
+                        LODR_list = []
+                        GT_list = []
+                        for gt in GT.split('/'):
+                            LODR_list.append(str(VQSR_dict[POS][sample_name][gt][0]))
+                            if VQSR_dict[POS][sample_name][gt][1] == 'Bad':
+                                GT_list.append('.')
+                            else:
+                                GT_list.append(gt)
+                                
+                        GT = '/'.join(GT_list)
+                        LODR = ','.join(LODR_list)
+                        new_sample_data = f'{GT}:{GQ}:{DP}:{AD}:{HF}:{CI}:{HQ}:{LHF}:{SB}:{FS}:{SOR}:{VT}:{LODR}'
+                        newSAMPLES.append(new_sample_data)
+                        
+                    print(CHROM,POS,ID,REFs,ALTs,QUAL,FILTER,INFO,FORMAT, *newSAMPLES, sep='\t', file=OUT_VCF)
                 
     logging.info('Output the final result to CSV file....')
-    dataset.drop(columns=['Reported_AFgt005','ADz', 'HFz', 'HQz', 'scores_Good', 'Good_module_res', 'scores_Bad',
-                        'Good_ratio', 'Bad_ratio',], inplace=True)
+    dataset.drop(columns=['Reported_AFgt005','ADz', 'HFz', 'HQz', 'scores_Good', 'Good_module_res', 'scores_Bad', 'Good_ratio', 'Bad_ratio'], inplace=True)
     with open(args.output_csv_file.strip('.csv')+'.log', 'a') as f:
         print("\n############### POS statistics after GMM Filtering ###############", file=f)
         print("Total number of positions: ", POS_count, file=f)
@@ -535,11 +545,11 @@ def main():
         bad_count = (filtered_df['GMM_res']== 'Bad').sum()
         bad_pos = filtered_df[filtered_df['GMM_res'] == 'Bad']['POS'].unique().size
         print (f"Final result :\nGood count:{good_count}\t unique POS: {good_pos}\nBad count:{bad_count}\t unique POS: {bad_pos}", file=f)
+
     filtered_df.to_csv(args.output_csv_file, index=False)
-    
-    logging.info('Compress and index the VCF file....')
-    subprocess.run(["bgzip", "-f", output_vcf_file])
-    subprocess.run(["tabix", "-p", "vcf", output_vcf_file+".gz"])
+    # logging.info('Compress and index the VCF file....')
+    # subprocess.run(["bgzip", "-f", output_vcf_file])
+    # subprocess.run(["tabix", "-p", "vcf", output_vcf_file+".gz"])
     logging.info('Done!')
 
 
