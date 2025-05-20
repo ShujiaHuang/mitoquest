@@ -21,26 +21,32 @@
 #include "io/iobgzf.h"
 #include "io/utils.h"
 #include "external/robin_hood.h"  // robin_hood::unordered_map, robin_hood::unordered_set
-
 #include "algorithm.h"
+
+// Enumeration for sequencing type
+enum class SeqType {
+    AUTO,   // Automatically detect from BAM/CRAM flags
+    PE,     // Paired-end sequencing
+    SE      // Single-end sequencing
+};
 
 // define data types for variant calling
 struct GenomeRegion {
-    std::string ref_id;
-    uint32_t start;
-    uint32_t end;
+    std::string chrom; // chromosome name
+    uint32_t start;    // 0-based start position
+    uint32_t end;      // 0-based end position (exclusive)
 
-    GenomeRegion() : ref_id(""), start(0), end(0) {};
-    GenomeRegion(const std::string& rid, uint32_t s, uint32_t e) : ref_id(rid), start(s), end(e) {
+    GenomeRegion() : chrom(""), start(0), end(0) {};
+    GenomeRegion(const std::string& rid, uint32_t s, uint32_t e) : chrom(rid), start(s), end(e) {
         if (start > end) {
             throw std::invalid_argument("[ERROR] start postion is larger than end position in "
-                                        "GenomeRegion: " + ref_id + ":" + 
-                                        std::to_string(start) + "-" + std::to_string(end));
+                                        "GenomeRegion: " + chrom + ":" + std::to_string(start) + 
+                                        "-" + std::to_string(end));
         }
     };
 
     std::string to_string() const {
-        return ref_id + ":" + std::to_string(start) + "-" + std::to_string(end);
+        return chrom + ":" + std::to_string(start) + "-" + std::to_string(end);
     }
 };
 
@@ -228,7 +234,7 @@ std::string format_sample_string(const VCFSampleAnnotation& anno, const VariantI
 std::string vcf_header_define(const std::string &ref_file_path, 
                               const std::vector<std::string> &samples,
                               const std::string other_comment);
-                              
+
 void merge_file_by_line(const std::vector<std::string> &infiles, 
                         const std::string &outfile,
                         std::string header, bool is_remove_tempfile);

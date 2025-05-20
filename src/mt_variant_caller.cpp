@@ -27,7 +27,6 @@ void MtVariantCaller::usage(const Config &config) {
 }
 
 MtVariantCaller::MtVariantCaller(int argc, char* argv[]) {
-
     Config config;
     // Set default values
     config.min_baseq               = 20;
@@ -222,7 +221,6 @@ void MtVariantCaller::_get_sample_id_from_bam() {
 }
 
 void MtVariantCaller::_get_calling_interval() {
-
     std::vector<GenomeRegion> regions;
     if (!_config.calling_regions.empty()) {
         std::vector<std::string> rg_v;
@@ -243,13 +241,12 @@ void MtVariantCaller::_get_calling_interval() {
 
     _calling_intervals.clear();
     for (size_t i(0); i < regions.size(); ++i) {
-
         uint32_t total_length = regions[i].end - regions[i].start + 1;
         for (uint32_t j(0); j < total_length; j += _config.chunk_size) {
             // split region into small pieces by chunk_size
             uint32_t start = regions[i].start + j;
             uint32_t end = std::min(regions[i].end, start + _config.chunk_size - 1);
-            _calling_intervals.push_back(GenomeRegion(regions[i].ref_id, start, end));
+            _calling_intervals.push_back(GenomeRegion(regions[i].chrom, start, end));
         }
     }
 
@@ -257,7 +254,6 @@ void MtVariantCaller::_get_calling_interval() {
 }
 
 GenomeRegion MtVariantCaller::_make_genome_region(std::string gregion) {
-
     // Genome Region, 1-based
     std::string ref_id;
     uint32_t reg_start, reg_end;
@@ -285,7 +281,6 @@ GenomeRegion MtVariantCaller::_make_genome_region(std::string gregion) {
 }
 
 void MtVariantCaller::_print_calling_interval() {
-
     std::cout << "---- Calling Intervals ----\n";
     for (size_t i(0); i < _calling_intervals.size(); ++i) {
         std::cout << i+1 << " - " << _calling_intervals[i].to_string() << "\n";
@@ -295,7 +290,6 @@ void MtVariantCaller::_print_calling_interval() {
 }
 
 void MtVariantCaller::_caller_process() {
-
     // Get filepath and stem name
     std::string _bname = ngslib::basename(_config.output_file);
     size_t si = _bname.find(".vcf");
@@ -321,7 +315,7 @@ void MtVariantCaller::_caller_process() {
 
         //////////////////////////////////////////////
         // Call variants in parallel
-        std::string rgstr = gr.ref_id + "_" + std::to_string(gr.start) + "_" + std::to_string(gr.end);
+        std::string rgstr = gr.chrom + "_" + std::to_string(gr.start) + "_" + std::to_string(gr.end);
         std::string sub_vcf_fn = cache_outdir + "/" + stem_bn + "." + rgstr + ".vcf.gz";
         sub_vcf_files.push_back(sub_vcf_fn);
 
@@ -357,7 +351,7 @@ bool MtVariantCaller::_fetch_base_in_region(const GenomeRegion gr, std::vector<P
     std::vector<std::future<PosVariantMap>> pileup_results;
     pileup_results.reserve(this->_config.bam_files.size());
 
-    std::string fa_seq = this->reference[gr.ref_id];     // use the whole sequence of ``ref_id`` for simply
+    std::string fa_seq = this->reference[gr.chrom];     // use the whole sequence of ``ref_id`` for simply
     // Loop all alignment files
     for(size_t i(0); i < this->_config.bam_files.size(); ++i) { // The same order as this->_samples_id
         pileup_results.emplace_back(
@@ -414,7 +408,7 @@ bool MtVariantCaller::_variant_discovery(const std::vector<PosVariantMap> &sampl
                 if (is_empty) is_empty = false;
             } else {
 
-                VariantInfo vi(gr.ref_id, pos, 0, 0); // empty VariantInfo
+                VariantInfo vi(gr.chrom, pos, 0, 0); // empty VariantInfo
                 vvi.push_back(vi);
             }
         }
@@ -450,7 +444,7 @@ PosVariantMap call_pileup_in_sample(const std::string sample_bam_fn,
 {
     // The expend size of region, 100bp is enough.
     static const uint32_t REG_EXTEND_SIZE = 100;
-    GenomeRegion gr_extend(gr.ref_id,                                                    // Reference id
+    GenomeRegion gr_extend(gr.chrom,                                                     // Reference id
                            gr.start > REG_EXTEND_SIZE ? gr.start - REG_EXTEND_SIZE : 1,  // start
                            gr.end + REG_EXTEND_SIZE);                                    // end
     std::string rg_extend_str = gr_extend.to_string(); // chr:start-end
@@ -593,13 +587,12 @@ void seek_position(const std::string &fa_seq,                               // m
 
             // qpos is 0-based, conver to 1-based to set the rank of base on read.
             ab.rpr = aligned_pairs[i].qpos + 1;
-
             if (ab.base_qual < min_baseq + 33) continue;  // filter low quality bases, 33 is the offset of base QUAL;
 
             // 以 map_ref_pos 为 key，将所有的 read_bases 信息存入 map 中，多个突变共享同个 ref_pos，
             if (sample_posinfo_map.find(map_ref_pos) == sample_posinfo_map.end()) {
                 // First level. If the position is not in the map, insert it.
-                AlignInfo pos_align_info(gr.ref_id, map_ref_pos);
+                AlignInfo pos_align_info(gr.chrom, map_ref_pos);
                 sample_posinfo_map.insert({map_ref_pos, pos_align_info});
             }
             
@@ -646,7 +639,6 @@ void seek_position(const std::string &fa_seq,                               // m
 }
 
 VariantInfo basetype_caller_unit(const AlignInfo &pos_align_info, const double min_af) {
-
     BaseType::BatchInfo smp_bi(pos_align_info.ref_id, pos_align_info.ref_pos);
     for (auto &ab: pos_align_info.align_bases) {
         smp_bi.ref_bases.push_back(ab.ref_base);  // REF may be single base for SNVs or a sub-seq for Indels
@@ -665,7 +657,6 @@ VariantInfo basetype_caller_unit(const AlignInfo &pos_align_info, const double m
 }
 
 VariantInfo get_pos_pileup(const BaseType &bt, const BaseType::BatchInfo *smp_bi) {
-
     VariantInfo vi(bt.get_ref_id(), bt.get_ref_pos(), bt.get_total_depth(), bt.get_var_qual());
     int major_allele_depth = 0;
     vi.major_allele_idx    = 0;
