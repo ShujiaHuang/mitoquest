@@ -1,7 +1,6 @@
 // Header file for the VCF Subsetting tool
 // Author: Shujia Huang
 // Date: 2025-04-27
-
 #ifndef __INCLUDE_VCF_SUBSET_SAMPLES_H__
 #define __INCLUDE_VCF_SUBSET_SAMPLES_H__
 
@@ -13,7 +12,6 @@
 #include <cmath>     // For isnan, isinf
 #include <limits>    // For numeric_limits
 #include <stdexcept> // For std::runtime_error
-// #include <numeric>   // For std::accumulate
 
 #include "version.h"  // For version info in usage
 #include "io/utils.h" // For get_firstcolumn_from_file, suffix_name

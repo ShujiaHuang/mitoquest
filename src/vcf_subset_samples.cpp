@@ -6,19 +6,17 @@
 // Function to print usage information for the 'subsam' command
 void VCFSubsetSamples::print_usage() {
     std::cerr << "Usage: mitoquest subsam [options] -i <input.vcf> -o <output.vcf> [-s <samplelist>] [<sample1> <sample2> ...]\n";
-    std::cerr << "\n";
-    std::cerr << "Options:\n";
+    std::cerr << "\nOptions:\n";
     std::cerr << "  -i, --input FILE    Input VCF/BCF file (required).\n";
     std::cerr << "  -o, --output FILE   Output VCF/BCF file (required).\n";
     std::cerr << "  -s, --sample FILE   List of sample name to keep (one per line).\n";
     std::cerr << "  -O, --output-type   TYPE Output file type [v|z|b|u] (default: Guess format based on output file extension).\n";
     std::cerr << "                          v: VCF, z: compressed VCF (bgzip), b: BCF, u: uncompressed BCF.\n";
-    std::cerr << "  --no-update-info    Do not update INFO fields based on extracted samples" << std::endl;
-    std::cerr << "  --keep-all-site     Do not remove the POS which only have reference allele in extracted samples" << std::endl;
-    std::cerr << "  -h, --help          Print this help message.\n";
-    std::cerr << "\n";
+    std::cerr << "  --no-update-info    Do not update INFO fields based on extracted samples.\n";
+    std::cerr << "  --keep-all-site     Do not remove the POS which only have reference allele in extracted samples.\n";
+    std::cerr << "  -h, --help          Print this help message.\n\n";
     std::cerr << "Version: " << MITOQUEST_VERSION << "\n";
-    std::cerr << "\n";
+    std::cerr << std::endl;
 }
 
 // Parses command line arguments
@@ -123,8 +121,7 @@ VCFSubsetSamples::VCFSubsetSamples(int argc, char* argv[]) {
 }
 
 // Recalculate INFO fields
-bool VCFSubsetSamples::recalculate_info(const ngslib::VCFHeader& hdr, ngslib::VCFRecord& rec) 
-{
+bool VCFSubsetSamples::recalculate_info(const ngslib::VCFHeader& hdr, ngslib::VCFRecord& rec) {
     // Requires GT field in FORMAT, and record unpacked for FORMAT and INFO
     if (rec.unpack(BCF_UN_FMT | BCF_UN_INFO) < 0) {
             std::cerr << "Warning: Failed to unpack record for INFO recalculation at "
@@ -166,11 +163,9 @@ bool VCFSubsetSamples::recalculate_info(const ngslib::VCFHeader& hdr, ngslib::VC
                     if (allele_code - 1 < ac.size()) { // Ensure index is within bounds
                         ac[allele_code - 1]++;         // Increment count for the corresponding ALT allele
                     } else {
-                        throw std::runtime_error(
-                            "[Error]: Allele code (" + std::to_string(allele_code) + ") "
-                            "out of bounds for ALT alleles (" + std::to_string(n_alt) + ") "
-                            "at " + rec.chrom(hdr) + ":" + std::to_string(rec.pos() + 1)
-                        );
+                        throw std::runtime_error("[Error]: Allele code (" + std::to_string(allele_code) + ") "
+                                                 "out of bounds for ALT alleles (" + std::to_string(n_alt) + ") "
+                                                 "at " + rec.chrom(hdr) + ":" + std::to_string(rec.pos() + 1));
                     }
                 }
                 non_missing_al.push_back(allele_code); // Add non-missing allele
@@ -202,9 +197,9 @@ bool VCFSubsetSamples::recalculate_info(const ngslib::VCFHeader& hdr, ngslib::VC
 
     // Update AC, AN, HOM_N, HET_N, Total_N in the record's INFO field
     rec.update_info_int(hdr, "AC", ac.data(), ac.size());
-    rec.update_info_int(hdr, "AN", &an, 1);
-    rec.update_info_int(hdr, "HOM_N", &hom_ind_count, 1);
-    rec.update_info_int(hdr, "HET_N", &het_ind_count, 1);
+    rec.update_info_int(hdr, "AN",      &an, 1);
+    rec.update_info_int(hdr, "HOM_N",   &hom_ind_count, 1);
+    rec.update_info_int(hdr, "HET_N",   &het_ind_count, 1);
     rec.update_info_int(hdr, "Total_N", &available_ind_count, 1);
 
     // Update AF, HOM_PF, HET_PF, SUM_PF in the record's INFO field
@@ -274,6 +269,7 @@ void VCFSubsetSamples::run() {
             if (original_sample_set.find(sample_name) == original_sample_set.end()) {
                 throw std::runtime_error("Sample '" + sample_name + "' not found in the input VCF header.");
             }
+
             // Find the original index (needed for recalculate_info)
             int idx = original_hdr.sample_index(sample_name);
             if (idx >= 0) {
@@ -351,4 +347,3 @@ void VCFSubsetSamples::run() {
 
     return;
 } 
-
