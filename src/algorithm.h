@@ -1,14 +1,12 @@
 /**
  * @file algorthm.h
  * 
- * 
- * @brief  Contain some main algorithms of BaseVar
+ * @brief Algorithm functions for mtDNA variant caller
  *  
  * @author Shujia Huang
- * @date 2018-08-30
+ * @date 2025-02-12
  * 
  */
-
 #ifndef __INCLUDE_MTCALLER_ALIGORITHM_H__
 #define __INCLUDE_MTCALLER_ALIGORITHM_H__
 
