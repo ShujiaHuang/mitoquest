@@ -1,10 +1,9 @@
 // The C++ codes for VCF/BCF file reading
-// Author: Roo (Inspired by Shujia Huang's BAM wrappers)
-// Date: 2025-04-18 (Resumed 2025-04-27)
+// Author: Shujia Huang
+// Date: 2025-04-18
 #include "vcf.h"
 
 namespace ngslib {
-
     // Private method to open file and read header
     void VCFFile::_open(const std::string &fn, const std::string mode) {
         _fname = fn;
@@ -38,7 +37,6 @@ namespace ngslib {
             }
 
         } else if (_mode[0] == 'w') {
-
             // For writing, we need to ensure the header is valid
             if (!_hdr.is_valid()) {
                 close(); // Clean up
@@ -82,7 +80,7 @@ namespace ngslib {
 
         _io_status = -1; // Mark as closed/invalid state
         _fname = "";
-        _mode = "";
+        _mode  = "";
     }
 
     // Load index
@@ -96,7 +94,6 @@ namespace ngslib {
 
         // hts_idx_load2 tries both .tbi and .csi
         _idx = hts_idx_load2(_fname.c_str(), nullptr); // Pass NULL for default index filename
-
         if (_idx == nullptr) {
             // Try legacy tbx_index_load for VCF specifically (might find .tbi)
             // Note: bcf_index_load is a wrapper around hts_idx_load nowadays
@@ -123,12 +120,12 @@ namespace ngslib {
         // Use bcf_itr_querys for string region parsing
         // Pass writable header pointer as the underlying hts_itr_querys expects void*
         _itr = bcf_itr_querys(_idx, _hdr.hts_header_writable(), region.c_str());
-
         if (_itr == nullptr) {
             // Query failed (e.g., invalid region string, contig not found)
             _io_status = -3; // Indicate query failure
             return false;
         }
+        
         _io_status = 0; // Reset status for reading from iterator
         return true;
     }
@@ -153,12 +150,12 @@ namespace ngslib {
 
         // Use bcf_itr_queryi for coordinate-based query
         _itr = bcf_itr_queryi(_idx, rid, beg, end);
-
         if (_itr == nullptr) {
             // Query failed (e.g., invalid coordinates)
             _io_status = -3;
             return false;
         }
+        
         _io_status = 0;
         return true;
     }
@@ -223,7 +220,7 @@ namespace ngslib {
     std::ostream &operator<<(std::ostream &os, const VCFFile &r) {
         os << "VCFFile(file='" << r._fname << "', mode='" << r._mode
            << "', is_open=" << (r.is_open() ? "true" : "false")
-           << ", status=" << r._io_status << ")";
+           << ", status="   << r._io_status << ")";
         return os;
     }
 
