@@ -56,6 +56,29 @@ double mean(const std::vector<T> &values) {
     return static_cast<double>(sum(values)) / values.size();
 }
 
+// standard deviation the value for all the data which could call '+' operator
+template<typename T>  // T must be a numeric type
+double stddev(const std::vector<T> &values) {
+    if (values.size() < 2) {
+        throw std::invalid_argument("Cannot calculate standard deviation of less than 2 values");
+    }
+    double mean_value = mean(values);
+    double sum_squared_diff = 0.0;
+    for (const auto& value : values) {
+        sum_squared_diff += (value - mean_value) * (value - mean_value);
+    }
+    return std::sqrt(sum_squared_diff / (values.size() - 1));
+}
+
+// calculate the standard error of the mean
+template<typename T>  // T must be a numeric type
+double standard_error(const std::vector<T> &values) {
+    if (values.size() < 2) {
+        throw std::invalid_argument("Cannot calculate standard error of less than 2 values");
+    }
+    return stddev(values) / std::sqrt(values.size());
+}
+
 // median the value for all the data which could call '+' operator
 template<typename T>  // T must be a numeric type
 double median(std::vector<T> &value) {
