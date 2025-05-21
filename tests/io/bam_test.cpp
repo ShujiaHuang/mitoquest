@@ -1,14 +1,15 @@
 // Author: Shujia Huang
 // Date: 2021-08-25
+#include <gtest/gtest.h>
 #include <iostream>
 #include <string>
+#include <vector>
 #include <ctime>
 
 #include "io/bam.h"
 #include "io/bam_record.h"
 
 void ret_br(ngslib::Bam &b) {
-
     // reading alignment record
     int read_count = 0;
 
@@ -21,9 +22,7 @@ void ret_br(ngslib::Bam &b) {
     }
 }
 
-#include <vector>
-
-int main() {
+TEST(BamTest, BasicTest) {
     clock_t start, end;  // time recorder
     
     using ngslib::Bam;
@@ -43,15 +42,6 @@ int main() {
     const Bam *b3; b3 = &b1;
     b0 = b1;
 std::cout << b0.header() << "\n";
-
-std::vector<Bam> bb;  
-bb.reserve(5); //  capacity changed
-for(size_t i(0); i < 2; ++i) {
-    bb.push_back(Bam(fn1, "r", fa));
-    std::cout << i << " - " << bb[i] << "\n";
-}
-std::cout << "bb size: " << bb.size() << " 0 - " << bb[0] << "\n";
-exit(1);
 
     if (b1.index_build() == 0)
         std::cout << "Successful generate BAI-format index for BAM "
@@ -108,6 +98,4 @@ exit(1);
     time_t now = time(0);
     std::cerr << ctime(&now) << "** Process done, " << (double)(clock() - start) / CLOCKS_PER_SEC
               << " seconds elapsed **\n";
-
-    return 0;
 }

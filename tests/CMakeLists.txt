@@ -1,12 +1,18 @@
+# Copy test data files
+file(COPY ${CMAKE_SOURCE_DIR}/tests/data DESTINATION ${CMAKE_CURRENT_BINARY_DIR})
+
 # Create test library
 add_library(mitoquest_lib STATIC
     ${CMAKE_SOURCE_DIR}/src/algorithm.cpp
     
+    ${CMAKE_SOURCE_DIR}/src/io/utils.cpp
+    ${CMAKE_SOURCE_DIR}/src/io/bam.cpp
+    ${CMAKE_SOURCE_DIR}/src/io/bam_header.cpp
+    ${CMAKE_SOURCE_DIR}/src/io/bam_record.cpp
     ${CMAKE_SOURCE_DIR}/src/io/iobgzf.cpp
     ${CMAKE_SOURCE_DIR}/src/io/vcf.cpp
     ${CMAKE_SOURCE_DIR}/src/io/vcf_header.cpp
     ${CMAKE_SOURCE_DIR}/src/io/vcf_record.cpp
-    # ... adding more source files for testing
 )
 
 # Set include directories for the library
@@ -25,6 +31,7 @@ target_link_libraries(mitoquest_lib PUBLIC
 add_executable(mitoquest_tests
     algorithm_test.cpp
 
+    io/bam_test.cpp
     io/iobgzf_test.cpp
     io/vcf_test.cpp
     io/vcf_record_test.cpp
