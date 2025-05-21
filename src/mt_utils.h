@@ -13,6 +13,7 @@
 #include <sstream>
 #include <string>
 #include <vector>
+#include <regex>
 
 #include <htslib/bgzf.h>
 #include <htslib/tbx.h>
@@ -201,6 +202,13 @@ struct VCFRecord {
         return ss.str();
     }
 };
+
+// Function to check if a chromosome is autosomal
+inline bool is_autosomal(const std::string& chrom_name) {
+    // Match chr1-chr22 or just 1-22
+    std::regex autosomal_regex("^(chr)?([1-9]|1[0-9]|2[0-2])$");
+    return std::regex_match(chrom_name, autosomal_regex);
+}
 
 // 最多只保留小数点后 3 位
 std::string format_double(double value, int precision = 3);
