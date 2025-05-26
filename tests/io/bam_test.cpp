@@ -30,10 +30,10 @@ TEST(BamTest, BasicTest) {
 
     start = clock();  
 
-    std::string fa  = "tests/data/ce.fa.gz";
-    const char *fn1 = "tests/data/range.cram";
-    std::string fn2 = "tests/data/range.bam";
-    std::string fn3 = "tests/data/xx_minimal.sam";
+    std::string fa  = "data/ce.fa.gz";
+    const char *fn1 = "data/range.cram";
+    std::string fn2 = "data/range.bam";
+    std::string fn3 = "data/xx_minimal.sam";
 
     Bam b0;
     Bam b1(fn1, "r", fa);
