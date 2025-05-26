@@ -375,7 +375,7 @@ def main():
     #                          'This argument must be specified at least once.')
     parser.add_argument('--max-gaussians', dest='max_gaussians', type=int, action='store', default=10, 
                         help='Maximum number of Gaussians that will be used for the positive recalibration model in VQSR (default: 10)')
-    parser.add_argument('--max-neg-gaussians', dest='max_neg_gaussians', type=int, action='store',default=6, 
+    parser.add_argument('--max-neg-gaussians', dest='max_neg_gaussians', type=int, action='store',default=10, 
                         help='Maximum number of Gaussians that will be used for the negative recalibration model in VQSR (default: 10)')
     parser.add_argument('-gnc', '--good_module_n_components', type=int, action='store', help='Number of components for Good GMM module if not specified, default is auto-selected')
     parser.add_argument('-bnc', '--bad_module_n_components', type=int, action='store',  help='Number of components for Bad GMM moduleif not specified, default is auto-selected')
