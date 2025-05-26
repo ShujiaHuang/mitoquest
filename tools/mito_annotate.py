@@ -68,7 +68,16 @@ def dbSNP_annotate(anno_file_path):
         for line in f:
             if line.startswith("#"): continue
             chrom, pos, rsid, refs, alts, *_skip = line.strip().split('\t')
-            dict[(chrom, pos, refs, alts)] = rsid
+            
+            # 这一步是必须的，因为有些变异的REF和ALT由于多突变的原因后缀是相同的
+            REF_ALT_list = [remove_common_suffix(REF, ALT) for REF, ALT in list(
+                zip_longest(refs.split(','), alts.split(','), fillvalue=refs.split(',')[0]))]
+            
+            # work for multiallelic variants 
+            for r, a in REF_ALT_list:
+                # handle the case where there are multiple alts, e.g. m.1234A>G,T
+                if a == '.': continue
+                dict[(chrom, pos, r, a)] = rsid
             
     return dict
 
@@ -410,7 +419,8 @@ def mitomap(anno_file_path):
                     dict1[(row["ref"], row["pos"], row["alt"])] = (row["status"].replace(";", "|"),  # replace ';' with '|' to prevent error in VCF INFO 
                                                                    row["homoplasmy"].replace(";", "|"), 
                                                                    row["heteroplasmy"].replace(";", "|"), 
-                                                                   row["disease"].replace(";", "|"))
+                                                                   row["disease"].replace(";", "|").strip().replace(
+                                                                       "/ ", "/").replace(" /", "/").replace(" ", "_"))
 
     with gzip.open(anno_file_path+"/databases/MITOMAP_polymorphisms_20250403.txt.gz", "rt", encoding="ISO-8859-1") as f:
         reader = csv.DictReader(f, delimiter="\t")
@@ -517,19 +527,6 @@ def annotate(input_file, annotated_txt, annotated_vcf, anno_file_path):
 
     :param input_file: the file with mutation likelihood scores, output of composite_likelihood_mito.py
     """
-    
-    f = gzip.open(annotated_txt, "wt") if annotated_txt.endswith(".gz") else open(annotated_txt, "w")
-    output_vcf = gzip.open(annotated_vcf, "wt") if annotated_vcf.endswith(".gz") else open(annotated_vcf, "w")
-    header_list = ['CHROM', 'POS', 'ID', 'REF', 'ALT', 'INFO', 'trinucleotide', 'symbol', 'mitomap_locus', 'consequence', 'amino_acids', 
-                   'protein_position', 'codon_change', 'gnomad_max_hl', 'gnomad_af_hom', 'gnomad_af_het', 
-                   'gnomad_ac_hom', 'gnomad_ac_het', 'in_phylotree', 'phyloP_score', 'tRNA_position', 
-                   'tRNA_domain', 'RNA_base_type', 'RNA_modified', 'rRNA_bridge_base', 'uniprot_annotation', 
-                   'other_prot_annotation', 'apogee_class', 'mitotip_class', 'hmtvar_class', 'helix_max_hl', 
-                   'helix_af_hom', 'helix_af_het', 'mitomap_gbcnt', 'mitomap_af', 'mitomap_status', 
-                   'mitomap_plasmy', 'mitomap_disease', 'clinvar_interp', 'chimp_ref']
-    header = '\t'.join(header_list)
-    f.write(header + '\n')
-
     # generate required dictionaries
     vep_anno_list = ["Allele", "Consequence", "IMPACT", "SYMBOL", "Gene", "Feature_type", "Feature", 
                      "BIOTYPE", "EXON", "INTRON", "HGVSc", "HGVSp", "cDNA_position", "CDS_position", 
@@ -555,8 +552,21 @@ def annotate(input_file, annotated_txt, annotated_vcf, anno_file_path):
     clinvar_vars = clinvar(anno_file_path)
     chimp_dict = chimp_ref_lookup(anno_file_path)
 
-    ovlp_start_idx = 0
+    f = gzip.open(annotated_txt, "wt") if annotated_txt.endswith(".gz") else open(annotated_txt, "w")
+    output_vcf = gzip.open(annotated_vcf, "wt") if annotated_vcf.endswith(".gz") else open(annotated_vcf, "w")
+    header_list = ['CHROM', 'POS', 'ID', 'REF', 'ALT', 'trinucleotide', 'AF', 'AC', 'AN', 'TOTAL_N', 'HOM_PF',
+                   'HET_PF', 'SUM_PF', 'PT', 'mitomap_locus', 'symbol', 'transcript', 'feature', 'biotype', 
+                   'consequence', 'impact', 'HGVSc', 'HGVSp', 'amino_acids', 'protein_position', 'codon_change', 
+                   'gnomad_max_hl', 'gnomad_af_hom', 'gnomad_af_het', 'gnomad_ac_hom', 'gnomad_ac_het', 'in_phylotree', 
+                   'phyloP_score', 'tRNA_position', 'tRNA_domain', 'RNA_base_type', 'RNA_modified', 'rRNA_bridge_base', 
+                   'uniprot_annotation', 'other_prot_annotation', 'apogee_class', 'mitotip_class', 'hmtvar_class', 
+                   'helix_max_hl', 'helix_af_hom', 'helix_af_het', 'mitomap_gbcnt', 'mitomap_af', 'mitomap_status', 
+                   'mitomap_plasmy', 'mitomap_disease', 'clinvar_interp', 'chimp_ref']
+    header = '\t'.join(header_list)
+    f.write(header + '\n')
+
     with gzip.open(input_file, "rt") if input_file.endswith(".gz") else open(input_file, "r") as IN:
+        ovlp_start_idx = 0
         for line in IN:
             if line.startswith('#'):
                 if line.startswith('#CHROM'):
@@ -600,46 +610,59 @@ def annotate(input_file, annotated_txt, annotated_vcf, anno_file_path):
             if POS not in rcrs_pos2trinuc:  # Skip the position of ref=='N'
                 continue
             
+            # 这一步是必须的，因为有些变异的REF和ALT由于多突变的原因后缀是相同的
             REF_ALT_list = [remove_common_suffix(REF, ALT) for REF, ALT in list(
                 zip_longest(REFs.split(','), ALTs.split(','), fillvalue=REFs.split(',')[0]))]
+
+            variant_list   = [REF + POS + ALT for REF, ALT in REF_ALT_list]
+            var_tuple_list = [(REF, POS, ALT) for REF, ALT in REF_ALT_list]
             
-            # check if REF is same after removing common suffix
-            first_elements = [item[0] for item in REF_ALT_list]
-            if len(set(first_elements)) == 1:
-                REFs = first_elements[0]
-                ALTs = ','.join([item[1] for item in REF_ALT_list])
-            
-            if (CHROM, POS, REFs, ALTs) in dbsnp:
-                ID = dbsnp[(CHROM, POS, REFs, ALTs)]
-            
+            IDs = []
+            for REF, ALT in REF_ALT_list:
+                # check if the variant is in dbSNP
+                if (CHROM, POS, REF, ALT) in dbsnp:
+                    IDs.append(dbsnp[(CHROM, POS, REF, ALT)])
+            ID = ','.join(IDs) if IDs else '.'
+                
             # POS in mitomap_genome_loci or not
             mitomap_locus_id = ''
             for i in range(ovlp_start_idx, len(mitomap_genome_loci)):
                 start, end, locus = mitomap_genome_loci[i]
                 if int(POS) > end: continue
                 if int(POS) < start: break
-
-                ovlp_start_idx = i
+                
+                ovlp_start_idx   = i
                 mitomap_locus_id = locus
                 break
             
-            variant_list = [REF + POS + ALT for REF, ALT in REF_ALT_list]
-            var_tuple_list = [(REF, POS, ALT) for REF, ALT in REF_ALT_list]
-
             in_phylo_list = [1 if "\n" + variant + "\n" in open(anno_file_path+'/databases/phylotree_variants.txt').read() else 0 for variant in variant_list]
-            max_hl_list = [gnomad[var_tuple][0] if var_tuple in gnomad else 0 for var_tuple in var_tuple_list]
+            max_hl_list   = [gnomad[var_tuple][0] if var_tuple in gnomad else 0 for var_tuple in var_tuple_list]
             
             vep_csq_list    = []
             vep_symbol_list = []
+            vep_gene_list = []
+            vep_feature_list = []
+            vep_biotype_list = []
             vep_conseq_list = []
+            vep_impact_list = []
+            vep_hgvsc_list = []
+            vep_hgvsp_list = []
             vep_aa_list     = []
             vep_pp_list     = []
             vep_codon_change_list = []
+            
             for REF, POS, alt in var_tuple_list:
                 if (REF, POS, alt) in vep:
                     vep_csq_list.append("|".join([vep[(REF, POS, alt)][label] for label in vep_anno_list]))
+
                     vep_symbol_list.append(vep[(REF, POS, alt)]["SYMBOL"])
+                    vep_gene_list.append(vep[(REF, POS, alt)]["Gene"])
+                    vep_feature_list.append(vep[(REF, POS, alt)]["Feature"])
+                    vep_biotype_list.append(vep[(REF, POS, alt)]["BIOTYPE"])
                     vep_conseq_list.append(vep[(REF, POS, alt)]["Consequence"])
+                    vep_impact_list.append(vep[(REF, POS, alt)]["IMPACT"])
+                    vep_hgvsc_list.append(vep[(REF, POS, alt)]["HGVSc"].split(':')[-1])  # ENST00000361390.2:c.271A>C
+                    vep_hgvsp_list.append(vep[(REF, POS, alt)]["HGVSp"].split(':')[-1])  # ENSP00000354189.1:p.Thr91Pro
                     vep_aa_list.append(vep[(REF, POS, alt)]["Amino_acids"])
                     vep_pp_list.append(vep[(REF, POS, alt)]["Protein_position"])
                     vep_codon_change_list.append(vep[(REF, POS, alt)]["Codons"])
@@ -667,84 +690,138 @@ def annotate(input_file, annotated_txt, annotated_vcf, anno_file_path):
             mitomap_ac_list     = [mitomap_vars2[var_tuple][0] if var_tuple in mitomap_vars2 else 0 for var_tuple in var_tuple_list]
             mitomap_af_list     = [mitomap_vars2[var_tuple][1] if var_tuple in mitomap_vars2 else 0 for var_tuple in var_tuple_list]
             mitomap_status_list = [mitomap_vars1[var_tuple][0] if var_tuple in mitomap_vars1 else '' for var_tuple in var_tuple_list]
-            mitomap_plasmy_list = [(mitomap_vars1[var_tuple][1] + '/' + mitomap_vars1[var_tuple][2]) 
-                                   if var_tuple in mitomap_vars1 else '' for var_tuple in var_tuple_list]
+            mitomap_plasmy_list = [(mitomap_vars1[var_tuple][1] + '/' + mitomap_vars1[var_tuple][2]) if var_tuple in mitomap_vars1 else '' for var_tuple in var_tuple_list]
             mitomap_dz_list     = [mitomap_vars1[var_tuple][3] if var_tuple in mitomap_vars1 else '' for var_tuple in var_tuple_list]
             clinvar_int_list    = [clinvar_vars[var_tuple] if var_tuple in clinvar_vars else '' for var_tuple in var_tuple_list]
             hmtvar_scores_list  = [str(hmtvar_scores[(REF, POS, alt)]).strip('[]').replace("'", "").replace(" ", "") 
                                    if (REF, POS, alt) in hmtvar_scores else '' for REF, POS, alt in var_tuple_list]
 
-            tRNA_pos_str = str(tRNA_pos).strip('[]').replace("'", "").replace(" ", "")
-            tRNA_dom_str = str(tRNA_dom).strip('[]').replace("'", "").replace(" ", "")
-            RNA_mod_str  = str(RNA_mod).strip('[]').replace("'", "").replace(" ", "")
-            f.write(CHROM + '\t' + POS  + '\t' + ID        + '\t' + 
-                    REFs  + '\t' + ALTs + '\t' + INFO      + '\t' +
-                    rcrs_pos2trinuc[POS]                   + '\t' +
-                    ','.join(vep_symbol_list)              + '\t' + 
-                    mitomap_locus_id                       + '\t' +
-                    ','.join(vep_conseq_list)              + '\t' +
-                    ','.join(vep_aa_list)                  + '\t' +
-                    ','.join(vep_pp_list)                  + '\t' +
-                    ','.join(vep_codon_change_list)        + '\t' +
-                    ','.join(map(str, max_hl_list))        + '\t' +
-                    ','.join(map(str, gnomad_af_hom_list)) + '\t' +
-                    ','.join(map(str, gnomad_af_het_list)) + '\t' +
-                    ','.join(map(str, gnomad_ac_hom_list)) + '\t' +
-                    ','.join(map(str, gnomad_ac_het_list)) + '\t' +
-                    ','.join(map(str, in_phylo_list))      + '\t' +
-                    phylop[int(POS)]                       + '\t' +
-                    tRNA_pos_str                           + '\t' +
-                    tRNA_dom_str                           + '\t' +
-                    RNA_base                               + '\t' +
-                    RNA_mod_str                            + '\t' +
-                    str(RNA_bridge)                        + '\t' +
-                    uniprot_annot                          + '\t' +
-                    other_prot_annot                       + '\t' +
-                    ','.join(apogee_score_list)            + '\t' +
-                    ','.join(map(str, mitotip_score_list)) + '\t' +
-                    ','.join(map(str, hmtvar_scores_list)) + '\t' +
-                    ','.join(map(str, helix_max_hl_list))  + '\t' +
-                    ','.join(map(str, helix_af_hom_list))  + '\t' +
-                    ','.join(map(str, helix_af_het_list))  + '\t' +
-                    ','.join(map(str, mitomap_ac_list))    + '\t' +
-                    ','.join(map(str, mitomap_af_list))    + '\t' +
-                    ','.join(mitomap_status_list)          + '\t' +
-                    ','.join(mitomap_plasmy_list)          + '\t' +
-                    ','.join(mitomap_dz_list)              + '\t' +
-                    ','.join(clinvar_int_list)             + '\t' +
-                    chimp_dict[(REFs[0], int(POS))]        + '\n')
+            tRNA_pos_str  = str(tRNA_pos).strip('[]').replace("'", "").replace(" ", "")
+            tRNA_dom_str  = str(tRNA_dom).strip('[]').replace("'", "").replace(" ", "")
+            RNA_mod_str   = str(RNA_mod).strip('[]').replace("'", "").replace(" ", "")
+            
+            info_dict = {}
+            for tab in INFO.split(";"):
+                v = tab.split("=")
+                info_dict[v[0]] = v[1] if len(v) > 1 else None
 
-            anno_info = "trinucleotide="         + rcrs_pos2trinuc[POS]                   + ';' + \
-                        "symbol="                + ','.join(vep_symbol_list)              + ';' + \
-                        "mitomap_locus="         + mitomap_locus_id                       + ';' + \
-                        "VEP_CSQ="               + ','.join(vep_csq_list)                 + ';' + \
-                        "gnomad_max_hl="         + ','.join(map(str, max_hl_list))        + ';' + \
-                        "gnomad_af_hom="         + ','.join(map(str, gnomad_af_hom_list)) + ';' + \
-                        "gnomad_af_het="         + ','.join(map(str, gnomad_af_het_list)) + ';' + \
-                        "gnomad_ac_hom="         + ','.join(map(str, gnomad_ac_hom_list)) + ';' + \
-                        "gnomad_ac_het="         + ','.join(map(str, gnomad_ac_het_list)) + ';' + \
-                        "in_phylotree="          + ','.join(map(str, in_phylo_list))      + ';' + \
-                        "phyloP_score="          + phylop[int(POS)]                       + ';' + \
-                        "tRNA_position="         + tRNA_pos_str                           + ';' + \
-                        "tRNA_domain="           + tRNA_dom_str                           + ';' + \
-                        "RNA_base_type="         + RNA_base                               + ';' + \
-                        "RNA_modified="          + RNA_mod_str                            + ';' + \
-                        "rRNA_bridge_base="      + str(RNA_bridge)                        + ';' + \
-                        "uniprot_annotation="    + uniprot_annot                          + ';' + \
-                        "other_prot_annotation=" + other_prot_annot                       + ';' + \
-                        "apogee_class="          + ','.join(apogee_score_list)            + ';' + \
-                        "mitotip_class="         + ','.join(map(str, mitotip_score_list)) + ';' + \
-                        "hmtvar_class="          + ','.join(map(str, hmtvar_scores_list)) + ';' + \
-                        "helix_max_hl="          + ','.join(map(str, helix_max_hl_list))  + ';' + \
-                        "helix_af_hom="          + ','.join(map(str, helix_af_hom_list))  + ';' + \
-                        "helix_af_het="          + ','.join(map(str, helix_af_het_list))  + ';' + \
-                        "mitomap_gbcnt="         + ','.join(map(str, mitomap_ac_list))    + ';' + \
-                        "mitomap_af="            + ','.join(map(str, mitomap_af_list))    + ';' + \
-                        "mitomap_status="        + ','.join(mitomap_status_list)          + ';' + \
-                        "mitomap_plasmy="        + ','.join(mitomap_plasmy_list)          + ';' + \
-                        "mitomap_disease="       + ','.join(mitomap_dz_list)              + ';' + \
-                        "clinvar_interp="        + ','.join(clinvar_int_list)             + ';' + \
-                        "chimp_ref="             + chimp_dict[(REFs[0], int(POS))]
+            for i, (ref, pos, alt) in enumerate(var_tuple_list):
+                chimp_ref_str = "".join([chimp_dict[(ref[c], int(pos)+c)] for c in range(len(ref))])
+                rsid = dbsnp[(CHROM, pos, ref, alt)] if (CHROM, pos, ref, alt) in dbsnp else '.'
+                af = info_dict['AF'].split(',')[i]
+                ac = info_dict['AC'].split(',')[i]
+                an = info_dict['AN']
+                f.write('\t'.join([CHROM, pos, rsid, ref, alt, rcrs_pos2trinuc[pos], af, ac, an])    + '\t' + 
+                        '\t'.join([info_dict['Total_N'], info_dict['HOM_PF'], info_dict['HET_PF']])  + '\t' +
+                        '\t'.join([info_dict['SUM_PF'], info_dict['PT'], mitomap_locus_id])          + '\t' +
+                        (vep[(ref, pos, alt)]["SYMBOL"]           if (ref, pos, alt) in vep else "") + '\t' +
+                        (vep[(ref, pos, alt)]["Gene"]             if (ref, pos, alt) in vep else "") + '\t' +
+                        (vep[(ref, pos, alt)]["Feature"]          if (ref, pos, alt) in vep else "") + '\t' +
+                        (vep[(ref, pos, alt)]["BIOTYPE"]          if (ref, pos, alt) in vep else "") + '\t' +
+                        (vep[(ref, pos, alt)]["Consequence"]      if (ref, pos, alt) in vep else "") + '\t' + 
+                        (vep[(ref, pos, alt)]["IMPACT"]           if (ref, pos, alt) in vep else "") + '\t' +
+                        (vep[(ref, pos, alt)]["HGVSc"]            if (ref, pos, alt) in vep else "") + '\t' +
+                        (vep[(ref, pos, alt)]["HGVSp"]            if (ref, pos, alt) in vep else "") + '\t' +
+                        (vep[(ref, pos, alt)]["Amino_acids"]      if (ref, pos, alt) in vep else "") + '\t' +
+                        (vep[(ref, pos, alt)]["Protein_position"] if (ref, pos, alt) in vep else "") + '\t' +
+                        (vep[(ref, pos, alt)]["Codons"]           if (ref, pos, alt) in vep else "") + '\t' +
+                        str(max_hl_list[i])                                                          + '\t' +
+                        str(gnomad_af_hom_list[i])                                                   + '\t' +
+                        str(gnomad_af_het_list[i])                                                   + '\t' +
+                        str(gnomad_ac_hom_list[i])                                                   + '\t' +
+                        str(gnomad_ac_het_list[i])                                                   + '\t' +
+                        str(in_phylo_list[i])                                                        + '\t' +
+                        phylop[int(POS)]                                                             + '\t' +
+                        tRNA_pos_str                                                                 + '\t' +
+                        tRNA_dom_str                                                                 + '\t' +
+                        RNA_base                                                                     + '\t' +
+                        RNA_mod_str                                                                  + '\t' +
+                        RNA_bridge                                                                   + '\t' +
+                        uniprot_annot                                                                + '\t' +
+                        other_prot_annot                                                             + '\t' +
+                        apogee_score_list[i]                                                         + '\t' +
+                        mitotip_score_list[i]                                                        + '\t' +
+                        hmtvar_scores_list[i]                                                        + '\t' +
+                        str(helix_max_hl_list[i])                                                    + '\t' +
+                        str(helix_af_hom_list[i])                                                    + '\t' +
+                        str(helix_af_het_list[i])                                                    + '\t' +
+                        str(mitomap_ac_list[i])                                                      + '\t' +
+                        str(mitomap_af_list[i])                                                      + '\t' +
+                        mitomap_status_list[i]                                                       + '\t' +
+                        mitomap_plasmy_list[i]                                                       + '\t' +
+                        mitomap_dz_list[i]                                                           + '\t' +
+                        clinvar_int_list[i]                                                          + '\t' +
+                        chimp_ref_str                                                                + '\n')
+
+            # f.write(CHROM + '\t' + POS  + '\t' + ID        + '\t' + 
+            #         REFs  + '\t' + ALTs + '\t' + INFO      + '\t' +
+            #         rcrs_pos2trinuc[POS]                   + '\t' +
+            #         ','.join(vep_symbol_list)              + '\t' + 
+            #         mitomap_locus_id                       + '\t' +
+            #         ','.join(vep_conseq_list)              + '\t' +
+            #         ','.join(vep_aa_list)                  + '\t' +
+            #         ','.join(vep_pp_list)                  + '\t' +
+            #         ','.join(vep_codon_change_list)        + '\t' +
+            #         ','.join(map(str, max_hl_list))        + '\t' +
+            #         ','.join(map(str, gnomad_af_hom_list)) + '\t' +
+            #         ','.join(map(str, gnomad_af_het_list)) + '\t' +
+            #         ','.join(map(str, gnomad_ac_hom_list)) + '\t' +
+            #         ','.join(map(str, gnomad_ac_het_list)) + '\t' +
+            #         ','.join(map(str, in_phylo_list))      + '\t' +
+            #         phylop[int(POS)]                       + '\t' +
+            #         tRNA_pos_str                           + '\t' +
+            #         tRNA_dom_str                           + '\t' +
+            #         RNA_base                               + '\t' +
+            #         RNA_mod_str                            + '\t' +
+            #         str(RNA_bridge)                        + '\t' +
+            #         uniprot_annot                          + '\t' +
+            #         other_prot_annot                       + '\t' +
+            #         ','.join(apogee_score_list)            + '\t' +
+            #         ','.join(map(str, mitotip_score_list)) + '\t' +
+            #         ','.join(map(str, hmtvar_scores_list)) + '\t' +
+            #         ','.join(map(str, helix_max_hl_list))  + '\t' +
+            #         ','.join(map(str, helix_af_hom_list))  + '\t' +
+            #         ','.join(map(str, helix_af_het_list))  + '\t' +
+            #         ','.join(map(str, mitomap_ac_list))    + '\t' +
+            #         ','.join(map(str, mitomap_af_list))    + '\t' +
+            #         ','.join(mitomap_status_list)          + '\t' +
+            #         ','.join(mitomap_plasmy_list)          + '\t' +
+            #         ','.join(mitomap_dz_list)              + '\t' +
+            #         ','.join(clinvar_int_list)             + '\t' +
+            #         chimp_ref_str                          + '\n')
+
+            chimp_ref_str = "".join([chimp_dict[(REFs[i], int(POS)+i)] for i in range(len(REFs))])
+            anno_info = "trinucleotide="         + rcrs_pos2trinuc[POS]                                + ';' + \
+                        "symbol="                + ','.join(vep_symbol_list)                           + ';' + \
+                        "mitomap_locus="         + mitomap_locus_id                                    + ';' + \
+                        "VEP_CSQ="               + ','.join(vep_csq_list)                              + ';' + \
+                        "gnomad_max_hl="         + ','.join(map(str, max_hl_list))                     + ';' + \
+                        "gnomad_af_hom="         + ','.join(map(str, gnomad_af_hom_list))              + ';' + \
+                        "gnomad_af_het="         + ','.join(map(str, gnomad_af_het_list))              + ';' + \
+                        "gnomad_ac_hom="         + ','.join(map(str, gnomad_ac_hom_list))              + ';' + \
+                        "gnomad_ac_het="         + ','.join(map(str, gnomad_ac_het_list))              + ';' + \
+                        "in_phylotree="          + ','.join(map(str, in_phylo_list))                   + ';' + \
+                        "phyloP_score="          + phylop[int(POS)]                                    + ';' + \
+                        "tRNA_position="         + tRNA_pos_str                                        + ';' + \
+                        "tRNA_domain="           + tRNA_dom_str                                        + ';' + \
+                        "RNA_base_type="         + RNA_base                                            + ';' + \
+                        "RNA_modified="          + RNA_mod_str                                         + ';' + \
+                        "rRNA_bridge_base="      + RNA_bridge                                          + ';' + \
+                        "uniprot_annotation="    + uniprot_annot                                       + ';' + \
+                        "other_prot_annotation=" + other_prot_annot                                    + ';' + \
+                        "apogee_class="          + ','.join([r for r in apogee_score_list if r!=''])   + ';' + \
+                        "mitotip_class="         + ','.join([r for r in mitotip_score_list if r!=''])  + ';' + \
+                        "hmtvar_class="          + ','.join([r for r in hmtvar_scores_list if r!=''])  + ';' + \
+                        "helix_max_hl="          + ','.join(map(str, helix_max_hl_list))               + ';' + \
+                        "helix_af_hom="          + ','.join(map(str, helix_af_hom_list))               + ';' + \
+                        "helix_af_het="          + ','.join(map(str, helix_af_het_list))               + ';' + \
+                        "mitomap_gbcnt="         + ','.join(map(str, mitomap_ac_list))                 + ';' + \
+                        "mitomap_af="            + ','.join(map(str, mitomap_af_list))                 + ';' + \
+                        "mitomap_status="        + ','.join([r for r in mitomap_status_list if r!='']) + ';' + \
+                        "mitomap_plasmy="        + ','.join([r for r in mitomap_plasmy_list if r!='']) + ';' + \
+                        "mitomap_disease="       + ','.join([r for r in mitomap_dz_list if r!=''])     + ';' + \
+                        "clinvar_interp="        + ','.join([r for r in clinvar_int_list if r!=''])    + ';' + \
+                        "chimp_ref="             + chimp_ref_str
                         
             INFO = INFO.strip() + ';' + anno_info
             line = '\t'.join([CHROM, POS, ID, REFs, ALTs, QUAL, FILTER, INFO, FORMAT, *SAMPLES])
