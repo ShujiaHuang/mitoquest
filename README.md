@@ -1,6 +1,7 @@
 # MitoQuest: Human Mitochondrial sequencing data Analysis Toolkit
 
-A cross-platform, efficient and practical human mitochondrial sequencing data analysis toolkit in C++.
+A cross-platform, efficient and practical bioinformatic analysis toolkit written in C++, 
+which is designed to call mitochondrial variants (SNPs and Indels) from sequencing data. 
 
 Scripts to analyze mitochondrial sequencing data.
 
