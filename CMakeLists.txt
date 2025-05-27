@@ -28,8 +28,6 @@ if (APPLE)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wl,-no_compact_unwind")
 endif()
 
-set(EXECUTABLE_OUTPUT_PATH ${CMAKE_CURRENT_SOURCE_DIR}/bin)
-
 # Ensure htslib is built before the main executable
 add_custom_target(
     Buildhts ALL
@@ -56,6 +54,7 @@ file(GLOB_RECURSE SRC_MT
     "${CMAKE_CURRENT_SOURCE_DIR}/src/io/*.cpp"
 )
 
+set(EXECUTABLE_OUTPUT_PATH ${CMAKE_CURRENT_SOURCE_DIR}/bin)
 add_executable(mitoquest ${SRC_MT})
 add_dependencies(mitoquest Buildhts)
 target_link_libraries(mitoquest ${HTSLIB} ${COMMON_SYS_LIB})
@@ -68,22 +67,20 @@ target_link_libraries(mitoquest ${HTSLIB} ${COMMON_SYS_LIB})
 # add_dependencies(count_align_fragments Buildhts)
 # target_link_libraries(count_align_fragments ${HTSLIB} ${COMMON_SYS_LIB})
 
+add_executable(mtcopynum ${CMAKE_CURRENT_SOURCE_DIR}/scripts/mt_copynum.cpp 
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/algorithm.cpp 
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/mt_utils.cpp 
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/io/iobgzf.cpp 
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/io/fasta.cpp 
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/io/utils.cpp
+)
+add_dependencies(mtcopynum Buildhts)
+target_link_libraries(mtcopynum ${HTSLIB} ${COMMON_SYS_LIB})
 
 ####################################################################################################
 ####### Testing Configuration
 ####################################################################################################
 option(BUILD_TESTING "Build the testing tree" OFF)  # 默认关闭测试构建
-
-# if(BUILD_TESTING)
-#     # Enable testing support
-#     enable_testing()
-
-#     # Find GTest package
-#     find_package(GTest REQUIRED)
-
-#     # Add test directory
-#     add_subdirectory(tests)
-# endif()
 
 if(BUILD_TESTING)
     # Enable testing support
