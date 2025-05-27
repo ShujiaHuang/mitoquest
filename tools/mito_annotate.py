@@ -554,7 +554,7 @@ def annotate(input_file, annotated_txt, annotated_vcf, anno_file_path):
 
     f = gzip.open(annotated_txt, "wt") if annotated_txt.endswith(".gz") else open(annotated_txt, "w")
     output_vcf = gzip.open(annotated_vcf, "wt") if annotated_vcf.endswith(".gz") else open(annotated_vcf, "w")
-    header_list = ['CHROM', 'POS', 'ID', 'REF', 'ALT', 'trinucleotide', 'AF', 'AC', 'AN', 'TOTAL_N', 'HOM_PF',
+    header_list = ['CHROM', 'POS', 'ID', 'REF', 'ALT', 'FILTER', 'trinucleotide', 'AF', 'AC', 'AN', 'TOTAL_N', 'HOM_PF',
                    'HET_PF', 'SUM_PF', 'PT', 'mitomap_locus', 'symbol', 'transcript', 'feature', 'biotype', 
                    'consequence', 'impact', 'HGVSc', 'HGVSp', 'amino_acids', 'protein_position', 'codon_change', 
                    'gnomad_max_hl', 'gnomad_af_hom', 'gnomad_af_het', 'gnomad_ac_hom', 'gnomad_ac_het', 'in_phylotree', 
@@ -638,17 +638,17 @@ def annotate(input_file, annotated_txt, annotated_vcf, anno_file_path):
             in_phylo_list = [1 if "\n" + variant + "\n" in open(anno_file_path+'/databases/phylotree_variants.txt').read() else 0 for variant in variant_list]
             max_hl_list   = [gnomad[var_tuple][0] if var_tuple in gnomad else 0 for var_tuple in var_tuple_list]
             
-            vep_csq_list    = []
-            vep_symbol_list = []
-            vep_gene_list = []
+            vep_csq_list     = []
+            vep_symbol_list  = []
+            vep_gene_list    = []
             vep_feature_list = []
             vep_biotype_list = []
-            vep_conseq_list = []
-            vep_impact_list = []
-            vep_hgvsc_list = []
-            vep_hgvsp_list = []
-            vep_aa_list     = []
-            vep_pp_list     = []
+            vep_conseq_list  = []
+            vep_impact_list  = []
+            vep_hgvsc_list   = []
+            vep_hgvsp_list   = []
+            vep_aa_list      = []
+            vep_pp_list      = []
             vep_codon_change_list = []
             
             for REF, POS, alt in var_tuple_list:
@@ -711,7 +711,7 @@ def annotate(input_file, annotated_txt, annotated_vcf, anno_file_path):
                 af = info_dict['AF'].split(',')[i]
                 ac = info_dict['AC'].split(',')[i]
                 an = info_dict['AN']
-                f.write('\t'.join([CHROM, pos, rsid, ref, alt, rcrs_pos2trinuc[pos], af, ac, an])    + '\t' + 
+                f.write('\t'.join([CHROM, pos, rsid, ref, alt, FILTER, rcrs_pos2trinuc[pos], af, ac, an]) + '\t' + 
                         '\t'.join([info_dict['Total_N'], info_dict['HOM_PF'], info_dict['HET_PF']])  + '\t' +
                         '\t'.join([info_dict['SUM_PF'], info_dict['PT'], mitomap_locus_id])          + '\t' +
                         (vep[(ref, pos, alt)]["SYMBOL"]           if (ref, pos, alt) in vep else "") + '\t' +

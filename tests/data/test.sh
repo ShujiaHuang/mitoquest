@@ -20,4 +20,5 @@ python ../../tools/mito_annotate.py -d ~/Projects/mitoquest/data -i tt_bak -o t.
 
 awk '$1~/^#/ || $2==310 || $2==316 || $2==470 || $2==515' tt_bak_1 > tt_1
 
+bcftools mpileup -a 'FORMAT/DP' -Ov -f chrM_rCRS.decoy.fa.gz -T t.ann.vcf smp4.cram
 
