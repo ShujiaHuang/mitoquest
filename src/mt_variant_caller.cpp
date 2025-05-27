@@ -22,7 +22,7 @@ void MtVariantCaller::usage(const Config &config) {
               << "                             argrument could save a lot of time during get the sample id from BAMfile.\n"
               << "  -j, --het-threshold FLOAT  Heteroplasmy threshold (default: " << config.heteroplasmy_threshold << ")\n"
               << "  -c, --chunk INT            Chunk size for parallel processing (default: " << config.chunk_size << ")\n"
-              << "  -t, --threads INT          Number of threads (default: " << config.thread_count << ")\n"
+              << "  -t, --threads INT          Number of threads (default: all available threads [" << config.thread_count << "])\n"
               << "  -h, --help                 Print this help message.\n\n";
 }
 
@@ -32,28 +32,26 @@ MtVariantCaller::MtVariantCaller(int argc, char* argv[]) {
     config.min_baseq               = 20;
     config.min_mapq                = 20;
     config.heteroplasmy_threshold  = 0.01;
-    config.thread_count            = 1;
-    config.chunk_size              = 1000;
     config.pairs_map_only          = false;
     config.proper_pairs_only       = false;
     config.filename_has_samplename = false;
+    config.chunk_size              = 1000;
+    config.thread_count            = std::thread::hardware_concurrency(); // Use all available threads
 
     static const struct option MT_CMDLINE_LOPTS[] = {
         {"reference",          required_argument, 0, 'R'},
         {"output",             required_argument, 0, 'o'},
-
         {"bam-list",           optional_argument, 0, 'b'},
         {"min-BQ",             optional_argument, 0, 'Q'},
         {"min-MQ",             optional_argument, 0, 'q'},
         {"regions",            optional_argument, 0, 'r'},
-        {"chunk",              optional_argument, 0, 'c'},
         {"het-threshold",      optional_argument, 0, 'j'},
+        {"chunk",              optional_argument, 0, 'c'},
         {"threads",            optional_argument, 0, 't'},
-
-        {"pairs-map-only",          no_argument, 0, 'p'}, // 小写 p
-        {"proper-pairs-only",       no_argument, 0, 'P'},
-        {"filename-has-samplename", no_argument, 0, '1'},
-        {"help",                    no_argument, 0, 'h'},
+        {"pairs-map-only",           no_argument, 0, 'p'}, // 小写 p
+        {"proper-pairs-only",        no_argument, 0, 'P'},
+        {"filename-has-samplename",  no_argument, 0, '1'},
+        {"help",                     no_argument, 0, 'h'},
 
         // must set this value, to get the correct value from getopt_long
         {0, 0, 0, 0}
@@ -67,7 +65,7 @@ MtVariantCaller::MtVariantCaller(int argc, char* argv[]) {
 
     int opt;
     std::vector<std::string> bv;
-    while ((opt = getopt_long(argc, argv, "f:b:o:Q:q:r:c:j:t:pPh", MT_CMDLINE_LOPTS, NULL)) != -1) {
+    while ((opt = getopt_long(argc, argv, "f:b:o:Q:q:r:j:c:t:pPh", MT_CMDLINE_LOPTS, NULL)) != -1) {
         switch (opt) {
             case 'f': config.reference_file = optarg;                    break;
             case 'o': config.output_file    = optarg;                    break;
@@ -80,8 +78,8 @@ MtVariantCaller::MtVariantCaller(int argc, char* argv[]) {
             case 'Q': config.min_baseq               = std::atoi(optarg); break;
             case 'q': config.min_mapq                = std::atoi(optarg); break;
             case 'r': config.calling_regions         = optarg;            break;
-            case 'c': config.chunk_size              = std::atoi(optarg); break;
             case 'j': config.heteroplasmy_threshold  = std::atof(optarg); break;
+            case 'c': config.chunk_size              = std::atoi(optarg); break;
             case 't': config.thread_count            = std::atoi(optarg); break;
 
             case 'p': config.pairs_map_only          = true; break;
