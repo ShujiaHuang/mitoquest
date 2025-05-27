@@ -320,13 +320,13 @@ def mitotip(anno_file_path):
         for row in reader:
             prediction = ''
             if row["Quartile"] == "Q1":
-                prediction = "likely pathogenic"
+                prediction = "confirmed_pathogenic" if row["Mitomap_Status"] == "Confirmed" else "likely_pathogenic"
             elif row["Quartile"] == "Q2":
-                prediction = "possibly pathogenic"
+                prediction = "possibly_pathogenic"
             elif row["Quartile"] == "Q3":
-                prediction = "possibly benign"
+                prediction = "possibly_benign"
             elif row["Quartile"] == "Q4":
-                prediction = "likely benign"
+                prediction = "likely_benign"
                 
             dict[(row["rCRS"], row["Position"], row["Alt"])] = prediction
 
