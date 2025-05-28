@@ -512,6 +512,8 @@ def main():
                     newSAMPLES = []
                     for sample_name, sample_data in zip(_SAMPLES, SAMPLES):
                         if sample_data.startswith('.'):
+                            sample_data = sample_data.strip()+":"
+                            newSAMPLES.append(sample_data)
                             continue
                         
                         GT,GQ,DP,AD,HF,CI,HQ,LHF,SB,FS,SOR,VT = sample_data.split(':')
