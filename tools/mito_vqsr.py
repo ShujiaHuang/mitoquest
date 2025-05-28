@@ -62,7 +62,7 @@ def load_data(input_vcf_file):
                 helix_af_hom_list   = re.findall(r';?helix_af_hom=([^;]+)', INFO)[0].split(',')
                 helix_af_het_list   = re.findall(r';?helix_af_het=([^;]+)', INFO)[0].split(',')
                 mitomap_af_list     = re.findall(r';?mitomap_af=([^;]+)', INFO)[0].split(',')
-                mitomap_status_list = re.findall(r';?mitomap_status=([^;]+)', INFO)[0].split(',')
+                mitomap_status_list = re.findall(r'mitomap_status=(.*?);mitomap_plasmy', INFO)[0].split(',')
                 
                 GT,GQ,DP,AD,HF,CI,HQ,LHF,SB,FS,SOR,VT = sample_data.split(':')
                 GT_list = GT.split('/')
@@ -370,9 +370,8 @@ def main():
     # parser.add_argument('-T', '--resource', type=str, required=True, action='append', default=[],  
     #                     help='A list of sites for which to apply a prior probability of being correct but which aren\'t '
     #                          'used by the algorithm (training and truth sets are required to run). Specified at least once. Required.')
-    # parser.add_argument('-an', '--annotation', type=str, required=True, action='append', default=['AD', 'HF', 'HQ'], 
-    #                     help='The names of the annotations which should used for calculations. '
-    #                          'This argument must be specified at least once.')
+    parser.add_argument('-an', '--annotation', type=str, action='store', default='AD,HF,HQ', 
+                        help='The names of the annotations which should used for calculations separated by commas.')
     parser.add_argument('--max-gaussians', dest='max_gaussians', type=int, action='store', default=10, 
                         help='Maximum number of Gaussians that will be used for the positive recalibration model in VQSR (default: 10)')
     parser.add_argument('--max-neg-gaussians', dest='max_neg_gaussians', type=int, action='store',default=10, 
@@ -383,8 +382,8 @@ def main():
     parser.add_argument('-rgm', '--positive_to_negative_rate', type=float, action='store', default=0.98, 
                         help='Ratio of good values to total good values after Good module to select subdataset (Bad values) to train Bad GMM model (default: 0.98)')
     parser.add_argument('-pr', '--pass_ratio', type=float, action='store', default=0.5, help='Ratio of Good Allels to total Allels per POS to label a site as PASS or LowQual (default: 0.5)')
-    parser.add_argument('-fmr', '--final_res_ratio', type=float, action='store', default=0.99, help='The Good ratio of the final result is used to determine whether the value is good or bad (default: 0.99)')
-
+    parser.add_argument('-frr', '--final_res_ratio', type=float, action='store', default=0.99, help='The Good ratio of the final result is used to determine whether the value is good or bad (default: 0.99)')
+    parser.add_argument('-daf', '--database_allele_freq', type=float, action='store', default=0.01, help='The database allele frequency cutoff to label a site as good training data (default: 0.01)')
     args = parser.parse_args()
     
     # load data
@@ -399,20 +398,22 @@ def main():
     # select sites with good quality: 1 means good quality, 0 means bad quality
     logging.info('Select high good quality datasets, like reported or AF>0.01 in other database ...')
     HQcolname = 'is_training_site'
-    dataset[HQcolname] = dataset.apply(lambda row: 1 if (row['gnomad_af']  >=0.01 or # row['mitomap_status'] != '' or 
-                                                         row['helix_af']   >=0.01 or # row['AF']>=0.05 or
-                                                         row['mitomap_af'] >=0.01) else 0, axis=1)
+    dataset[HQcolname] = dataset.apply(lambda row: 1 if (row['gnomad_af']  > args.database_allele_freq or # row['mitomap_status'] != '' or 
+                                                         row['helix_af']   > args.database_allele_freq or # row['AF']>=0.05 or
+                                                         row['mitomap_af'] > args.database_allele_freq ) else 0, axis=1)
     
     logging.info('Z-score normalize data and select good training data')
-    dataset[['ADz', 'HFz', 'HQz']] = dataset[['AD', 'HF', 'HQ']].apply(zscore)
-    dataset_zscore = np.array(dataset[['ADz', 'HFz', 'HQz']])
+    annotation_list = args.annotation.split(',')
+    annotation_list_zscore = [item + 'z' for item in annotation_list]
+    dataset[annotation_list_zscore] = dataset[annotation_list].apply(zscore)
+    dataset_zscore = np.array(dataset[annotation_list_zscore])
     
     HQ_dataset = dataset[dataset[HQcolname] == 1]
     HQ_dataset_alt = HQ_dataset[HQ_dataset['GT'] !='0']
     HQ_dataset_ref = HQ_dataset[HQ_dataset['GT'] =='0']
     tmp_good_train_data = combine_df(HQ_dataset_alt, HQ_dataset_ref)
     good_train_value_list = tmp_good_train_data["Sample_name_POS_GT"].tolist()
-    good_train_data = np.array(tmp_good_train_data[['ADz', 'HFz', 'HQz']])
+    good_train_data = np.array(tmp_good_train_data[annotation_list_zscore])
     dataset['good_train_value'] = dataset['Sample_name_POS_GT'].isin(good_train_value_list).astype(int)
 
     logging.info('Retain values of good training data within ± 6 standard deviations of the mean')
@@ -429,7 +430,7 @@ def main():
     logging.info('Select the Bad training data set to build the Bad GMM model and evaluate on test data')
     bad_lod_cutoff = calculate_worst_lod_cutoff(dataset, HQcolname, 'good_lod', target_ratio=args.positive_to_negative_rate)
     dataset['Good_module_res'] = dataset.apply(lambda row: label_uncertain(row, HQcolname, 'good_lod', bad_lod_cutoff), axis=1)
-    bad_train_data = np.array(dataset[(dataset['Good_module_res']=='Bad')][['ADz', 'HFz', 'HQz']])
+    bad_train_data = np.array(dataset[(dataset['Good_module_res']=='Bad')][annotation_list_zscore])
     bad_train_data_filtered = clean_data(bad_train_data)
     
     bad_module_n_components = args.bad_module_n_components if args.bad_module_n_components else None
@@ -531,7 +532,8 @@ def main():
                     print(CHROM,POS,ID,REFs,ALTs,QUAL,FILTER,INFO,FORMAT, *newSAMPLES, sep='\t', file=OUT_VCF)
                 
     logging.info('Output the final result to CSV file....')
-    dataset.drop(columns=['Reported_AFgt005','ADz', 'HFz', 'HQz', 'scores_Good', 'Good_module_res', 'scores_Bad', 'Good_ratio', 'Bad_ratio'], inplace=True)
+    dataset.drop(columns=[HQcolname, 'good_lod', 'Good_module_res', 'bad_lod', 'Good_ratio', 'Bad_ratio'], inplace=True)
+    dataset.drop(columns=annotation_list_zscore, inplace=True)
     with open(args.output_csv_file.strip('.csv')+'.log', 'a') as f:
         print("\n############### POS statistics after GMM Filtering ###############", file=f)
         print("Total number of positions: ", POS_count, file=f)
