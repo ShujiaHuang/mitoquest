@@ -39,6 +39,8 @@ def modify_single_sample(sample, HF_cutoff, HQ_cutoff, AD_cutoff):
     VT_list = VT.split(',')
     index_list = []
     for index in range(len(GT.split('/'))):
+        if AD_list[index] == '.' or HF_list[index] == '.' or HQ_list[index] == '.':
+            continue
         if float(AD_list[index]) >= AD_cutoff and float(HF_list[index]) >= HF_cutoff and float(HQ_list[index]) >= HQ_cutoff:
             index_list.append(index)
     GT = '/'.join([str(GT_list[i]) for i in index_list])
@@ -128,7 +130,7 @@ def modify_line(line, HF_cutoff, HQ_cutoff, AD_cutoff):
         GT,*_ = sample.split(':')
         new_GT = update_gt(GT, index_map)
         new_samples_list.append(':'.join([new_GT,*_]))
-    line = '\t'.join([CHROM,POS,ID,REF,newALT,QUAL,FILTER,newINFO,FORMAT]+new_samples_list)
+    line = '\t'.join([CHROM,POS,ID,REF,newALT,QUAL,FILTER,INFO,FORMAT]+new_samples_list)
     return line, newALT
 
 def main():
@@ -169,8 +171,8 @@ def main():
         print(f"Filtered sites by AD-{args.AD_cutoff}, HF-{args.HF_cutoff}, and HQ-{args.HQ_cutoff} cutoffs: {len(filtered_line)}:\n{filtered_line}")
         print(f"Filtered sites by ALT (ALT need lt 3): {len(filtered_ALT)}:\n{filtered_ALT}")
         print(f'Total remained sites: {total_line - len(block_poses) - len(filtered_line) - len(filtered_ALT)}')
-    subprocess.run(["bcftools", "view", "-Oz", "-o", args.output_vcf+".gz", args.output_vcf])
-    subprocess.run(["bcftools", "index", args.output_vcf+".gz"]) 
+    # subprocess.run(["bcftools", "view", "-Oz", "-o", args.output_vcf+".gz", args.output_vcf])
+    # subprocess.run(["bcftools", "index", args.output_vcf+".gz"]) 
 if __name__ == '__main__':
     main()
     

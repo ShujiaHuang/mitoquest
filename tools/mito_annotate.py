@@ -809,18 +809,18 @@ def annotate(input_file, annotated_txt, annotated_vcf, anno_file_path):
                         "rRNA_bridge_base="      + RNA_bridge                                          + ';' + \
                         "uniprot_annotation="    + uniprot_annot                                       + ';' + \
                         "other_prot_annotation=" + other_prot_annot                                    + ';' + \
-                        "apogee_class="          + ','.join([r for r in apogee_score_list if r!=''])   + ';' + \
-                        "mitotip_class="         + ','.join([r for r in mitotip_score_list if r!=''])  + ';' + \
-                        "hmtvar_class="          + ','.join([r for r in hmtvar_scores_list if r!=''])  + ';' + \
+                        "apogee_class="          + ','.join(apogee_score_list)                         + ';' + \
+                        "mitotip_class="         + ','.join(map(str, mitotip_score_list))              + ';' + \
+                        "hmtvar_class="          + ','.join(map(str, hmtvar_scores_list))              + ';' + \
                         "helix_max_hl="          + ','.join(map(str, helix_max_hl_list))               + ';' + \
                         "helix_af_hom="          + ','.join(map(str, helix_af_hom_list))               + ';' + \
                         "helix_af_het="          + ','.join(map(str, helix_af_het_list))               + ';' + \
                         "mitomap_gbcnt="         + ','.join(map(str, mitomap_ac_list))                 + ';' + \
                         "mitomap_af="            + ','.join(map(str, mitomap_af_list))                 + ';' + \
-                        "mitomap_status="        + ','.join([r for r in mitomap_status_list if r!='']) + ';' + \
-                        "mitomap_plasmy="        + ','.join([r for r in mitomap_plasmy_list if r!='']) + ';' + \
-                        "mitomap_disease="       + ','.join([r for r in mitomap_dz_list if r!=''])     + ';' + \
-                        "clinvar_interp="        + ','.join([r for r in clinvar_int_list if r!=''])    + ';' + \
+                        "mitomap_status="        + ','.join(mitomap_status_list)                       + ';' + \
+                        "mitomap_plasmy="        + ','.join(mitomap_plasmy_list)                       + ';' + \
+                        "mitomap_disease="       + ','.join(mitomap_dz_list)                           + ';' + \
+                        "clinvar_interp="        + ','.join(clinvar_int_list)                          + ';' + \
                         "chimp_ref="             + chimp_ref_str
                         
             INFO = INFO.strip() + ';' + anno_info
