@@ -31,26 +31,6 @@ enum class SeqType {
     SE      // Single-end sequencing
 };
 
-// define data types for variant calling
-struct GenomeRegion {
-    std::string chrom; // chromosome name
-    uint32_t start;    // 0-based start position
-    uint32_t end;      // 0-based end position (exclusive)
-
-    GenomeRegion() : chrom(""), start(0), end(0) {};
-    GenomeRegion(const std::string& rid, uint32_t s, uint32_t e) : chrom(rid), start(s), end(e) {
-        if (start > end) {
-            throw std::invalid_argument("[ERROR] start postion is larger than end position in "
-                                        "GenomeRegion: " + chrom + ":" + std::to_string(start) + 
-                                        "-" + std::to_string(end));
-        }
-    };
-
-    std::string to_string() const {
-        return chrom + ":" + std::to_string(start) + "-" + std::to_string(end);
-    }
-};
-
 struct AlignBase {
     std::string ref_base;
     std::string read_base; // read base (could be a base or indels sequence)

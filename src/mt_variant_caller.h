@@ -18,6 +18,7 @@
 #include "io/fasta.h"
 #include "io/bam.h"
 #include "io/iobgzf.h"
+#include "io/utils.h"
 #include "external/thread_pool.h"
 
 #include "basetype.h"
@@ -59,31 +60,31 @@ private:
     std::string _cmdline_string;
     Config _config;                                // command line options
     std::vector<std::string> _samples_id;          // sample ID of all alignment files (BAM/CRAM/SAM)
-    std::vector<GenomeRegion> _calling_intervals;  // vector of calling regions
+    std::vector<ngslib::GenomeRegion> _calling_intervals;  // vector of calling regions
 
     // Helper methods
     void _get_calling_interval();                  // load the calling region from input
     void _print_calling_interval();
     void _get_sample_id_from_bam();
-    GenomeRegion _make_genome_region(std::string gregion);
+    ngslib::GenomeRegion _make_genome_region(std::string gregion);
 
     void _caller_process();  // main process function
-    bool _fetch_base_in_region(const GenomeRegion genome_region, std::vector<PosVariantMap> &samples_pileup_v);
+    bool _fetch_base_in_region(const ngslib::GenomeRegion genome_region, std::vector<PosVariantMap> &samples_pileup_v);
 
     // integrate the variant information of all samples in the region
     bool _variant_discovery(const std::vector<PosVariantMap> &samples_pileup_v, 
-                            const GenomeRegion genome_region,
+                            const ngslib::GenomeRegion genome_region,
                             const std::string out_vcf_fn);
 };
 
 PosVariantMap call_pileup_in_sample(const std::string sample_bam_fn, 
                                     const std::string &fa_seq,
-                                    const GenomeRegion gr,
+                                    const ngslib::GenomeRegion gr,
                                     const MtVariantCaller::Config &config);
 
 void seek_position(const std::string &fa_seq,   // must be the whole chromosome sequence
                    const std::vector<ngslib::BamRecord> &sample_map_reads,
-                   const GenomeRegion gr,
+                   const ngslib::GenomeRegion gr,
                    const int min_baseq,
                    const double min_af,
                    PosMap &sample_posinfo_map);

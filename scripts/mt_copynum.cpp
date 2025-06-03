@@ -25,6 +25,7 @@
 #include <htslib/faidx.h>
 
 #include "mt_utils.h"  // SeqType,
+#include "io/utils.h"
 
 // Structure to hold statistics
 struct Statistics {
@@ -118,7 +119,7 @@ void thread_safe_output(const std::string& message) {
 
 /*** Function to calculate the GC content ***/ 
 // Function to calculate GC content for a specific interval
-double calculate_interval_gc_content(faidx_t* fai, const GenomeRegion& interval) {
+double calculate_interval_gc_content(faidx_t* fai, const ngslib::GenomeRegion& interval) {
     if (!fai) {
         thread_safe_output("Error: Invalid FASTA index\n");
         return -1.0;
@@ -189,20 +190,20 @@ public:
             return -1.0;
         }
         
-        GenomeRegion interval(chrom_name, 0, length);
+        ngslib::GenomeRegion interval(chrom_name, 0, length);
         return calculate_interval_gc_content(fai, interval);
     }
 
     // Calculate GC content for a specific interval
-    double calculate_interval_gc(const GenomeRegion& interval) {
+    double calculate_interval_gc(const ngslib::GenomeRegion& interval) {
         return calculate_interval_gc_content(fai, interval);
     }
 
     // Calculate GC content for multiple intervals in parallel
-    void calculate_intervals_gc(std::vector<std::pair<GenomeRegion, double>>& intervals_gc) {
+    void calculate_intervals_gc(std::vector<std::pair<ngslib::GenomeRegion, double>>& intervals_gc) {
         std::vector<std::thread> threads;
         
-        auto gc_worker = [this](std::pair<GenomeRegion, double>& interval_gc) {
+        auto gc_worker = [this](std::pair<ngslib::GenomeRegion, double>& interval_gc) {
             double gc = calculate_interval_gc_content(this->fai, interval_gc.first);
             std::lock_guard<std::mutex> lock(gc_mutex);
             interval_gc.second = gc;
@@ -220,7 +221,7 @@ public:
     }
 
     // Parse interval string (e.g., "chr1:1000-2000")
-    static GenomeRegion parse_interval(const std::string& interval_str) {
+    static ngslib::GenomeRegion parse_interval(const std::string& interval_str) {
         std::regex interval_regex("([^:]+):([0-9]+)-([0-9]+)");
         std::smatch matches;
         
@@ -232,7 +233,7 @@ public:
         int64_t start = std::stoll(matches[2]) - 1;  // Convert to 0-based
         int64_t end = std::stoll(matches[3]);
         
-        return GenomeRegion(chrom, start, end);
+        return ngslib::GenomeRegion(chrom, start, end);
     }
 };
 

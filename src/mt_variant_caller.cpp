@@ -219,7 +219,7 @@ void MtVariantCaller::_get_sample_id_from_bam() {
 }
 
 void MtVariantCaller::_get_calling_interval() {
-    std::vector<GenomeRegion> regions;
+    std::vector<ngslib::GenomeRegion> regions;
     if (!_config.calling_regions.empty()) {
         std::vector<std::string> rg_v;
         ngslib::split(_config.calling_regions, rg_v, ",");
@@ -233,7 +233,7 @@ void MtVariantCaller::_get_calling_interval() {
         int n = reference.nseq();
         for (size_t i(0); i < n; ++i) {
             std::string ref_id = reference.iseq_name(i);
-            regions.push_back(GenomeRegion(ref_id, 1, reference.seq_length(ref_id)));
+            regions.push_back(ngslib::GenomeRegion(ref_id, 1, reference.seq_length(ref_id)));
         }
     }
 
@@ -244,14 +244,14 @@ void MtVariantCaller::_get_calling_interval() {
             // split region into small pieces by chunk_size
             uint32_t start = regions[i].start + j;
             uint32_t end = std::min(regions[i].end, start + _config.chunk_size - 1);
-            _calling_intervals.push_back(GenomeRegion(regions[i].chrom, start, end));
+            _calling_intervals.push_back(ngslib::GenomeRegion(regions[i].chrom, start, end));
         }
     }
 
     return;
 }
 
-GenomeRegion MtVariantCaller::_make_genome_region(std::string gregion) {
+ngslib::GenomeRegion MtVariantCaller::_make_genome_region(std::string gregion) {
     // Genome Region, 1-based
     std::string ref_id;
     uint32_t reg_start, reg_end;
@@ -275,7 +275,7 @@ GenomeRegion MtVariantCaller::_make_genome_region(std::string gregion) {
                                     "-r/--regions " + gregion);
     }
 
-    return GenomeRegion(ref_id, reg_start, reg_end);  // 1-based
+    return ngslib::GenomeRegion(ref_id, reg_start, reg_end);  // 1-based
 }
 
 void MtVariantCaller::_print_calling_interval() {
@@ -343,7 +343,7 @@ void MtVariantCaller::_caller_process() {
     }
 }
 
-bool MtVariantCaller::_fetch_base_in_region(const GenomeRegion gr, std::vector<PosVariantMap> &samples_pileup_v) {
+bool MtVariantCaller::_fetch_base_in_region(const ngslib::GenomeRegion gr, std::vector<PosVariantMap> &samples_pileup_v) {
     ThreadPool thread_pool(this->_config.thread_count);  // set multiple-thread
 
     std::vector<std::future<PosVariantMap>> pileup_results;
@@ -381,7 +381,8 @@ bool MtVariantCaller::_fetch_base_in_region(const GenomeRegion gr, std::vector<P
     return is_empty;  // no cover reads in 'GenomeRegion' if empty.
 }
 
-bool MtVariantCaller::_variant_discovery(const std::vector<PosVariantMap> &samples_pileup_v, const GenomeRegion gr,
+bool MtVariantCaller::_variant_discovery(const std::vector<PosVariantMap> &samples_pileup_v, 
+                                         const ngslib::GenomeRegion gr,
                                          const std::string out_vcf_fn)
 {
     // 1. integrate the variant information of all samples in the region
@@ -437,14 +438,14 @@ bool MtVariantCaller::_variant_discovery(const std::vector<PosVariantMap> &sampl
 // Seek the base information of each sample in the region.
 PosVariantMap call_pileup_in_sample(const std::string sample_bam_fn, 
                                     const std::string &fa_seq,
-                                    const GenomeRegion gr,
+                                    const ngslib::GenomeRegion gr,
                                     const MtVariantCaller::Config &config) 
 {
     // The expend size of region, 100bp is enough.
     static const uint32_t REG_EXTEND_SIZE = 100;
-    GenomeRegion gr_extend(gr.chrom,                                                     // Reference id
-                           gr.start > REG_EXTEND_SIZE ? gr.start - REG_EXTEND_SIZE : 1,  // start
-                           gr.end + REG_EXTEND_SIZE);                                    // end
+    ngslib::GenomeRegion gr_extend(gr.chrom,                                                     // Reference id
+                                   gr.start > REG_EXTEND_SIZE ? gr.start - REG_EXTEND_SIZE : 1,  // start
+                                   gr.end + REG_EXTEND_SIZE);                                    // end
     std::string rg_extend_str = gr_extend.to_string(); // chr:start-end
 
     // 位点信息存入该变量, 且由于是按区间读取比对数据，key 值无需包含 ref_id，已经不言自明
@@ -510,7 +511,7 @@ PosVariantMap call_pileup_in_sample(const std::string sample_bam_fn,
 
 void seek_position(const std::string &fa_seq,                               // must be the whole chromosome sequence
                    const std::vector<ngslib::BamRecord> &sample_map_reads,  // record the alignment reads of sample
-                   const GenomeRegion gr,
+                   const ngslib::GenomeRegion gr,
                    const int min_baseq,
                    const double min_af,
                    PosMap &sample_posinfo_map)  // key: position, value: alignment information

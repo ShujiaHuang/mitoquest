@@ -17,6 +17,27 @@
 #include <cstdint>    // uint32_t
 
 namespace ngslib {
+
+    // define data types for variant calling
+    struct GenomeRegion {
+        std::string chrom; // chromosome name
+        uint32_t start;    // 0-based start position
+        uint32_t end;      // 0-based end position (exclusive)
+
+        GenomeRegion() : chrom(""), start(0), end(0) {};
+        GenomeRegion(const std::string& rid, uint32_t s, uint32_t e) : chrom(rid), start(s), end(e) {
+            if (start > end) {
+                throw std::invalid_argument("[ERROR] start postion is larger than end position in "
+                                            "GenomeRegion: " + chrom + ":" + std::to_string(start) + 
+                                            "-" + std::to_string(end));
+            }
+        };
+
+        std::string to_string() const {
+            return chrom + ":" + std::to_string(start) + "-" + std::to_string(end);
+        }
+    };
+
     // Get a path that unambiguously identifies the location of a file.
     std::string abspath(const std::string file_path);
 
@@ -35,7 +56,6 @@ namespace ngslib {
     // Template function can only be defined in C++ header file
     template<typename T>
     std::string tostring(const T &value) {
-
         std::ostringstream ss;
         ss << value;
         return ss.str();
