@@ -12,10 +12,10 @@ void MtVariantCaller::usage(const Config &config) {
 
               << "Optional options:\n"
               << "  -b, --bam-list FILE        list of input BAM/CRAM filenames, one per line.\n"
-              << "                             REG format: chr:start-end (e.g.: chrM or chrM:1-1000,chrM:8000-8200)\n"
               << "  -Q, --min-BQ INT           skip bases with base quality smaller than INT (default: " << config.min_baseq << ")\n"
               << "  -q, --min-MQ INT           skip alignments with mapQ smaller than INT (default: " << config.min_mapq  << ")\n"
               << "  -r, --regions REG[,...]    Comma separated list of regions in which to process (default: entire genome).\n"
+              << "                             REG format: chr:start-end (e.g.: chrM or chrM:1-1000,chrM:8000-8200)\n"
               << "  -p, --pairs-map-only       Only use the paired reads which mapped to the some chromosome.\n"
               << "  -P, --proper-pairs-only    Only use properly paired reads.\n"
               << "  --filename-has-samplename  Setting this argument could save time by preventing the sample ID from being obtained \n"
