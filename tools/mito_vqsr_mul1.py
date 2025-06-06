@@ -407,7 +407,7 @@ def main():
     #                     help='A list of sites for which to apply a prior probability of being correct but which aren\'t '
     #                          'used by the algorithm (training and truth sets are required to run). Specified at least once. Required.')
     parser.add_argument('-an', '--annotation', type=str, action='store', default='AD,HF,HQ', 
-                        help='The names of the annotations which should used for calculations separated by commas.')
+                        help='The names of the annotations which should used for calculations separated by commas. Default: AD,HF,HQ')
     parser.add_argument('--max-gaussians', dest='max_gaussians', type=int, action='store', default=10, 
                         help='Maximum number of Gaussians that will be used for the positive recalibration model in VQSR (default: 10)')
     parser.add_argument('--max-neg-gaussians', dest='max_neg_gaussians', type=int, action='store',default=10, 
@@ -425,6 +425,7 @@ def main():
     
     # load data
     logging.info('Loading data ...')
+    annotation_list = args.annotation.split(',')
 
     # dataset = load_data(args.input_vcf_file)
     load_data(args.input_vcf_file, args.input_vcf_file , args.threads)
@@ -433,7 +434,7 @@ def main():
     dataset['Sample_name_POS_GT'] = dataset['Sample_name'] + '_' + dataset['POS'] + '_' + dataset['GT']
     dataset['gnomad_af'] = dataset['gnomad_af_het'] + dataset['gnomad_af_hom']
     dataset['helix_af']  = dataset['helix_af_het'] + dataset['helix_af_hom']
-    dataset[['AF', 'gnomad_af', 'helix_af', 'mitomap_af', 'AD', 'HF', 'HQ']] = dataset[['AF', 'gnomad_af', 'helix_af', 'mitomap_af', 'AD', 'HF', 'HQ']].apply(pd.to_numeric, errors='coerce')
+    dataset[['AF', 'gnomad_af', 'helix_af', 'mitomap_af'] + annotation_list] = dataset[['AF', 'gnomad_af', 'helix_af', 'mitomap_af']+annotation_list].apply(pd.to_numeric, errors='coerce')
 
     # select sites with good quality: 1 means good quality, 0 means bad quality
     logging.info('Select high good quality datasets, like reported or AF>0.01 in other database ...')
@@ -448,7 +449,6 @@ def main():
     dataset[HQcolname] = cond.astype(int)
         
     logging.info('Z-score normalize data and select good training data')
-    annotation_list = args.annotation.split(',')
     annotation_list_zscore = [item + 'z' for item in annotation_list]
     dataset[annotation_list_zscore] = dataset[annotation_list].apply(zscore)
     dataset_zscore = np.array(dataset[annotation_list_zscore])
@@ -543,7 +543,7 @@ def main():
                 if line.startswith('#'):
                     if line.startswith('#CHROM'):
                         OUT_VCF.write(f'##FORMAT=<ID=LODR,Number=R,Type=Float,Description="An ordered, comma delimited Log-Likelihood Difference for non-reference allele alleles in the order listed">\n')
-                        OUT_VCF.write(f'##mito_classifier_command=python {" ".join(sys.argv)}\n')
+                        OUT_VCF.write(f'##mito_vqsr_command=python {" ".join(sys.argv)}\n')
                         _SAMPLES = line.strip().split('\t')[9:]
                         
                     OUT_VCF.write(line)

@@ -395,7 +395,7 @@ def main():
     dataset['Sample_name_POS_GT'] = dataset['Sample_name'] + '_' + dataset['POS'] + '_' + dataset['GT']
     dataset['gnomad_af'] = dataset['gnomad_af_het'] + dataset['gnomad_af_hom']
     dataset['helix_af']  = dataset['helix_af_het'] + dataset['helix_af_hom']
-    dataset[['AF', 'gnomad_af', 'helix_af', 'mitomap_af'] + annotation_list] = dataset[['AF', 'gnomad_af', 'helix_af', 'mitomap_af', 'AD', 'HF', 'HQ']].apply(pd.to_numeric, errors='coerce')
+    dataset[['AF', 'gnomad_af', 'helix_af', 'mitomap_af'] + annotation_list] = dataset[['AF', 'gnomad_af', 'helix_af', 'mitomap_af']+annotation_list].apply(pd.to_numeric, errors='coerce')
 
     # select sites with good quality: 1 means good quality, 0 means bad quality
     logging.info('Select high good quality datasets, like reported or AF>0.01 in other database ...')
