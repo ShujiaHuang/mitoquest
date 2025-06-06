@@ -135,6 +135,7 @@ def modify_line(line, HF_cutoff, HQ_cutoff, AD_cutoff):
 
 def main():
     import argparse
+    import gzip
     parser = argparse.ArgumentParser(description='Filter variants based on the following 3 criteria: 1. Non blocklisted regions; 2. HF, AD and LHF cutoffs; 3. ALT number need lt 3 after filtering by AD, HF, and LHF.')
     parser.add_argument('-i', '--input_vcf', type=str, required=True, help='Input vcf file')
     parser.add_argument('-f', '--HF_cutoff',  type=float, required=True, help='HF cutoff')
@@ -142,7 +143,7 @@ def main():
     parser.add_argument('-d', '--AD_cutoff',  type=float, required=True, help='AD cutoff')
     parser.add_argument('-o', '--output_vcf', type=str, required=True, help='Output vcf file')
     args = parser.parse_args()
-    with open(args.input_vcf, 'r') as inputf, open(args.output_vcf, 'w') as outf:
+    with gzip.open(args.input_vcf, 'rt') if args.input_vcf.endswith('.gz') else open(args.input_vcf, 'r') as inputf, open(args.output_vcf, 'w') as outf:
         total_line = 0
         block_poses = []
         filtered_line = []
@@ -171,8 +172,8 @@ def main():
         print(f"Filtered sites by AD-{args.AD_cutoff}, HF-{args.HF_cutoff}, and HQ-{args.HQ_cutoff} cutoffs: {len(filtered_line)}:\n{filtered_line}")
         print(f"Filtered sites by ALT (ALT need lt 3): {len(filtered_ALT)}:\n{filtered_ALT}")
         print(f'Total remained sites: {total_line - len(block_poses) - len(filtered_line) - len(filtered_ALT)}')
-    # subprocess.run(["bcftools", "view", "-Oz", "-o", args.output_vcf+".gz", args.output_vcf])
-    # subprocess.run(["bcftools", "index", args.output_vcf+".gz"]) 
+    subprocess.run(["bcftools", "view", "-Oz", "-o", args.output_vcf+".gz", args.output_vcf])
+    subprocess.run(["bcftools", "index", args.output_vcf+".gz"]) 
 if __name__ == '__main__':
     main()
     
