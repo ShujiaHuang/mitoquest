@@ -6,6 +6,7 @@ Date: 2025-06-05
 """
 import argparse
 import gzip
+import sys
 import re
 
 import logging
@@ -542,7 +543,7 @@ def main():
                 if line.startswith('#'):
                     if line.startswith('#CHROM'):
                         OUT_VCF.write(f'##FORMAT=<ID=LODR,Number=R,Type=Float,Description="An ordered, comma delimited Log-Likelihood Difference for non-reference allele alleles in the order listed">\n')
-                        OUT_VCF.write(f'##mito_classifier_command=python GMM_classifier.py -i {args.input_vcf_file} -o {args.output_vcf_file} -c {args.output_csv_file} -f {args.figure_file}\n')
+                        OUT_VCF.write(f'##mito_classifier_command=python {" ".join(sys.argv)}\n')
                         _SAMPLES = line.strip().split('\t')[9:]
                         
                     OUT_VCF.write(line)
