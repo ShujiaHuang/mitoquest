@@ -60,7 +60,8 @@ def parse_line(line, SAMPLES):
             else:
                 raise ValueError(f"{CHROM}:{POS} Gene symbol not found in INFO field.")
         try:
-            GT,GQ,DP,AD,HF,CI,HQ,LHF,SB,FS,SOR,VT,LODR = sample_data.split(':')
+            # GT,GQ,DP,AD,HF,CI,HQ,LHF,SB,FS,SOR,VT,LODR = sample_data.split(':')
+            GT,GQ,DP,AD,HF,*_ = sample_data.split(':')
         except:
             if sample_data.startswith('.'):
                 continue
