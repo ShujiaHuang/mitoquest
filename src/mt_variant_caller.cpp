@@ -435,7 +435,7 @@ bool MtVariantCaller::_variant_discovery(const std::vector<PosVariantMap> &sampl
     return is_empty;  // no variant in the region if empty.
 }
 
-// Seek the base information of each sample in the region.
+// Seek the base information in the region for each sample.
 PosVariantMap call_pileup_in_sample(const std::string sample_bam_fn, 
                                     const std::string &fa_seq,
                                     const ngslib::GenomeRegion gr,
@@ -457,10 +457,11 @@ PosVariantMap call_pileup_in_sample(const std::string sample_bam_fn,
 
         ngslib::BamRecord al;  // alignment read
         while (bf.next(al) >= 0) {  // -1 => hit the end of alignement file.
-            if (al.mapq() < config.min_mapq || al.is_duplicate() || al.is_qc_fail() ||
+            if ((al.mapq() < config.min_mapq) || al.is_duplicate() || al.is_qc_fail() ||
                 (al.is_paired() && config.proper_pairs_only && !al.is_proper_pair()))
             {
-                // std::cout << "[TEST] " << al.qname() << " al.mapq: " << al.mapq() << " al.is_duplicate: " << al.is_duplicate() << " al.is_qc_fail: " <<  al.is_qc_fail() << std::endl;
+                // std::cout << "[TEST] " << al.qname() << " al.mapq: " << al.mapq() << " al.is_duplicate: " 
+                //           << al.is_duplicate() << " al.is_qc_fail: " <<  al.is_qc_fail() << std::endl;
                 continue;
             }
 

@@ -815,6 +815,7 @@ namespace ngslib {
             char c = ref[prefix_len];
             bool has_prefix = true;
             for (const auto& alt : alts) {
+                // 只在相同长度的序列中找共同前缀
                 if ((alt.length() != ref.length()) || (prefix_len >= alt.length()) || (alt[prefix_len] != c)) {
                     has_prefix = false;
                     break;
@@ -848,9 +849,9 @@ namespace ngslib {
             }
         }
     
-        // 3.3 如果有共同前缀或后缀，删除它们（前缀保留一个碱基）
-        if (prefix_len > 1 || suffix_len > 0) {
-            prefix_len = prefix_len > 1 ? prefix_len - 1 : 0;  // 前缀保留一个碱基
+        // 3.3 如果有共同前缀或后缀，删除它们（前缀要保留至少一个碱基）
+        if (prefix_len > 0 || suffix_len > 0) {
+            prefix_len = prefix_len > 1 ? prefix_len - 1 : 0;  // 前缀要保留至少一个碱基
             size_t new_len = ref.length() - prefix_len - suffix_len;
             simplified_ref = ref.substr(prefix_len, new_len);
             
@@ -879,6 +880,7 @@ namespace ngslib {
         );
 
         // 7. 如果前缀被删除，需要更新位置
+        // 此时的 prefix_len 已在 3.3 代码中被更为原始 prefix_len - 1，所以和 0 对比即可
         if (prefix_len > 0) {
             _b->pos += prefix_len;  // 更新变异位置
         }

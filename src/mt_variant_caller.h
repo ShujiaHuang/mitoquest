@@ -35,7 +35,7 @@ public:
         std::string output_file;            // output VCF file
 
         int min_mapq;                       // a mapping quality score less than this value will be filtered
-        int min_baseq;  // a base quality score less than this value will be filtered (按照我的模型，这个参数没什么必要)
+        int min_baseq;                      // a base quality score less than this value will be filtered
         float heteroplasmy_threshold;
         int thread_count;
         int chunk_size;               // Process this many bases per thread
@@ -46,7 +46,7 @@ public:
     ngslib::Fasta reference;          // reference fasta object
 
     explicit MtVariantCaller(int argc, char* argv[]);
-    ~MtVariantCaller() { /*析构函数的实现，如果不需要特殊操作，则为空*/ }
+    ~MtVariantCaller() = default; /*析构函数的实现，不需要特殊操作，放空*/
 
     // Main processing function
     void usage(const Config &config);
