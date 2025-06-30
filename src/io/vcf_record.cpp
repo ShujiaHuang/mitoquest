@@ -917,7 +917,7 @@ namespace ngslib {
         }
         if (max_ploidy <= 0) return -1;
         
-        // 为所有按照最大倍性样本分配空间
+        // 按照最大倍性为样本分配空间
         std::vector<int32_t> gt_arr(n_samp * max_ploidy);
         
         // 6. 为每个样本设置基因型
@@ -945,7 +945,7 @@ namespace ngslib {
         // 7. 更新记录中的基因型数据
         int ret = bcf_update_genotypes(hdr.hts_header(), _b.get(), gt_arr.data(), n_samp * max_ploidy);
 
-        // 检查格式大小是否改变
+        // 检查最大倍性的大小是否发生了改变
         if (ret >= 0 && _b->n_fmt > 0) {
             bcf_fmt_t *fmt = &_b->d.fmt[gt_idx];
             if (get_max_ploidy(hdr) != original_ploidy) {
