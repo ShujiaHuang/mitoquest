@@ -40,25 +40,25 @@ def parse_line(line, SAMPLES):
     line_list = []
     CHROM,POS,ID,REF,ALT,QUAL,FILTER,INFO,FORMAT,*samples = line.strip().split('\t')
     D_loop_region = [i for i in range(1,577)] + [i for i in range(16024,16570)]
+    trinucleotide  = re.findall(r';?trinucleotide=([^;]+)', INFO)[0]
+    try:
+        var_type  = re.findall(r'VEP_CSQ=.\|([^|]+)\|', INFO)[0]
+    except:
+        if len(REF) > 1 or len(ALT) > 1:
+            var_type = ''
+        else:
+            raise ValueError(f"{CHROM}:{POS} {REF} {ALT} var_type not found in INFO field.")
+    try:
+        gene_symbol = re.findall(r';?mitomap_locus=([^;]+)', INFO)[0]
+    except:
+        gene_symbol = ''
+    # gene_symbol = re.findall(r';?mitomap_locus=([^;]+)', INFO)[0]
+    if gene_symbol =='':
+        if int(POS) in D_loop_region:
+            gene_symbol = 'D-loop'
+        else:
+            raise ValueError(f"{CHROM}:{POS} Gene symbol not found in INFO field.")
     for sample_name, sample_data in zip(SAMPLES, samples):
-        trinucleotide  = re.findall(r';?trinucleotide=([^;]+)', INFO)[0]
-        try:
-            var_type  = re.findall(r'VEP_CSQ=.\|([^|]+)\|', INFO)[0]
-        except:
-            if len(REF) > 1 or len(ALT) > 1:
-                var_type = ''
-            else:
-                raise ValueError(f"{CHROM}:{POS} {REF} {ALT} var_type not found in INFO field.")
-        try:
-            gene_symbol = re.findall(r';?mitomap_locus=([^;]+)', INFO)[0]
-        except:
-            gene_symbol = ''
-        # gene_symbol = re.findall(r';?mitomap_locus=([^;]+)', INFO)[0]
-        if gene_symbol =='':
-            if int(POS) in D_loop_region:
-                gene_symbol = 'D-loop'
-            else:
-                raise ValueError(f"{CHROM}:{POS} Gene symbol not found in INFO field.")
         try:
             # GT,GQ,DP,AD,HF,CI,HQ,LHF,SB,FS,SOR,VT,LODR = sample_data.split(':')
             GT,GQ,DP,AD,HF,*_ = sample_data.split(':')
@@ -81,7 +81,7 @@ def parse_line(line, SAMPLES):
                     raise ValueError(f"{ALT, sample_data} ALT field not found in VCF file.")
             hf = float(HF.split(',')[i])
             newREF, newALT = remove_common_suffix(REF, alt)
-            line_list.append([sample_name,CHROM,POS,newREF, newALT,hf,trinucleotide,var_type, gene_symbol])
+            line_list.append([sample_name,CHROM,POS,ID,newREF, newALT,hf,trinucleotide,var_type, gene_symbol])
     return line_list
 
 
@@ -90,7 +90,7 @@ def load_data(input_vcf_file, output_prefix, threads):
     
     with gzip.open(input_vcf_file, "rt") if input_vcf_file.endswith(".gz") else open(input_vcf_file, "r") as IN_VCF, \
         open(output_prefix + ".tmp", "w") as tmpf:
-        colname = ["Sample_name","CHROM", "POS", "REF", "ALT", "HF", 'Trinucleotide','Consequence', 'Gene symbol']
+        colname = ["Sample_name","CHROM", "POS","ID", "REF", "ALT", "HF", 'Trinucleotide','Consequence', 'Gene symbol']
         print('\t'.join(colname), file=tmpf)
         
         vcf_list = []
