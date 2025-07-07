@@ -301,11 +301,11 @@ void MtVariantCaller::_caller_process() {
     std::vector<std::string> sub_vcf_files;
     for (auto &gr: _calling_intervals) {
 
-        std::vector<PosVariantMap> samples_pileup_v;   // 按样本进行多线程，记录每个样本在每个位点上的 pileup 信息
-        samples_pileup_v.reserve(_samples_id.size());  // reserve the memory before push_back
+        std::vector<PosVariantMap> samples_var_v;   // 按样本进行多线程，记录每个样本在每个位点上的 variant (类似pileup） 信息
+        samples_var_v.reserve(_samples_id.size());  // reserve the memory before push_back
 
         //////////////////////////////////////////////
-        bool is_empty = _fetch_base_in_region(gr, samples_pileup_v);
+        bool is_empty = _fetch_var_in_region(gr, samples_var_v);
         if (is_empty) {
             std::cerr << "[WARNING] No reads in region: " << gr.to_string() << "\n";
             continue;
@@ -317,7 +317,7 @@ void MtVariantCaller::_caller_process() {
         std::string sub_vcf_fn = cache_outdir + "/" + stem_bn + "." + rgstr + ".vcf.gz";
         sub_vcf_files.push_back(sub_vcf_fn);
 
-        is_empty = _variant_discovery(samples_pileup_v, gr, sub_vcf_fn);
+        is_empty = _variant_joint(samples_var_v, gr, sub_vcf_fn);
         if (is_empty) {
             std::cout << "[INFO] No variants in region: " << gr.to_string() << "\n";
         }
@@ -343,7 +343,7 @@ void MtVariantCaller::_caller_process() {
     }
 }
 
-bool MtVariantCaller::_fetch_base_in_region(const ngslib::GenomeRegion gr, std::vector<PosVariantMap> &samples_pileup_v) {
+bool MtVariantCaller::_fetch_var_in_region(const ngslib::GenomeRegion gr, std::vector<PosVariantMap> &samples_var_v) {
     ThreadPool thread_pool(this->_config.thread_count);  // set multiple-thread
 
     std::vector<std::future<PosVariantMap>> pileup_results;
@@ -353,7 +353,7 @@ bool MtVariantCaller::_fetch_base_in_region(const ngslib::GenomeRegion gr, std::
     // Loop all alignment files
     for(size_t i(0); i < this->_config.bam_files.size(); ++i) { // The same order as this->_samples_id
         pileup_results.emplace_back(
-            thread_pool.submit(call_pileup_in_sample, 
+            thread_pool.submit(call_variant_in_sample, 
                                this->_config.bam_files[i], 
                                std::cref(fa_seq), 
                                gr,
@@ -361,29 +361,29 @@ bool MtVariantCaller::_fetch_base_in_region(const ngslib::GenomeRegion gr, std::
         );
     }
 
-    samples_pileup_v.clear(); // clear the vector before push_back
+    samples_var_v.clear(); // clear the vector before push_back
     bool is_empty = true;
     for (auto && p: pileup_results) { // Run and make sure all processes are finished
         // 一般来说，只有当 valid() 返回 true 的时候才调用 get() 去获取结果，这也是 C++ 文档推荐的操作。
         if (p.valid()) {
             // get() 调用会改变其共享状态，不再可用，也就是说 get() 只能被调用一次，多次调用会触发异常。
             PosVariantMap pm = p.get();
-            samples_pileup_v.push_back(pm);
+            samples_var_v.push_back(pm);
 
             if (!pm.empty()) is_empty = false;
         }
     }
 
-    if (samples_pileup_v.size() != this->_samples_id.size())
-        throw std::runtime_error("[_fetch_base_in_region] 'samples_pileup_v.size()' "
+    if (samples_var_v.size() != this->_samples_id.size())
+        throw std::runtime_error("[_fetch_var_in_region] 'samples_var_v.size()' "
                                  "should be the same as '_config.bam_files.size()'");
 
     return is_empty;  // no cover reads in 'GenomeRegion' if empty.
 }
 
-bool MtVariantCaller::_variant_discovery(const std::vector<PosVariantMap> &samples_pileup_v, 
-                                         const ngslib::GenomeRegion gr,
-                                         const std::string out_vcf_fn)
+bool MtVariantCaller::_variant_joint(const std::vector<PosVariantMap> &samples_var_v, 
+                                     const ngslib::GenomeRegion gr,
+                                     const std::string out_vcf_fn)
 {
     // 1. integrate the variant information of all samples in the region
     // 2. call the variant by the integrated information
@@ -393,15 +393,15 @@ bool MtVariantCaller::_variant_discovery(const std::vector<PosVariantMap> &sampl
 
     for (uint32_t pos(gr.start); pos < gr.end + 1; ++pos) {
         std::vector<VariantInfo> vvi;
-        vvi.reserve(samples_pileup_v.size()); // reserve the memory before push_back
+        vvi.reserve(samples_var_v.size()); // reserve the memory before push_back
 
         // get the variant information of all samples in the position
         bool is_empty = true;
         PosVariantMap::const_iterator smp_pos_it;
-        for (size_t i(0); i < samples_pileup_v.size(); ++i) {
+        for (size_t i(0); i < samples_var_v.size(); ++i) {
 
-            smp_pos_it = samples_pileup_v[i].find(pos);
-            if (smp_pos_it != samples_pileup_v[i].end()) {
+            smp_pos_it = samples_var_v[i].find(pos);
+            if (smp_pos_it != samples_var_v[i].end()) {
 
                 vvi.push_back(smp_pos_it->second);
                 if (is_empty) is_empty = false;
@@ -415,7 +415,7 @@ bool MtVariantCaller::_variant_discovery(const std::vector<PosVariantMap> &sampl
         // ignore the position which no reads cover in all samples
         if (!is_empty) { 
             // performance multi-thread per-position
-            results.emplace_back(thread_pool.submit(call_variant_in_pos, vvi, _config.heteroplasmy_threshold));  // return VCFRecord
+            results.emplace_back(thread_pool.submit(joint_variant_in_pos, vvi, _config.heteroplasmy_threshold));  // return VCFRecord
         }
     }
 
@@ -435,11 +435,11 @@ bool MtVariantCaller::_variant_discovery(const std::vector<PosVariantMap> &sampl
     return is_empty;  // no variant in the region if empty.
 }
 
-// Seek the base information in the region for each sample.
-PosVariantMap call_pileup_in_sample(const std::string sample_bam_fn, 
-                                    const std::string &fa_seq,
-                                    const ngslib::GenomeRegion gr,
-                                    const MtVariantCaller::Config &config) 
+// Call variant information in the region for each sample.
+PosVariantMap call_variant_in_sample(const std::string sample_bam_fn, 
+                                     const std::string &fa_seq,
+                                     const ngslib::GenomeRegion gr,
+                                     const MtVariantCaller::Config &config) 
 {
     // The expend size of region, 100bp is enough.
     static const uint32_t REG_EXTEND_SIZE = 100;
@@ -496,18 +496,18 @@ PosVariantMap call_pileup_in_sample(const std::string sample_bam_fn,
 
     // 信息抽提：计算并返回每个样本在该区间里每一个位点的最佳碱基组合信息（类似 pileup or gvcf），省内存
     // 同时，这样做的好处是可为多样本 joint-calling 打下基础.
-    PosVariantMap sample_pileup_m;
+    PosVariantMap sample_var_m;
     for (auto &pos_align_info: sample_posinfo_map) {
         // Call basetype to infer the best bases combination for each mapping position
         VariantInfo vi = basetype_caller_unit(pos_align_info.second, config.heteroplasmy_threshold);
 
         // key: position, value: variant information, 由于是按区间抽提，key 值无需再包含 ref_id，因为已经不言自明 
-        sample_pileup_m.insert({pos_align_info.first, vi});
+        sample_var_m.insert({pos_align_info.first, vi});
     }
 
     // Return the variant information for all the ref_pos of the sample in the region, 
     // no matter its a variant or not.
-    return sample_pileup_m;
+    return sample_var_m;
 }
 
 void seek_position(const std::string &fa_seq,                               // must be the whole chromosome sequence
@@ -705,12 +705,10 @@ VariantInfo get_pos_pileup(const BaseType &bt, const BaseType::BatchInfo *smp_bi
     return vi;
 }
 
-VCFRecord call_variant_in_pos(std::vector<VariantInfo> vvi, const double hf_cutoff) {
+VCFRecord joint_variant_in_pos(std::vector<VariantInfo> vvi, const double hf_cutoff) {
     // 1. Call the variant by the integrated information
     // 2. Return the variant information in VCF format
-    if (vvi.empty()) {
-        return VCFRecord(); // Return empty record if no variants
-    }
+    if (vvi.empty()) return VCFRecord(); // Return empty record if no variants
 
     // First pass: collect and normalized all alleles by using the longest REF
     AlleleInfo ai = collect_allele_info(vvi);  // vvi.alt_bases will be replaced by the normalized alleles

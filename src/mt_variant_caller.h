@@ -69,18 +69,18 @@ private:
     ngslib::GenomeRegion _make_genome_region(std::string gregion);
 
     void _caller_process();  // main process function
-    bool _fetch_base_in_region(const ngslib::GenomeRegion genome_region, std::vector<PosVariantMap> &samples_pileup_v);
+    bool _fetch_var_in_region(const ngslib::GenomeRegion genome_region, std::vector<PosVariantMap> &samples_var_v);
 
     // integrate the variant information of all samples in the region
-    bool _variant_discovery(const std::vector<PosVariantMap> &samples_pileup_v, 
-                            const ngslib::GenomeRegion genome_region,
-                            const std::string out_vcf_fn);
+    bool _variant_joint(const std::vector<PosVariantMap> &samples_var_v, 
+                        const ngslib::GenomeRegion genome_region,
+                        const std::string out_vcf_fn);
 };
 
-PosVariantMap call_pileup_in_sample(const std::string sample_bam_fn, 
-                                    const std::string &fa_seq,
-                                    const ngslib::GenomeRegion gr,
-                                    const MtVariantCaller::Config &config);
+PosVariantMap call_variant_in_sample(const std::string sample_bam_fn, 
+                                     const std::string &fa_seq,
+                                     const ngslib::GenomeRegion gr,
+                                     const MtVariantCaller::Config &config);
 
 void seek_position(const std::string &fa_seq,   // must be the whole chromosome sequence
                    const std::vector<ngslib::BamRecord> &sample_map_reads,
@@ -100,7 +100,7 @@ VariantInfo basetype_caller_unit(const AlignInfo &pos_align_info, const double m
  * 
  */
 VariantInfo get_pos_pileup(const BaseType &bt, const BaseType::BatchInfo *smp_bi);
-VCFRecord call_variant_in_pos(std::vector<VariantInfo> variant_infos, const double hf_cutoff);
+VCFRecord joint_variant_in_pos(std::vector<VariantInfo> variant_infos, const double hf_cutoff);
 
 #endif // _MT_VARIANT_CALLER_H_
 
