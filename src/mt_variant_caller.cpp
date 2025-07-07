@@ -412,9 +412,9 @@ bool MtVariantCaller::_variant_discovery(const std::vector<PosVariantMap> &sampl
             }
         }
 
-        // ignore the position which no reads cover of all samples
+        // ignore the position which no reads cover in all samples
         if (!is_empty) { 
-            // performance multi-thread here
+            // performance multi-thread per-position
             results.emplace_back(thread_pool.submit(call_variant_in_pos, vvi, _config.heteroplasmy_threshold));  // return VCFRecord
         }
     }

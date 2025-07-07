@@ -139,7 +139,7 @@ VCFSampleAnnotation process_sample_variant(const VariantInfo& var_info,
                 sa.allele_depths.push_back(var_info.depths[j]);
                 
                 // allele_freqs.push_back(var_info.freqs[j]); // 这里不要用 lrt 计算出来的 allele frequency，因为可能不知为何会有负数（极少情况下）
-                 // calculate the allele frequency by allele_depth/total_depth
+                // calculate the allele frequency by allele_depth/total_depth
                 double h = double(var_info.depths[j]) / double(var_info.total_depth);
                 sa.allele_freqs.push_back(h);
                 sa.logit_hf.push_back(log(h/(1-h)));
