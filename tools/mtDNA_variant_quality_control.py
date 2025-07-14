@@ -132,15 +132,7 @@ def variant_generator(
             vcf_file.close()
      
 
-# def add_format_fields_to_header(header):
-#     """Add PP and IS_MUT fields to VCF header FORMAT."""
-#     header.add_line('##FORMAT=<ID=PP,Number=1,Type=Float,Description="Posterior probability of true mutation">')
-#     header.add_line('##FORMAT=<ID=IS_MUT,Number=1,Type=Integer,Description="Mutation call (1=mutation, 0=not)">')
-#     header.add_line('##FILTER=<ID=QC_FAIL,Description="Failed mtDNA QC filter">')
-#     return header
-
-
-def write_vcf_with_pp_is_mut(input_vcf_path, output_vcf_path, results):
+def write_vcf(input_vcf_path, output_vcf_path, results):
     """
     Write a new VCF file with PP and IS_MUT added to each sample's FORMAT.
     Args:
@@ -157,22 +149,20 @@ def write_vcf_with_pp_is_mut(input_vcf_path, output_vcf_path, results):
     df_results = pd.DataFrame(results)
     qc_status = df_results.groupby(['chrom', 'pos'])['is_mutation'].max().reset_index().set_index(['chrom', 'pos']).to_dict()['is_mutation']
     with pysam.VariantFile(input_vcf_path) as vcf_in:
-        vcf_in.header.add_line('##FILTER=<ID=PASS,Description="Passed mtDNA QC filter">')
-        vcf_in.header.add_line('##FILTER=<ID=QC_FAIL,Description="Failed mtDNA QC filter">')
 
         # Add new FORMAT fields to header
         vcf_in.header.add_line('##FORMAT=<ID=PP,Number=1,Type=Float,Description="Posterior probability of true mutation">')
-        vcf_in.header.add_line('##FORMAT=<ID=IS_MUT,Number=1,Type=String,Description="Mutation call (1=mutation, 0=not)">')
+        vcf_in.header.add_line('##FORMAT=<ID=IS_MUT,Number=1,Type=String,Description="Mutation call (True=mutation, False=not)">')
         vcf_in.header.add_line('##FILTER=<ID=QC_FAIL,Description="Failed mtDNA QC filter">')
         
-        # header = add_format_fields_to_header(vcf_in.header.copy())
         with pysam.VariantFile(output_vcf_path, 'w', header=vcf_in.header) as vcf_out:
             for record in vcf_in:
                 for sample in record.samples:
                     key = (record.chrom, record.pos, sample)
                     if key in result_lookup:
                         pp, is_mut = result_lookup[key]
-                        record.samples[sample].update({'PP': float(pp), 'IS_MUT': 'True' if is_mut else 'False'})
+                        record.samples[sample].update({'PP': float(pp), 
+                                                       'IS_MUT': 'True' if is_mut else 'False'})
 
                 # Fix: use record.filter.clear() and record.filter.add() to update FILTER.
                 record.filter.clear()
@@ -269,10 +259,11 @@ def qc(input_vcf_path, output_vcf_path, bins=100, lambda_kl=0.1, pi=1e-4, thresh
             })
             
         # Calculate multi-sample KL divergence for the position
-        # kl_div_multi = calculate_kl_divergence_multi(vaf_obs, q_alpha, q_beta, bin_edges)
+        kl_div_multi = calculate_kl_divergence_multi(vaf_obs, q_alpha, q_beta, bin_edges)
+        print(f"Multi-sample KL divergence for {variant['chrom']}:{variant['pos']}: {kl_div_multi}")
 
     print(f"Total variants processed: {len(results)}\n")
-    write_vcf_with_pp_is_mut(input_vcf_path, output_vcf_path, results)
+    write_vcf(input_vcf_path, output_vcf_path, results)
     return results
 
 
@@ -312,12 +303,17 @@ def calculate_kl_divergence_multi(vafs, q_alpha, q_beta, bin_edges):
     if len(vafs) == 0:
         return 0
     
-    px_at_bins, _ = np.histogram(vafs, bins=bin_edges, density=True)  # p_x
+    vafs_flatten = []
+    for vaf in vafs:
+        vafs_flatten.extend(vaf)
+        
+    px_at_bins, _ = np.histogram(vafs_flatten, bins=bin_edges, density=True)  # p_x
     bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
     qx_at_bins = beta.pdf(bin_centers, q_alpha, q_beta)
     qx_at_bins = np.where(qx_at_bins > 0, qx_at_bins, 1e-10)  # Avoid division by zero
 
     kl_div = np.sum(px_at_bins * np.log(px_at_bins / qx_at_bins + 1e-16) * (bin_edges[1] - bin_edges[0]))
+    print(f" - KL divergence: {kl_div:.4f} for VAFs: {vafs_flatten}. {px_at_bins}. Bin width: {bin_edges[1] - bin_edges[0]}")
 
     return kl_div if kl_div > 0 else 0
 
