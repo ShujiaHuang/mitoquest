@@ -232,11 +232,12 @@ def qc(input_vcf_path, output_vcf_path, bins=100, lambda_kl=0.1, pi=1e-4, thresh
             # Calculate KL divergence for each sample for each ALT
             dp = variant['samples'][sample].get('DP')
             ad = list(variant['samples'][sample].get('AD'))
-            posteriors = []
+            
+            pp = 1.0 # Initialize posterior probability
             kl_div_singles = []
             for v_obs, a_obs in zip(vaf, ad):
                 if v_obs is None or a_obs is None or dp is None:
-                    posteriors.append(0)
+                    pp = 0
                     sys.stderr.write(f"[WARNING] Missing VAF, AD, or DP for sample {sample} at "
                                      f"{variant['chrom']}:{variant['pos']}. Skipping.\n")
                     continue
@@ -254,10 +255,8 @@ def qc(input_vcf_path, output_vcf_path, bins=100, lambda_kl=0.1, pi=1e-4, thresh
                     lambda_kl=0.1,
                     kl_div=kl_div
                 )
-                posteriors.append(posterior)
-                # print(f"Sample: {sample}, , Posterior Probability: {posterior}, KL Divergence: {kl_div}")
-            
-            pp = np.mean(posteriors)
+                pp *= posterior
+
             results.append({
                 'sample': sample,
                 'chrom': variant['chrom'],
