@@ -132,7 +132,7 @@ def variant_generator(
             vcf_file.close()
      
 
-def write_vcf(input_vcf_path, output_vcf_path, results):
+def write_vcf(input_vcf_path, output_vcf_path, results, pos_kl_div):
     """
     Write a new VCF file with PP and IS_MUT added to each sample's FORMAT.
     Args:
@@ -171,6 +171,8 @@ def write_vcf(input_vcf_path, output_vcf_path, results):
                     record.filter.add('PASS')
                 else:
                     record.filter.add('QC_FAIL')
+                
+                record.qual = pos_kl_div.get(chrom_pos, 0)
 
                 vcf_out.write(record)
 
@@ -180,10 +182,10 @@ def qc(input_vcf_path, output_vcf_path, bins=100, lambda_kl=0.1, pi=1e-4, thresh
     # Only get samples id from input vcffile
     _vcf = pysam.VariantFile(input_vcf_path, 'r')
     samples = list(_vcf.header.samples)
-    contigs = dict(_vcf.header.contigs)
     _vcf.close()
     
     results = []
+    pos_kl_div = {} # Store multi-sample KL divergence for each position
     for variant in variant_generator(input_vcf_path):
         # Process each variant as needed
         vaf_obs = []
@@ -204,10 +206,6 @@ def qc(input_vcf_path, output_vcf_path, bins=100, lambda_kl=0.1, pi=1e-4, thresh
                              f"{variant['chrom']}:{variant['pos']}. Ignore.\n")
             continue
 
-        # Prior probability of mutation
-        # chrM_length = contigs['chrM'].length if contigs['chrM'].length is not None else 16569
-        # pi = 5e-8 * chrM_length 
-        
         # Estimate background noise distribution using normal (homozygous) samples error rates
         q_alpha, q_beta, bin_edges = estimate_background_noise(background_error_rates)
 
@@ -215,9 +213,9 @@ def qc(input_vcf_path, output_vcf_path, bins=100, lambda_kl=0.1, pi=1e-4, thresh
         p_error = np.mean(background_error_rates)
 
         # QC for each sample
-        sys.stderr.write(f"Processing variant at {variant}. \n")
+        sys.stderr.write(f"Background Error Rate: {p_error}. Processing variant at {variant}. \n")
         for sample, vaf in zip(samples, vaf_obs):
-            sys.stderr.write(f"{sample}, VAF: {vaf}, Background Error Rate: {p_error}\n")
+            sys.stderr.write(f" - {sample}, VAF: {vaf}\n")
             
             # Calculate KL divergence for each sample for each ALT
             dp = variant['samples'][sample].get('DP')
@@ -260,10 +258,12 @@ def qc(input_vcf_path, output_vcf_path, bins=100, lambda_kl=0.1, pi=1e-4, thresh
             
         # Calculate multi-sample KL divergence for the position
         kl_div_multi = calculate_kl_divergence_multi(vaf_obs, q_alpha, q_beta, bin_edges)
-        print(f"Multi-sample KL divergence for {variant['chrom']}:{variant['pos']}: {kl_div_multi}")
+        pos_kl_div[(variant['chrom'], variant['pos'])] = kl_div_multi
+        
+        print(f" - Multi-sample KL divergence for {variant['chrom']}:{variant['pos']}: {kl_div_multi}")
 
     print(f"Total variants processed: {len(results)}\n")
-    write_vcf(input_vcf_path, output_vcf_path, results)
+    write_vcf(input_vcf_path, output_vcf_path, results, pos_kl_div)
     return results
 
 
@@ -295,8 +295,9 @@ def calculate_kl_divergence_single(v_obs, a, b):
         return 0  # Invalid VAF value
 
     q_v = beta.pdf(v_obs, a, b)
-    sys.stderr.write(f" - Q({v_obs:.3f}, {a:.4f}, {b:.4f}) = {q_v}\n")
+    sys.stderr.write(f" - Q({v_obs:.4f}|{a:.4f}, {b:.4f}) = {q_v}\n")
     return -np.log(q_v) if q_v > 0 else np.inf
+
 
 def calculate_kl_divergence_multi(vafs, q_alpha, q_beta, bin_edges):
     """Calculate KL divergence for multi-sample VAF distribution."""
@@ -313,7 +314,7 @@ def calculate_kl_divergence_multi(vafs, q_alpha, q_beta, bin_edges):
     qx_at_bins = np.where(qx_at_bins > 0, qx_at_bins, 1e-10)  # Avoid division by zero
 
     kl_div = np.sum(px_at_bins * np.log(px_at_bins / qx_at_bins + 1e-16) * (bin_edges[1] - bin_edges[0]))
-    print(f" - KL divergence: {kl_div:.4f} for VAFs: {vafs_flatten}. {px_at_bins}. Bin width: {bin_edges[1] - bin_edges[0]}")
+    print(f" - KL divergence: {kl_div:.4f} for VAFs: {vafs_flatten}. Bin width: {bin_edges[1] - bin_edges[0]}")
 
     return kl_div if kl_div > 0 else 0
 
@@ -333,16 +334,15 @@ def calculate_kl_divergence_multi(vafs, q_alpha, q_beta, bin_edges):
 #     return kl_div if kl_div > 0 else 0
 
 
-def bayesian_filter(A, D, p_error, alpha_h1=1, beta_h1=1, lambda_kl=0.1, kl_div=None, 
-                    pi=5e-8 * 16569):
+def bayesian_filter(A, D, p_error, alpha_h1=1, beta_h1=1, lambda_kl=0.1, 
+                    kl_div=None, pi=5e-8 * 16569):
     """Bayesian filter to compute posterior probability of a true mutation using log-likelihoods.
     """
-
-    if kl_div == np.inf:
+    if kl_div == np.inf or p_error == 0.0:
         return 1 # If KL divergence is infinite, return 1 (indicating mutation)
     
     # Log-likelihood under H0 (without binomial coefficient)
-    log_L0 = A * np.log(p_error) + (D - A) * np.log(1 - p_error) if p_error > 0 and p_error < 1 else -np.inf
+    log_L0 = A * np.log(p_error) + (D - A) * np.log(1 - p_error)
     
     # Log-likelihood under H1 (without binomial coefficient)
     log_L1 = betaln(A + alpha_h1, D - A + beta_h1) - betaln(alpha_h1, beta_h1)
@@ -355,7 +355,7 @@ def bayesian_filter(A, D, p_error, alpha_h1=1, beta_h1=1, lambda_kl=0.1, kl_div=
     log_odds = log_L1_adjusted - log_L0 + np.log(pi) - np.log(1.0 - pi)
     
     # Posterior probability
-    posterior_h1 = 1 / (1 + np.exp(-log_odds)) if np.isfinite(log_odds) else 0
+    posterior_h1 = 1 / (1 + np.exp(-log_odds))
     
     return posterior_h1
 
@@ -364,28 +364,28 @@ def main():
     """Main function for command-line interface."""
     parser = argparse.ArgumentParser(description="Perform mtDNA variant quality control analysis from VCF file.")
     parser.add_argument('--vcf', required=True, help="Input VCF file path")
-    parser.add_argument('--output', required=True, help="Output CSV file path")
+    # parser.add_argument('--output', required=True, help="Output CSV file path")
     parser.add_argument('--output-vcf', required=True, help="Output quality-controlled VCF file path")
     parser.add_argument('--bins', type=int, default=100, help="Number of histogram bins")
-    parser.add_argument('--lambda_kl', type=float, default=0.1, help="Weight for KL divergence")
+    parser.add_argument('--lambda-kl', type=float, default=0.1, help="Weight for KL divergence")
     parser.add_argument('--pi', type=float, default=5e-8 * 16569, help="Prior probability of mutation")
     parser.add_argument('--threshold', type=float, default=0.9, help="Posterior probability threshold for calling mutations")
     
     args = parser.parse_args()
-
-    print(f"{args}")
     try:
         # Parse VCF file
         variants = qc(args.vcf, args.output_vcf, args.bins, args.lambda_kl, args.pi, args.threshold)
-        df_results = pd.DataFrame(variants)
         
         # Save results to CSV
+        # df_results = pd.DataFrame(variants)
         # df_results.to_csv(args.output, index=False)
-        print(f"Quality control analysis completed. Results saved to {args.output} and {args.output_vcf}")
+        print(f"Quality control analysis completed. Results saved to {args.output_vcf}")
         
     except Exception as e:
         print(f"Error: {str(e)}")
         sys.exit(1)
 
+
 if __name__ == "__main__":
     main()
+    
