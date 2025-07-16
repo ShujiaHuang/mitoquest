@@ -258,9 +258,7 @@ def qc(input_vcf_path, output_vcf_path, bins=100, lambda_kl=0.1, pi=1e-4, thresh
             
         # Calculate multi-sample KL divergence for the position
         kl_div_multi = calculate_kl_divergence_multi(vaf_obs, q_alpha, q_beta, bin_edges)
-        pos_kl_div[(variant['chrom'], variant['pos'])] = kl_div_multi
-        
-        print(f" - Multi-sample KL divergence for {variant['chrom']}:{variant['pos']}: {kl_div_multi}")
+        pos_kl_div[(variant['chrom'], variant['pos'])] = kl_div_multi if np.isfinite(kl_div_multi) else 10000
 
     print(f"Total variants processed: {len(results)}\n")
     write_vcf(input_vcf_path, output_vcf_path, results, pos_kl_div)
