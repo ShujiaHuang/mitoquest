@@ -256,7 +256,7 @@ def qc(input_vcf_path, output_vcf_path, bins=100, lambda_kl=0.1, pi=1e-4, thresh
                 'chrom': variant['chrom'],
                 'pos': variant['pos'],
                 'ref': variant['ref'],
-                'alt': [ref_alts[g_idx] if g_idx is not None else '.' for g_idx in gt] if gt else [],
+                'alt': [ref_alts[g_idx] if g_idx is not None else '.' for g_idx in gt] if gt else ['.'],
                 'kl_divergence_single': np.mean(kl_div_singles),
                 'posterior': pp,
                 'is_mutation': pp > threshold
