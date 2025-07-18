@@ -306,7 +306,7 @@ def parametrize_vaf_distribution(vaf_samples):
 
 def calculate_kl_divergence_single(v_obs, a, b):
     """Calculate KL divergence for a single sample VAF."""
-    if v_obs <= 0 or v_obs >= 1:
+    if v_obs is None or v_obs <= 0 or v_obs >= 1:
         return 0  # Invalid VAF value
 
     q_v = beta.pdf(v_obs, a, b)
