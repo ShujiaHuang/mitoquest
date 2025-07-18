@@ -256,7 +256,7 @@ def qc(input_vcf_path, output_vcf_path, bins=100, lambda_kl=0.1, pi=1e-4, thresh
                 'chrom': variant['chrom'],
                 'pos': variant['pos'],
                 'ref': variant['ref'],
-                'alt': [ref_alts[g_idx] for g_idx in gt],
+                'alt': [ref_alts[g_idx] if g_idx is not None else '.' for g_idx in gt] if gt else [],
                 'kl_divergence_single': np.mean(kl_div_singles),
                 'posterior': pp,
                 'is_mutation': pp > threshold
@@ -316,12 +316,12 @@ def calculate_kl_divergence_single(v_obs, a, b):
 
 def calculate_kl_divergence_multi(vafs, q_alpha, q_beta, bin_edges):
     """Calculate KL divergence for multi-sample VAF distribution."""
-    if len(vafs) == 0:
-        return 0
-    
     vafs_flatten = []
     for vaf in vafs:
         vafs_flatten.extend(vaf)
+
+    if len(vafs_flatten) == 0:
+        return 0
         
     px_at_bins, _ = np.histogram(vafs_flatten, bins=bin_edges, density=True)  # p_x
     bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
