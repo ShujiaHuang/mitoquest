@@ -161,8 +161,7 @@ def write_vcf(input_vcf_path, output_vcf_path, results, pos_kl_div):
                     key = (record.chrom, record.pos, sample)
                     if key in result_lookup:
                         pp, is_mut = result_lookup[key]
-                        record.samples[sample].update({'PP': float(pp), 
-                                                       'IS_MUT': 'True' if is_mut else 'False'})
+                        record.samples[sample].update({'PP': float(pp), 'IS_MUT': 'True' if is_mut else 'False'})
 
                 # Fix: use record.filter.clear() and record.filter.add() to update FILTER.
                 record.filter.clear()
@@ -173,8 +172,11 @@ def write_vcf(input_vcf_path, output_vcf_path, results, pos_kl_div):
                     record.filter.add('QC_FAIL')
                 
                 record.qual = pos_kl_div.get(chrom_pos, 0)
-
                 vcf_out.write(record)
+        
+        # If output VCF is compressed, index it
+        if output_vcf_path.endswith('.gz'):
+            pysam.tabix_index(output_vcf_path, preset='vcf', force=True)
 
 
 def qc(input_vcf_path, output_vcf_path, bins=100, lambda_kl=0.1, pi=1e-4, threshold=0.9):
@@ -188,11 +190,15 @@ def qc(input_vcf_path, output_vcf_path, bins=100, lambda_kl=0.1, pi=1e-4, thresh
     pos_kl_div = {} # Store multi-sample KL divergence for each position
     for variant in variant_generator(input_vcf_path):
         # Process each variant as needed
+        ref_alts = [variant.get('ref', '')] + list(variant.get('alt', []))
+        sample_gts = []
         vaf_obs = []
         background_error_rates = []
         for sample in samples:
             gt = list(variant['samples'][sample].get('GT'))
             hf = list(variant['samples'][sample].get('HF'))
+
+            sample_gts.append(gt)
             vaf_obs.append(hf)
             ploidy = len(gt)
             if ploidy == 1: 
@@ -214,7 +220,7 @@ def qc(input_vcf_path, output_vcf_path, bins=100, lambda_kl=0.1, pi=1e-4, thresh
 
         # QC for each sample
         sys.stderr.write(f"Background Error Rate: {p_error}. Processing variant at {variant}. \n")
-        for sample, vaf in zip(samples, vaf_obs):
+        for sample, gt, vaf in zip(samples, sample_gts, vaf_obs):
             sys.stderr.write(f" - {sample}, VAF: {vaf}\n")
             
             # Calculate KL divergence for each sample for each ALT
@@ -250,7 +256,7 @@ def qc(input_vcf_path, output_vcf_path, bins=100, lambda_kl=0.1, pi=1e-4, thresh
                 'chrom': variant['chrom'],
                 'pos': variant['pos'],
                 'ref': variant['ref'],
-                'alt': variant['alt'],
+                'alt': [ref_alts[g_idx] for g_idx in gt],
                 'kl_divergence_single': np.mean(kl_div_singles),
                 'posterior': pp,
                 'is_mutation': pp > threshold
@@ -262,29 +268,40 @@ def qc(input_vcf_path, output_vcf_path, bins=100, lambda_kl=0.1, pi=1e-4, thresh
 
     print(f"Total variants processed: {len(results)}\n")
     write_vcf(input_vcf_path, output_vcf_path, results, pos_kl_div)
+    
     return results
 
 
 def estimate_background_noise(background_error_rates, bins=100):
-    """Estimate background noise distribution using normal samples (GT='0', '0/0', '1', or '1/1')."""
+    """Estimate background noise distribution using normal samples (GT='0', '1', '2', ...)."""
     
     # Fit Beta distribution
     if len(background_error_rates) == 0 or np.all(background_error_rates == 0):
-        return 1e-4, 1e-4, np.linspace(0, 1, bins + 1)  #, np.zeros(bins), np.linspace(0, 1, bins + 1)
+        return 1e-4, 1e-8, np.linspace(0, 1, bins + 1)  #, np.zeros(bins), np.linspace(0, 1, bins + 1)
     
     hist, bin_edges = np.histogram(background_error_rates, bins=bins, density=True, range=(0, 1))
-    mean_vaf = np.mean(background_error_rates)
-    var_vaf = np.var(background_error_rates) if len(background_error_rates) > 1 else mean_vaf * (1 - mean_vaf)
+    a, b = parametrize_vaf_distribution(background_error_rates)
+
+    return a, b, bin_edges  # return alpha and beta parameters for Beta distribution
+
+
+def parametrize_vaf_distribution(vaf_samples):
+    """Fit a Beta distribution to the VAF samples."""
+    if not vaf_samples:
+        return 1e-4, 1e-8
+
+    mean_vaf = np.mean(vaf_samples)
+    var_vaf = np.var(vaf_samples) if len(vaf_samples) > 1 else mean_vaf * (1 - mean_vaf)
     if var_vaf == 0:
         var_vaf = 1e-6  # Prevent division by zero
-
+        
     w = mean_vaf * (1 - mean_vaf) / var_vaf - 1
-    
+
     # `alpha` and `beta` parameters for Beta distribution
     a = max(mean_vaf * w, 1e-4)  # Ensure positive values
-    b = max((1 - mean_vaf) * w, 1e-4)
+    b = max((1 - mean_vaf) * w, 1e-8)
     
-    return a, b, bin_edges  # return alpha and beta parameters for Beta distribution
+    return a, b
 
 
 def calculate_kl_divergence_single(v_obs, a, b):
@@ -311,8 +328,8 @@ def calculate_kl_divergence_multi(vafs, q_alpha, q_beta, bin_edges):
     qx_at_bins = beta.pdf(bin_centers, q_alpha, q_beta)
     qx_at_bins = np.where(qx_at_bins > 0, qx_at_bins, 1e-10)  # Avoid division by zero
 
-    kl_div = np.sum(px_at_bins * np.log(px_at_bins / qx_at_bins + 1e-16) * (bin_edges[1] - bin_edges[0]))
-    print(f" - KL divergence: {kl_div:.4f} for VAFs: {vafs_flatten}. Bin width: {bin_edges[1] - bin_edges[0]}")
+    delta_bin_width = bin_edges[1] - bin_edges[0]
+    kl_div = np.sum(px_at_bins * np.log(px_at_bins / qx_at_bins + 1e-16) * delta_bin_width)
 
     return kl_div if kl_div > 0 else 0
 
@@ -362,7 +379,7 @@ def main():
     """Main function for command-line interface."""
     parser = argparse.ArgumentParser(description="Perform mtDNA variant quality control analysis from VCF file.")
     parser.add_argument('--vcf', required=True, help="Input VCF file path")
-    # parser.add_argument('--output', required=True, help="Output CSV file path")
+    parser.add_argument('--output', required=True, help="Output CSV file path")
     parser.add_argument('--output-vcf', required=True, help="Output quality-controlled VCF file path")
     parser.add_argument('--bins', type=int, default=100, help="Number of histogram bins")
     parser.add_argument('--lambda-kl', type=float, default=0.1, help="Weight for KL divergence")
@@ -375,8 +392,8 @@ def main():
         variants = qc(args.vcf, args.output_vcf, args.bins, args.lambda_kl, args.pi, args.threshold)
         
         # Save results to CSV
-        # df_results = pd.DataFrame(variants)
-        # df_results.to_csv(args.output, index=False)
+        df_results = pd.DataFrame(variants).explode('alt')
+        df_results.to_csv(args.output, sep='\t', index=False)
         print(f"Quality control analysis completed. Results saved to {args.output_vcf}")
         
     except Exception as e:
