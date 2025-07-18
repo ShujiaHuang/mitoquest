@@ -318,7 +318,7 @@ def calculate_kl_divergence_multi(vafs, q_alpha, q_beta, bin_edges):
     """Calculate KL divergence for multi-sample VAF distribution."""
     vafs_flatten = []
     for vaf in vafs:
-        vafs_flatten.extend(vaf)
+        vafs_flatten.extend([x for x in vaf if x is not None])
 
     if len(vafs_flatten) == 0:
         return 0
