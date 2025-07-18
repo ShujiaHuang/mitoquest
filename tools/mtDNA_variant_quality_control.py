@@ -201,7 +201,7 @@ def qc(input_vcf_path, output_vcf_path, bins=100, lambda_kl=0.1, pi=1e-4, thresh
             sample_gts.append(gt)
             vaf_obs.append(hf)
             ploidy = len(gt)
-            if ploidy == 1: 
+            if (ploidy == 1) and (hf is not None) and all(h is not None for h in hf): 
                 # Only use non mutated (homozygous) samples to 
                 # estimate background error rate.
                 background_error_rates.append(1.0 - sum(hf))
@@ -230,10 +230,10 @@ def qc(input_vcf_path, output_vcf_path, bins=100, lambda_kl=0.1, pi=1e-4, thresh
             pp = 1.0 # Initialize posterior probability
             kl_div_singles = []
             for v_obs, a_obs in zip(vaf, ad):
-                if v_obs is None or a_obs is None or dp is None:
+                if (v_obs is None) or (a_obs is None) or (dp is None):
                     pp = 0
-                    sys.stderr.write(f"[WARNING] Missing VAF, AD, or DP for sample {sample} at "
-                                     f"{variant['chrom']}:{variant['pos']}. Skipping.\n")
+                    sys.stderr.write(f"[WARNING] Missing VAF, AD, or DP for sample {sample} "
+                                     f"at {variant['chrom']}:{variant['pos']}. Skipping.\n")
                     continue
                 
                 kl_div = calculate_kl_divergence_single(v_obs, q_alpha, q_beta)
