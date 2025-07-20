@@ -257,6 +257,7 @@ def qc(input_vcf_path, output_vcf_path, bins=100, lambda_kl=0.1, pi=1e-4, thresh
                 'pos': variant['pos'],
                 'ref': variant['ref'],
                 'alt': [ref_alts[g_idx] if g_idx is not None else '.' for g_idx in gt] if gt else ['.'],
+                'ploidy': len(gt),
                 'kl_divergence_single': np.mean(kl_div_singles),
                 'posterior': pp,
                 'is_mutation': pp > threshold
@@ -393,6 +394,7 @@ def main():
         
         # Save results to CSV
         df_results = pd.DataFrame(variants).explode('alt')
+        df_results = df_results[df_results['ref'] != df_results['alt']]
         df_results.to_csv(args.output, sep='\t', index=False)
         print(f"Quality control analysis completed. Results saved to {args.output_vcf}")
         
