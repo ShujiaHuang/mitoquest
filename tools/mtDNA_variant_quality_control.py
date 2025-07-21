@@ -281,7 +281,7 @@ def qc(input_vcf_path, output_vcf_path, bins=100, lambda_kl=0.1, pi=5e-8 * 16569
         r.pop('D', None)    # Remove D from final results
         r['kl_divergence_single'] = np.mean(r['kl_divergence_single']) if r['kl_divergence_single'] else 0
 
-    print(f"Total variants processed: {len(results)}\n")
+    print(f"Total variants processed: {len(results)}, Beta distribution for true variants: Beta({alpha_h1}, {beta_h1}).\n")
     write_vcf(input_vcf_path, output_vcf_path, results, pos_kl_div)
     
     return results
