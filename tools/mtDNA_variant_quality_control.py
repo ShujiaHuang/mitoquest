@@ -27,7 +27,40 @@ from scipy.stats import beta
 from scipy.special import betaln
 from typing import Dict, Generator, Optional
 from pathlib import Path
+import matplotlib.pyplot as plt
 
+
+def plot_beta_fit_convergence(alpha_hist, beta_hist, diff_hist, save_path='beta_fit_convergence.png'):
+    plt.figure(figsize=(8, 5))
+    ax1 = plt.gca()
+    ax2 = ax1.twinx()
+
+    # Plot alpha and beta on left y-axis
+    ax1.plot(alpha_hist, label='alpha_h1', color='tab:blue', marker='o')
+    ax1.plot(beta_hist, label='beta_h1', color='tab:orange', marker='s')
+    ax1.set_xlabel('Iteration')
+    ax1.set_ylabel('Beta parameter value')
+    ax1.tick_params(axis='y', labelcolor='tab:blue')
+    ax1.grid(True, linestyle='--', alpha=0.5)
+
+    # Plot diff on right y-axis
+    ax2.plot(diff_hist, label='is_mutation diff', color='tab:red', marker='x', linestyle='--')
+    ax2.set_ylabel('Mutation call change ratio', color='tab:red')
+    ax2.tick_params(axis='y', labelcolor='tab:red')
+
+    # Legends
+    lines_1, labels_1 = ax1.get_legend_handles_labels()
+    lines_2, labels_2 = ax2.get_legend_handles_labels()
+    plt.legend(lines_1 + lines_2, labels_1 + labels_2, loc='upper right')
+
+    plt.title('Convergence of Beta Parameters and Mutation Call Change')
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=150)
+    plt.close()
+
+# 在 main 或 qc 里调用
+# results, alpha_h1, beta_h1, alpha_hist, beta_hist, diff_hist = iterative_beta_fit_and_call(...)
+# plot_beta_fit_convergence(alpha_hist, beta_hist, diff_hist)
 
 def check_index_file(variant_file_path):
     """
@@ -274,7 +307,7 @@ def qc(input_vcf_path, output_vcf_path, bins=100, lambda_kl=0.1, pi=5e-8 * 16569
         kl_div_multi = calculate_kl_divergence_multi(vaf_obs, q_alpha, q_beta, bin_edges)
         pos_kl_div[(variant['chrom'], variant['pos'])] = kl_div_multi if np.isfinite(kl_div_multi) else 10000
 
-    results, alpha_h1, beta_h1 = iterative_beta_fit_and_call(results, lambda_kl=lambda_kl, pi=pi, threshold=threshold)
+    results, alpha_h1, beta_h1, alpha_hist, beta_hist, diff_hist = iterative_beta_fit_and_call(results, lambda_kl=lambda_kl, pi=pi, threshold=threshold)
     for r in results:
         r.pop('vaf', None)  # Remove VAF from final results
         r.pop('A', None)    # Remove A from final results
@@ -284,16 +317,17 @@ def qc(input_vcf_path, output_vcf_path, bins=100, lambda_kl=0.1, pi=5e-8 * 16569
     print(f"Total variants processed: {len(results)}, Beta distribution for true variants: Beta({alpha_h1}, {beta_h1}).\n")
     write_vcf(input_vcf_path, output_vcf_path, results, pos_kl_div)
     
-    return results
+    return results, alpha_hist, beta_hist, diff_hist
 
 
-def iterative_beta_fit_and_call(results, lambda_kl=0.1, pi=5e-8 * 16569, threshold=0.9, max_iter=10, tol=1e-4):
+def iterative_beta_fit_and_call(results, lambda_kl=0.1, pi=5e-8 * 16569, threshold=0.9, max_iter=50, tol=1e-4):
     """
     Iteratively estimate beta distribution parameters from called mutations and update mutation calls
     until convergence. For multi-allelic sites, treat each ALT as an independent event and use the
     product of posteriors as the final posterior for the site.
     """
     safe_alpha_h1, safe_beta_h1 = 1, 1  # Default values for Beta distribution parameters
+    alpha_hist, beta_hist, diff_hist = [], [], []
     
     prev_is_mut = None
     for i in range(max_iter):
@@ -312,6 +346,8 @@ def iterative_beta_fit_and_call(results, lambda_kl=0.1, pi=5e-8 * 16569, thresho
         # Ensure alpha_h1 and beta_h1 are valid
         safe_alpha_h1 = alpha_h1 if alpha_h1 is not None else 1
         safe_beta_h1 = beta_h1 if beta_h1 is not None else 1
+        alpha_hist.append(safe_alpha_h1)
+        beta_hist.append(safe_beta_h1)
         
         # 3. Recalculate posterior and is_mutation for each record
         for r in results:
@@ -337,12 +373,13 @@ def iterative_beta_fit_and_call(results, lambda_kl=0.1, pi=5e-8 * 16569, thresho
         curr_is_mut = [r['is_mutation'] for r in results]
         if prev_is_mut is not None:
             diff = np.mean([a != b for a, b in zip(prev_is_mut, curr_is_mut)])
+            diff_hist.append(diff)
             if diff < tol:
                 break
             
         prev_is_mut = curr_is_mut.copy()
 
-    return results, safe_alpha_h1, safe_beta_h1
+    return results, safe_alpha_h1, safe_beta_h1, alpha_hist, beta_hist, diff_hist
 
 def estimate_beta_params_mle(vaf_list):
     """Fit Beta distribution parameters using Maximum Likelihood Estimation (MLE)."""
@@ -473,8 +510,12 @@ def main():
     args = parser.parse_args()
     try:
         # Parse VCF file
-        variants = qc(args.vcf, args.output_vcf, args.bins, args.lambda_kl, args.pi, args.threshold)
-        
+        variants, alpha_hist, beta_hist, diff_hist = qc(args.vcf, args.output_vcf, args.bins, args.lambda_kl, args.pi, args.threshold)
+        # Plot convergence of beta parameters and mutation calls
+        plot_beta_fit_convergence(alpha_hist, beta_hist, diff_hist, 
+                                  save_path=args.output.split('.')[0] + '_beta_fit_convergence.png')
+        print(f'diff_hist: {diff_hist}')
+
         # Save results to CSV
         df_results = pd.DataFrame(variants).explode('alt')
         df_results = df_results[df_results['ref'] != df_results['alt']]
