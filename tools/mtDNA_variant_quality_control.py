@@ -23,7 +23,7 @@ import pysam
 import numpy as np
 import pandas as pd
 
-from scipy.stats import beta, binom
+from scipy.stats import beta
 from scipy.special import betaln
 from typing import Dict, Generator, Optional
 from pathlib import Path
@@ -179,7 +179,7 @@ def write_vcf(input_vcf_path, output_vcf_path, results, pos_kl_div):
             pysam.tabix_index(output_vcf_path, preset='vcf', force=True)
 
 
-def qc(input_vcf_path, output_vcf_path, bins=100, lambda_kl=0.1, pi=1e-4, threshold=0.9):
+def qc(input_vcf_path, output_vcf_path, bins=100, lambda_kl=0.1, pi=5e-8 * 16569, threshold=0.9):
     """Parse VCF file using pysam to extract variant information and store original records."""
     # Only get samples id from input vcffile
     _vcf = pysam.VariantFile(input_vcf_path, 'r')
@@ -246,8 +246,9 @@ def qc(input_vcf_path, output_vcf_path, bins=100, lambda_kl=0.1, pi=1e-4, thresh
                     p_error=p_error,
                     alpha_h1=1,
                     beta_h1=1,
-                    lambda_kl=0.1,
-                    kl_div=kl_div
+                    lambda_kl=lambda_kl,
+                    kl_div=kl_div,
+                    pi=pi
                 )
                 pp *= posterior
 
@@ -257,20 +258,102 @@ def qc(input_vcf_path, output_vcf_path, bins=100, lambda_kl=0.1, pi=1e-4, thresh
                 'pos': variant['pos'],
                 'ref': variant['ref'],
                 'alt': [ref_alts[g_idx] if g_idx is not None else '.' for g_idx in gt] if gt else ['.'],
+                
+                'vaf': vaf,
+                'A': ad,
+                'D': dp,
+                'p_error': p_error,
+                
                 'ploidy': len(gt),
-                'kl_divergence_single': np.mean(kl_div_singles),
+                'kl_divergence_single': kl_div_singles,
                 'posterior': pp,
                 'is_mutation': pp > threshold
             })
-            
+        
         # Calculate multi-sample KL divergence for the position
         kl_div_multi = calculate_kl_divergence_multi(vaf_obs, q_alpha, q_beta, bin_edges)
         pos_kl_div[(variant['chrom'], variant['pos'])] = kl_div_multi if np.isfinite(kl_div_multi) else 10000
+
+    results, alpha_h1, beta_h1 = iterative_beta_fit_and_call(results, lambda_kl=lambda_kl, pi=pi, threshold=threshold)
+    for r in results:
+        r.pop('vaf', None)  # Remove VAF from final results
+        r.pop('A', None)    # Remove A from final results
+        r.pop('D', None)    # Remove D from final results
+        r['kl_divergence_single'] = np.mean(r['kl_divergence_single']) if r['kl_divergence_single'] else 0
 
     print(f"Total variants processed: {len(results)}\n")
     write_vcf(input_vcf_path, output_vcf_path, results, pos_kl_div)
     
     return results
+
+
+def iterative_beta_fit_and_call(results, lambda_kl=0.1, pi=5e-8 * 16569, threshold=0.9, max_iter=10, tol=1e-4):
+    """
+    Iteratively estimate beta distribution parameters from called mutations and update mutation calls
+    until convergence. For multi-allelic sites, treat each ALT as an independent event and use the
+    product of posteriors as the final posterior for the site.
+    """
+    safe_alpha_h1, safe_beta_h1 = 1, 1  # Default values for Beta distribution parameters
+    
+    prev_is_mut = None
+    for i in range(max_iter):
+        # 1. Collect VAFs from currently called mutations
+        vaf_list = []
+        for r in results:
+            if r['is_mutation'] and r.get('vaf') is not None:
+                if isinstance(r['vaf'], list):
+                    vaf_list.extend([v for v in r['vaf'] if v is not None and 0 < v < 1])
+                else:
+                    vaf_list.append(r['vaf'])
+                    
+        # 2. Fit Beta distribution parameters using MLE
+        alpha_h1, beta_h1 = estimate_beta_params_mle(vaf_list)
+
+        # Ensure alpha_h1 and beta_h1 are valid
+        safe_alpha_h1 = alpha_h1 if alpha_h1 is not None else 1
+        safe_beta_h1 = beta_h1 if beta_h1 is not None else 1
+        
+        # 3. Recalculate posterior and is_mutation for each record
+        for r in results:
+            # For multi-allelic sites, calculate posterior for each ALT and take the product
+            new_pps = []
+            for a_obs, kl_div in zip(r['A'], r['kl_divergence_single']):
+                new_pp = bayesian_filter(
+                    A=a_obs,
+                    D=r['D'],
+                    p_error=r['p_error'],
+                    alpha_h1=safe_alpha_h1,
+                    beta_h1=safe_beta_h1,
+                    lambda_kl=lambda_kl,
+                    kl_div=kl_div,
+                    pi=pi,
+                )
+                new_pps.append(new_pp)
+
+            r['posterior'] = np.prod(new_pps)
+            r['is_mutation'] = r['posterior'] > threshold
+            
+        # 4. Check for convergence
+        curr_is_mut = [r['is_mutation'] for r in results]
+        if prev_is_mut is not None:
+            diff = np.mean([a != b for a, b in zip(prev_is_mut, curr_is_mut)])
+            if diff < tol:
+                break
+            
+        prev_is_mut = curr_is_mut.copy()
+
+    return results, safe_alpha_h1, safe_beta_h1
+
+def estimate_beta_params_mle(vaf_list):
+    """Fit Beta distribution parameters using Maximum Likelihood Estimation (MLE)."""
+    # Remove None and extreme values to avoid fitting errors
+    vaf_arr = np.array([v for v in vaf_list if v is not None and 0 < v < 1])
+    if len(vaf_arr) < 2:
+        return 1, 1  # Return default if not enough data
+        
+    # Use scipy's beta.fit with fixed loc=0, scale=1
+    a, b, loc, scale = beta.fit(vaf_arr, floc=0, fscale=1)
+    return a, b
 
 
 def estimate_background_noise(background_error_rates, bins=100):
