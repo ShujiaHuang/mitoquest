@@ -27,6 +27,9 @@ from scipy.stats import beta
 from scipy.special import betaln
 from typing import Dict, Generator, Optional
 from pathlib import Path
+
+import matplotlib
+matplotlib.use('Agg')  # Use non-interactive backend suitable for cluster/terminal
 import matplotlib.pyplot as plt
 
 
