@@ -39,15 +39,15 @@ def plot_beta_fit_convergence(alpha_hist, beta_hist, diff_hist, save_path='beta_
     ax2 = ax1.twinx()
 
     # Plot alpha and beta on left y-axis
-    ax1.plot(alpha_hist, label='alpha_h1', color='tab:blue', marker='o')
-    ax1.plot(beta_hist, label='beta_h1', color='tab:orange', marker='s')
+    ax1.plot(alpha_hist, label=r'${\alpha}$', color='tab:blue', marker='o')
+    ax1.plot(beta_hist, label=r'${\beta}$', color='tab:orange', marker='s')
     ax1.set_xlabel('Iteration')
     ax1.set_ylabel('Beta parameter value')
     ax1.tick_params(axis='y', labelcolor='tab:blue')
     ax1.grid(True, linestyle='--', alpha=0.5)
 
     # Plot diff on right y-axis
-    ax2.plot(diff_hist, label='is_mutation diff', color='tab:red', marker='x', linestyle='--')
+    ax2.plot(diff_hist, label=r'$\delta$ (Mutation call change)', color='tab:red', marker='x', linestyle='--')
     ax2.set_ylabel('Mutation call change ratio', color='tab:red')
     ax2.tick_params(axis='y', labelcolor='tab:red')
 
@@ -58,12 +58,9 @@ def plot_beta_fit_convergence(alpha_hist, beta_hist, diff_hist, save_path='beta_
 
     plt.title('Convergence of Beta Parameters and Mutation Call Change')
     plt.tight_layout()
-    plt.savefig(save_path, dpi=150)
+    plt.savefig(save_path, dpi=300)
     plt.close()
 
-# 在 main 或 qc 里调用
-# results, alpha_h1, beta_h1, alpha_hist, beta_hist, diff_hist = iterative_beta_fit_and_call(...)
-# plot_beta_fit_convergence(alpha_hist, beta_hist, diff_hist)
 
 def check_index_file(variant_file_path):
     """
@@ -323,16 +320,17 @@ def qc(input_vcf_path, output_vcf_path, bins=100, lambda_kl=0.1, pi=5e-8 * 16569
     return results, alpha_hist, beta_hist, diff_hist
 
 
-def iterative_beta_fit_and_call(results, lambda_kl=0.1, pi=5e-8 * 16569, threshold=0.9, max_iter=50, tol=1e-4):
+def iterative_beta_fit_and_call(results, lambda_kl=0.1, pi=5e-8 * 16569, threshold=0.9, max_iter=50, tol=1e-5):
     """
     Iteratively estimate beta distribution parameters from called mutations and update mutation calls
     until convergence. For multi-allelic sites, treat each ALT as an independent event and use the
     product of posteriors as the final posterior for the site.
     """
-    safe_alpha_h1, safe_beta_h1 = 1, 1  # Default values for Beta distribution parameters
-    alpha_hist, beta_hist, diff_hist = [], [], []
     
-    prev_is_mut = None
+    safe_alpha_h1, safe_beta_h1 = 1, 1  # Default values for Beta distribution parameters
+    alpha_hist, beta_hist, diff_hist = [1], [1], []
+    prev_is_mut = [r['is_mutation'] for r in results]
+
     for i in range(max_iter):
         # 1. Collect VAFs from currently called mutations
         vaf_list = []
@@ -515,9 +513,8 @@ def main():
         # Parse VCF file
         variants, alpha_hist, beta_hist, diff_hist = qc(args.vcf, args.output_vcf, args.bins, args.lambda_kl, args.pi, args.threshold)
         # Plot convergence of beta parameters and mutation calls
-        plot_beta_fit_convergence(alpha_hist, beta_hist, diff_hist, 
-                                  save_path=args.output.split('.')[0] + '_beta_fit_convergence.png')
-        print(f'diff_hist: {diff_hist}')
+        plot_beta_fit_convergence(alpha_hist, beta_hist, diff_hist, save_path=args.output.split('.')[0] + '_beta_fit_convergence.png')
+        print(f'diff_hist: {diff_hist}\nalpha_hist: {alpha_hist}\nbeta_hist: {beta_hist}')
 
         # Save results to CSV
         df_results = pd.DataFrame(variants).explode('alt')
