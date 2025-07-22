@@ -62,6 +62,41 @@ def plot_beta_fit_convergence(alpha_hist, beta_hist, diff_hist, save_path='beta_
     plt.close()
 
 
+def plot_beta_fit_and_vaf(alpha_hist, beta_hist, vaf_true_list, vaf_false_list, save_path='beta_fit_vaf.png'):
+    plt.figure(figsize=(10, 6))
+    x = np.linspace(0, 1, 200)
+    ax1 = plt.gca()
+    ax2 = ax1.twinx()
+
+    # Plot Beta distributions for each iteration (faded lines) on ax1
+    for i, (a, b) in enumerate(zip(alpha_hist, beta_hist)):
+        ax1.plot(x, beta.pdf(x, a, b), color='tab:blue', alpha=0.2 + 0.6 * (i+1)/len(alpha_hist), lw=1, ls='--',
+                 label='Beta dist (iter {})'.format(i+1) if i == len(alpha_hist)-1 else None)
+    # Plot final Beta distribution (bold)
+    ax1.plot(x, beta.pdf(x, alpha_hist[-1], beta_hist[-1]), color='tab:blue', lw=2, label=f'Final Beta({alpha_hist[-1]:.4f}, {beta_hist[-1]:.4f})')
+    ax1.set_ylabel('Beta PDF', color='tab:blue')
+    ax1.tick_params(axis='y', labelcolor='tab:blue')
+    ax1.grid(True, linestyle='--', alpha=0.5)
+
+    # Plot VAF histograms on ax2
+    bins = 80
+    ax2.hist(vaf_false_list, bins=bins, range=(0,1), color='tab:gray', alpha=0.4, label='VAF (is_mutation=False)')
+    ax2.hist(vaf_true_list, bins=bins, range=(0,1), color='tab:orange', alpha=0.4, label='VAF (is_mutation=True)')
+    ax2.set_ylabel('VAF Count', color='tab:orange')
+    ax2.tick_params(axis='y', labelcolor='tab:orange')
+
+    # Legends
+    lines_1, labels_1 = ax1.get_legend_handles_labels()
+    lines_2, labels_2 = ax2.get_legend_handles_labels()
+    ax2.legend(lines_1 + lines_2, labels_1 + labels_2, loc='upper right')
+
+    plt.xlabel('Variant Allele Frequency (VAF)')
+    plt.title('Beta Distribution Fit and VAFs by Mutation Status')
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=300)
+    plt.close()
+
+
 def check_index_file(variant_file_path):
     """
     Check if index file exists for the variant file
@@ -308,7 +343,14 @@ def qc(input_vcf_path, output_vcf_path, bins=100, lambda_kl=0.1, pi=5e-8 * 16569
         pos_kl_div[(variant['chrom'], variant['pos'])] = kl_div_multi if np.isfinite(kl_div_multi) else 10000
 
     results, alpha_h1, beta_h1, alpha_hist, beta_hist, diff_hist = iterative_beta_fit_and_call(results, lambda_kl=lambda_kl, pi=pi, threshold=threshold)
+    vaf_true_list = []
+    vaf_false_list = []
     for r in results:
+        if r['is_mutation']:
+            vaf_true_list.extend(r['vaf'])
+        else:
+            vaf_false_list.extend(r['vaf'])
+            
         r.pop('vaf', None)  # Remove VAF from final results
         r.pop('A', None)    # Remove A from final results
         r.pop('D', None)    # Remove D from final results
@@ -316,8 +358,8 @@ def qc(input_vcf_path, output_vcf_path, bins=100, lambda_kl=0.1, pi=5e-8 * 16569
 
     print(f"Total variants processed: {len(results)}, Beta distribution for true variants: Beta({alpha_h1}, {beta_h1}).\n")
     write_vcf(input_vcf_path, output_vcf_path, results, pos_kl_div)
-    
-    return results, alpha_hist, beta_hist, diff_hist
+
+    return results, vaf_true_list, vaf_false_list, alpha_hist, beta_hist, diff_hist
 
 
 def iterative_beta_fit_and_call(results, lambda_kl=0.1, pi=5e-8 * 16569, threshold=0.9, max_iter=50, tol=1e-5):
@@ -521,10 +563,16 @@ def main():
     args = parser.parse_args()
     try:
         # Parse VCF file
-        variants, alpha_hist, beta_hist, diff_hist = qc(args.vcf, args.output_vcf, args.bins, args.lambda_kl, args.pi, args.threshold)
+        variants, vaf_true_list, vaf_false_list, alpha_hist, beta_hist, diff_hist = qc(args.vcf, args.output_vcf, args.bins, args.lambda_kl, args.pi, args.threshold)
+        
         # Plot convergence of beta parameters and mutation calls
-        plot_beta_fit_convergence(alpha_hist, beta_hist, diff_hist, save_path=args.output.split('.')[0] + '_beta_fit_convergence.png')
+        plot_beta_fit_convergence(alpha_hist, beta_hist, diff_hist, 
+                                  save_path=args.output.split('.')[0] + '_beta_fit_convergence.png')
         print(f'diff_hist: {diff_hist}\nalpha_hist: {alpha_hist}\nbeta_hist: {beta_hist}')
+        
+        # plot Beta distribution fit and VAFs
+        plot_beta_fit_and_vaf(alpha_hist, beta_hist, vaf_true_list, vaf_false_list, 
+                              save_path=args.output.split('.')[0] + '_beta_fit_vaf.png')
 
         # Save results to CSV
         df_results = pd.DataFrame(variants).explode('alt')
