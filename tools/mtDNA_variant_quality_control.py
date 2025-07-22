@@ -72,6 +72,7 @@ def plot_beta_fit_and_vaf(alpha_hist, beta_hist, vaf_true_list, vaf_false_list, 
     for i, (a, b) in enumerate(zip(alpha_hist, beta_hist)):
         ax1.plot(x, beta.pdf(x, a, b), color='tab:blue', alpha=0.2 + 0.6 * (i+1)/len(alpha_hist), lw=1, ls='--',
                  label='Beta dist (iter {})'.format(i+1) if i == len(alpha_hist)-1 else None)
+
     # Plot final Beta distribution (bold)
     ax1.plot(x, beta.pdf(x, alpha_hist[-1], beta_hist[-1]), color='tab:blue', lw=2, label=f'Final Beta({alpha_hist[-1]:.4f}, {beta_hist[-1]:.4f})')
     ax1.set_ylabel('Beta PDF', color='tab:blue')
@@ -347,10 +348,10 @@ def qc(input_vcf_path, output_vcf_path, bins=100, lambda_kl=0.1, pi=5e-8 * 16569
     vaf_false_list = []
     for r in results:
         if r['is_mutation']:
-            vaf_true_list.extend(r['vaf'])
+            vaf_true_list.extend([v for v in r['vaf'] if v is not None and 0 < v < 1])
         else:
-            vaf_false_list.extend(r['vaf'])
-            
+            vaf_false_list.extend([v for v in r['vaf'] if v is not None and 0 < v < 1])
+
         r['kl_divergence_single'] = np.mean(r['kl_divergence_single']) if r['kl_divergence_single'] else 0
         r.pop('vaf', None)  # Remove VAF from final results
         r.pop('A', None)    # Remove A from final results
@@ -565,6 +566,11 @@ def main():
         # Parse VCF file
         variants, vaf_true_list, vaf_false_list, alpha_hist, beta_hist, diff_hist = qc(args.vcf, args.output_vcf, args.bins, args.lambda_kl, args.pi, args.threshold)
         
+        # Save results to CSV
+        df_results = pd.DataFrame(variants).explode('alt')
+        df_results = df_results[df_results['ref'] != df_results['alt']]
+        df_results.to_csv(args.output, sep='\t', index=False)
+        
         # Plot convergence of beta parameters and mutation calls
         plot_beta_fit_convergence(alpha_hist, beta_hist, diff_hist, 
                                   save_path=args.output.split('.')[0] + '_beta_fit_convergence.png')
@@ -573,12 +579,9 @@ def main():
         # plot Beta distribution fit and VAFs
         plot_beta_fit_and_vaf(alpha_hist, beta_hist, vaf_true_list, vaf_false_list, 
                               save_path=args.output.split('.')[0] + '_beta_fit_vaf.png')
-
-        # Save results to CSV
-        df_results = pd.DataFrame(variants).explode('alt')
-        df_results = df_results[df_results['ref'] != df_results['alt']]
-        df_results.to_csv(args.output, sep='\t', index=False)
         print(f"Quality control analysis completed. Results saved to {args.output_vcf}")
+
+        
         
     except Exception as e:
         print(f"Error: {str(e)}")
