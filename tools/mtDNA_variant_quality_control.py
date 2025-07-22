@@ -342,12 +342,6 @@ def iterative_beta_fit_and_call(results, lambda_kl=0.1, pi=5e-8 * 16569, thresho
                 else:
                     hom_var_list.extend([v for v in r['vaf'] if v is not None and 0 < v < 1])
                 
-                # if isinstance(r['vaf'], list):
-                #     vaf_list.extend([v for v in r['vaf'] if v is not None and 0 < v < 1])
-                # else:
-                #     vaf_list.append(r['vaf'])
-                
-        # vaf_list = []
         # hom_var_list = np.array(hom_var_list)
         # np.random.shuffle(hom_var_list) # Random shuffling
         # n = min(len(het_var_list), len(hom_var_list)) 
@@ -396,6 +390,21 @@ def iterative_beta_fit_and_call(results, lambda_kl=0.1, pi=5e-8 * 16569, thresho
 
     return results, safe_alpha_h1, safe_beta_h1, alpha_hist, beta_hist, diff_hist
 
+
+def estimate_background_noise(background_error_rates, bins=100):
+    """Estimate background noise distribution using normal samples (GT='0', '1', '2', ...)."""
+    
+    # Fit Beta distribution
+    if len(background_error_rates) == 0 or np.all(background_error_rates == 0):
+        return 1e-4, 1e-8, np.linspace(0, 1, bins + 1)  #, np.zeros(bins), np.linspace(0, 1, bins + 1)
+    
+    hist, bin_edges = np.histogram(background_error_rates, bins=bins, density=True, range=(0, 1))
+    # a, b = parametrize_vaf_distribution(background_error_rates)
+    a, b = estimate_beta_params_mle(background_error_rates)
+
+    return a, b, bin_edges  # return alpha and beta parameters for Beta distribution
+
+
 def estimate_beta_params_mle(vaf_list):
     """Fit Beta distribution parameters using Maximum Likelihood Estimation (MLE)."""
     # Remove None and extreme values to avoid fitting errors
@@ -406,19 +415,6 @@ def estimate_beta_params_mle(vaf_list):
     # Use scipy's beta.fit with fixed loc=0, scale=1
     a, b, loc, scale = beta.fit(vaf_arr, floc=0, fscale=1)
     return a, b
-
-
-def estimate_background_noise(background_error_rates, bins=100):
-    """Estimate background noise distribution using normal samples (GT='0', '1', '2', ...)."""
-    
-    # Fit Beta distribution
-    if len(background_error_rates) == 0 or np.all(background_error_rates == 0):
-        return 1e-4, 1e-8, np.linspace(0, 1, bins + 1)  #, np.zeros(bins), np.linspace(0, 1, bins + 1)
-    
-    hist, bin_edges = np.histogram(background_error_rates, bins=bins, density=True, range=(0, 1))
-    a, b = parametrize_vaf_distribution(background_error_rates)
-
-    return a, b, bin_edges  # return alpha and beta parameters for Beta distribution
 
 
 def parametrize_vaf_distribution(vaf_samples):
