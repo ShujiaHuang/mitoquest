@@ -252,7 +252,7 @@ def qc(input_vcf_path, output_vcf_path, bins=100, lambda_kl=0.1, pi=5e-8 * 16569
         p_error = np.mean(background_error_rates)
 
         # QC for each sample
-        sys.stderr.write(f"Background Error Rate: {p_error}. Processing variant at {variant}. \n")
+        sys.stderr.write(f"Processing variant at {variant['chrom']}:{variant['pos']}. Background Error Rate: {p_error}. \n")
         for sample, gt, vaf in zip(samples, sample_gts, vaf_obs):
             sys.stderr.write(f" - {sample}, VAF: {vaf}\n")
             
@@ -333,14 +333,28 @@ def iterative_beta_fit_and_call(results, lambda_kl=0.1, pi=5e-8 * 16569, thresho
 
     for i in range(max_iter):
         # 1. Collect VAFs from currently called mutations
-        vaf_list = []
+        het_var_list = []
+        hom_var_list = []
         for r in results:
             if r['is_mutation'] and r.get('vaf') is not None:
-                if isinstance(r['vaf'], list):
-                    vaf_list.extend([v for v in r['vaf'] if v is not None and 0 < v < 1])
+                if r['ploidy'] > 1:
+                    het_var_list.extend([v for v in r['vaf'] if v is not None and 0 < v < 1])
                 else:
-                    vaf_list.append(r['vaf'])
-                    
+                    hom_var_list.extend([v for v in r['vaf'] if v is not None and 0 < v < 1])
+                
+                # if isinstance(r['vaf'], list):
+                #     vaf_list.extend([v for v in r['vaf'] if v is not None and 0 < v < 1])
+                # else:
+                #     vaf_list.append(r['vaf'])
+                
+        # vaf_list = []
+        # hom_var_list = np.array(hom_var_list)
+        # np.random.shuffle(hom_var_list) # Random shuffling
+        # n = min(len(het_var_list), len(hom_var_list)) 
+        step = len(hom_var_list) // len(het_var_list) if len(hom_var_list) > len(het_var_list) else 1
+        vaf_list = het_var_list + hom_var_list[::step]  # Use same number of het and hom variants
+        print(f"- Iteration {i+1}: {len(vaf_list)} VAFs collected for Beta fitting.")
+
         # 2. Fit Beta distribution parameters using MLE
         alpha_h1, beta_h1 = estimate_beta_params_mle(vaf_list)
 
