@@ -83,6 +83,7 @@ def plot_beta_fit_and_vaf(alpha_hist, beta_hist, vaf_true_list, vaf_false_list, 
     bins = 100
     ax2.hist(vaf_false_list, bins=bins, range=(0,1), color='tab:gray', alpha=0.4, label='VAF (is_mutation=False)')
     ax2.hist(vaf_true_list, bins=bins, range=(0,1), color='tab:orange', alpha=0.4, label='VAF (is_mutation=True)')
+    ax2.set_yscale('log')
     ax2.set_ylabel('VAF Count', color='tab:orange')
     ax2.tick_params(axis='y', labelcolor='tab:orange')
 
