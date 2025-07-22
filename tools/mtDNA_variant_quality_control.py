@@ -79,7 +79,7 @@ def plot_beta_fit_and_vaf(alpha_hist, beta_hist, vaf_true_list, vaf_false_list, 
     ax1.grid(True, linestyle='--', alpha=0.5)
 
     # Plot VAF histograms on ax2
-    bins = 80
+    bins = 100
     ax2.hist(vaf_false_list, bins=bins, range=(0,1), color='tab:gray', alpha=0.4, label='VAF (is_mutation=False)')
     ax2.hist(vaf_true_list, bins=bins, range=(0,1), color='tab:orange', alpha=0.4, label='VAF (is_mutation=True)')
     ax2.set_ylabel('VAF Count', color='tab:orange')
@@ -351,10 +351,10 @@ def qc(input_vcf_path, output_vcf_path, bins=100, lambda_kl=0.1, pi=5e-8 * 16569
         else:
             vaf_false_list.extend(r['vaf'])
             
+        r['kl_divergence_single'] = np.mean(r['kl_divergence_single']) if r['kl_divergence_single'] else 0
         r.pop('vaf', None)  # Remove VAF from final results
         r.pop('A', None)    # Remove A from final results
         r.pop('D', None)    # Remove D from final results
-        r['kl_divergence_single'] = np.mean(r['kl_divergence_single']) if r['kl_divergence_single'] else 0
 
     print(f"Total variants processed: {len(results)}, Beta distribution for true variants: Beta({alpha_h1}, {beta_h1}).\n")
     write_vcf(input_vcf_path, output_vcf_path, results, pos_kl_div)
