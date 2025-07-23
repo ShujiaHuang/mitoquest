@@ -81,9 +81,13 @@ def plot_beta_fit_and_vaf(alpha_hist, beta_hist, vaf_true_list, vaf_false_list, 
 
     # Plot VAF histograms on ax2
     bins = 100
-    ax2.hist([v for v in vaf_false_list if v < 0.99], bins=bins, range=(0,1), color='tab:gray', alpha=0.4, label='VAF (is_mutation=False)')
+    ax2.hist(vaf_false_list, bins=bins, range=(0,1), color='tab:gray', alpha=0.4, label='VAF (is_mutation=False)')
     ax2.hist([v for v in vaf_true_list  if v < 0.99], bins=bins, range=(0,1), color='tab:orange', alpha=0.4, label='VAF (is_mutation=True)')
+    
     # ax2.set_yscale('log')
+    max_count = np.percentile(np.concatenate([np.histogram(vaf_true_list, bins=bins, range=(0,1))[0],
+                                              np.histogram(vaf_false_list, bins=bins, range=(0,1))[0]]), 98)
+    ax2.set_ylim(top=int(max_count))
     ax2.set_ylabel('VAF Count', color='tab:orange')
 
     # Plot VAF histograms as density
