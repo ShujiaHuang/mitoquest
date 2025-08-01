@@ -92,14 +92,14 @@ void seek_position(const std::string &fa_seq,   // must be the whole chromosome 
 VariantInfo basetype_caller_unit(const AlignInfo &pos_align_info, const double min_af);
 
 /**
- * @brief Get the Pileup object
+ * @brief Get the variant information object
  * 
  * @param bt BaseType
  * @param smp_bi BaseType::BatchInfo 
  * @return VariantInfo 
  * 
  */
-VariantInfo get_pos_pileup(const BaseType &bt, const BaseType::BatchInfo *smp_bi);
+VariantInfo get_pos_variant_info(const BaseType &bt, const BaseType::BatchInfo *smp_bi);
 VCFRecord joint_variant_in_pos(std::vector<VariantInfo> variant_infos, const double hf_cutoff);
 
 #endif // _MT_VARIANT_CALLER_H_

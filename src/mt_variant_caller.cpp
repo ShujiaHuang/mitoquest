@@ -407,7 +407,7 @@ bool MtVariantCaller::_variant_joint(const std::vector<PosVariantMap> &samples_v
                 if (is_empty) is_empty = false;
             } else {
 
-                VariantInfo vi(gr.chrom, pos, 0, 0); // empty VariantInfo
+                VariantInfo vi(gr.chrom, pos, 0, 0); // Empty VariantInfo
                 vvi.push_back(vi);
             }
         }
@@ -556,7 +556,7 @@ void seek_position(const std::string &fa_seq,                               // m
                 ab.ref_base  = "";
                 ab.read_base = "+" + aligned_pairs[i].read_base;
 
-                // Need to convert the read_base to upper case if it is a insertion in case of the ref is lower case.
+                // Need to convert the read_base to upper case if it is a insertion in case of the read base is lower case.
                 std::transform(ab.read_base.begin(), ab.read_base.end(), ab.read_base.begin(), ::toupper);
 
                 // mean quality of the whole insertion sequence
@@ -580,8 +580,8 @@ void seek_position(const std::string &fa_seq,                               // m
                 std::transform(ab.read_base.begin(), ab.read_base.end(), ab.read_base.begin(), ::toupper);
 
                 // set to be mean quality of the whole read if deletion
-                ab.base_qual = uint8_t(al.mean_qqual()) + 33; // 33 is the offset of base QUAL;
-            } else { 
+                ab.base_qual = static_cast<char>(al.mean_qqual() + 33); // 33 is the offset of base QUAL;
+            } else {
                 continue;  // Skip other kinds of CIGAR symbals.
             }
 
@@ -653,10 +653,10 @@ VariantInfo basetype_caller_unit(const AlignInfo &pos_align_info, const double m
     BaseType bt(&smp_bi, min_af);
     bt.lrt();  // likelihood ratio test to detect candidate variants
 
-    return get_pos_pileup(bt, &smp_bi);
+    return get_pos_variant_info(bt, &smp_bi);
 }
 
-VariantInfo get_pos_pileup(const BaseType &bt, const BaseType::BatchInfo *smp_bi) {
+VariantInfo get_pos_variant_info(const BaseType &bt, const BaseType::BatchInfo *smp_bi) {
     VariantInfo vi(bt.get_ref_id(), bt.get_ref_pos(), bt.get_total_depth(), bt.get_var_qual());
     int major_allele_depth = 0;
     vi.major_allele_idx    = 0;
