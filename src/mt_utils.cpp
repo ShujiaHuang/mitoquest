@@ -23,7 +23,7 @@ StrandBiasInfo strand_bias(const std::string &major_base,
     int maj_fwd = 0, maj_rev = 0;
     int alt_fwd = 0, alt_rev = 0;
     for (size_t i(0); i < bases.size(); ++i) {
-        if (bases[i][0] != 'N' && bases[i][0] != 'n') continue;
+        if (bases[i][0] == 'N' || bases[i][0] == 'n') continue;
 
         if (strands[i] == '+') {
             if (bases[i] == major_base) {
