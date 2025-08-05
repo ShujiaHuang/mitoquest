@@ -24,7 +24,7 @@ StrandBiasInfo strand_bias(const std::string &major_base,
     int alt_fwd = 0, alt_rev = 0;
     for (size_t i(0); i < bases.size(); ++i) {
         if (bases[i][0] != 'N' && bases[i][0] != 'n') continue;
-        
+
         if (strands[i] == '+') {
             if (bases[i] == major_base) {
                 ++maj_fwd;
@@ -40,7 +40,7 @@ StrandBiasInfo strand_bias(const std::string &major_base,
             }
 
         } else {
-            throw std::runtime_error("[ERROR] Get strange strand symbol: " + std::to_string(strands[i]));
+            throw std::runtime_error("[ERROR] Get strange strand symbol: " + bases[i] + " " + std::to_string(strands[i]));
         }
     }
 
