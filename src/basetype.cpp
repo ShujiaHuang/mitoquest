@@ -27,6 +27,19 @@ BaseType::BaseType(const BatchInfo *smp_bi, double min_af) {
     std::vector<std::string> tmp_bases(smp_bi->align_bases);
     tmp_bases.insert(tmp_bases.end(), BASIC_BASES.begin(), BASIC_BASES.end());
     _UNIQ_BASES = ngslib::get_unique_strings(tmp_bases);
+
+    // Remove bases that are not valid (e.g., 'N', '*')
+    _UNIQ_BASES.erase(
+        std::remove_if(_UNIQ_BASES.begin(), _UNIQ_BASES.end(),
+            [](const std::string& base) {
+                return base[0] == 'N' || base[0] == 'n' || base[0] == '*';
+                // Add more conditions as needed
+            }
+        ),
+        _UNIQ_BASES.end()
+    );
+
+    // Continue with the rest of the initialization
     for (size_t i(0); i < _UNIQ_BASES.size(); ++i) {
         _B_IDX[_UNIQ_BASES[i]] = i;  // set string of UNIQ_BASES map to array index
         _depth[_UNIQ_BASES[i]] = 0;  // inital the base depth to 0.
