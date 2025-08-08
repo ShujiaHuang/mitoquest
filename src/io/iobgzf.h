@@ -15,6 +15,7 @@
 #include <sstream>  // Add this header for std::ostringstream
 #include <string>
 #include <vector>
+#include <memory>  // std::unique_ptr
 
 #include <htslib/bgzf.h>
 #include <htslib/tbx.h>
