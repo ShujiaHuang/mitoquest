@@ -14,10 +14,27 @@ namespace ngslib {
     void BGZFile::close() {
         if (_bgzf) {
             int is_cl = bgzf_close(_bgzf);  // `bgzf_close` return 0 on success and -1 on error
-            _bgzf = nullptr;  // must set to be a nullptr after bgzf_close
-
             if (is_cl < 0) std::cerr << "[iobgzf.cpp::~BGZFile] " + _fname + " fail close." << std::endl;
+
+            _bgzf = nullptr;  // must set to be a nullptr after bgzf_close
+            _fname.clear();
+            _mode.clear();
         }
+    }
+
+    // Add static factory method for creating multiple BGZFile objects
+    // CAUSION: The key word of 'static' doest not need to be placed here.
+    std::vector<std::unique_ptr<BGZFile>> BGZFile::open_multiple(
+        const std::vector<std::string>& filenames, 
+        const char* mode) 
+    {
+        std::vector<std::unique_ptr<BGZFile>> files;
+        files.reserve(filenames.size());
+        for (const auto& filename : filenames) {
+            files.push_back(std::make_unique<BGZFile>(filename, mode));
+        }
+
+        return files;
     }
 
     // Write operations
@@ -66,5 +83,18 @@ namespace ngslib {
         
         if (s.s) free(s.s);
         return false;  // EOF or error
+    }
+
+    bool BGZFile::readline_with_index(tbx_t* tbx, hts_itr_t* itr, std::string& line) {
+        kstring_t s; s.s = NULL; s.l = s.m = 0; // must be refreshed in loop
+        int ret = tbx_bgzf_itr_next(_bgzf, tbx, itr, &s);
+        if (ret < 0) {
+            free(s.s);
+            return false;
+        }
+
+        line = std::string(s.s);
+        free(s.s);
+        return true;
     }
 }  // namespace ngslib

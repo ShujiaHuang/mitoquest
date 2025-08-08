@@ -17,6 +17,7 @@
 #include <vector>
 
 #include <htslib/bgzf.h>
+#include <htslib/tbx.h>
 #include <htslib/kstring.h>
 
 
@@ -24,10 +25,11 @@ namespace ngslib {
 
     class BGZFile {
     private:
+        static const size_t DEFAULT_BUFFER_SIZE = 4096;
+
         std::string _fname;  // input file name
         std::string _mode;   // read and write mode, Mode matching.
         BGZF *_bgzf;         // file handle
-        static const size_t DEFAULT_BUFFER_SIZE = 4096;
 
         // Private method to open the file
         void _open(const std::string &fn, const std::string mode);
@@ -37,7 +39,7 @@ namespace ngslib {
         BGZFile &operator=(const BGZFile &b) = delete;  // reject using copy/assignment operator (C++11 style).
 
     public:
-        BGZFile(): _fname(""), _mode(""), _bgzf(nullptr) {}  // default constructor, do nothing
+        BGZFile(): _bgzf(nullptr) {}  // default constructor, do nothing
 
         /**
          * @brief call `bgzf_open` function to open file.
@@ -56,13 +58,51 @@ namespace ngslib {
         explicit BGZFile(const std::string &fn, const std::string mode = "rb") {
             _open(fn, mode);  /* Open the specified file for reading or writing. */
         }
+
+        // Add move constructor and move assignment
+        BGZFile(BGZFile&& other) noexcept : 
+            _bgzf(other._bgzf), 
+            _fname(other._fname), 
+            _mode(other._mode) 
+        {
+            other._bgzf = nullptr;
+            other._fname.clear();
+            other._mode.clear();
+        }
+        
+        BGZFile& operator=(BGZFile&& other) noexcept {
+            if (this != &other) {
+                close();  // Close current file if open
+
+                // Move all members
+                _bgzf = other._bgzf;
+                _fname = std::move(other._fname);
+                _mode = std::move(other._mode);
+                
+                // Reset other object's state
+                other._bgzf = nullptr;
+                other._fname.clear();
+                other._mode.clear();
+            }
+            return *this;
+        }
+
+        // Add static factory method for creating multiple BGZFile objects
+        static std::vector<std::unique_ptr<BGZFile>> open_multiple(
+            const std::vector<std::string>& filenames, 
+            const char* mode = "r");
+
+        // Destructor
         ~BGZFile() { close(); /* call to close the file.*/ }
+    
+        // Functions for I/O operations
+        BGZFile& write(const std::string &data); // Write operations
 
         // Read up to _size_ bytes from the file storing into _data_.
         BGZFile& read_bytes(std::string &data, size_t size = DEFAULT_BUFFER_SIZE);
         bool read(std::string &data, char delim = '\n'); 
         bool readline(std::string &line) { return read(line, '\n'); } // Read a line from the file
-        BGZFile& write(const std::string &data); // Write operations
+        bool readline_with_index(tbx_t* tbx, hts_itr_t* itr, std::string& line); // Add method to read a line with index
 
         // Utility methods
         bool is_open() const { return _bgzf != nullptr; }
