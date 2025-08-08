@@ -56,7 +56,6 @@ BaseType::BaseType(const BatchInfo *smp_bi, double min_af) {
             _bases2ref.insert({smp_bi->align_bases[i], smp_bi->ref_bases[i]});
         }
 
-        double epsilon = exp((smp_bi->align_base_quals[i] - 33) * MLN10TO10); // base error probability
         if (smp_bi->align_bases[i][0] != 'N' && smp_bi->align_bases[i][0] != 'n') { 
             // ignore all the 'N' bases
             _total_depth++;
@@ -64,6 +63,7 @@ BaseType::BaseType(const BatchInfo *smp_bi, double min_af) {
 
             // Initialized the array to {0, 0, 0, 0, ...}, which set allele likelihood for _UNIQ_BASES
             std::vector<double> allele_lh(_UNIQ_BASES.size(), 0);
+            double epsilon = exp((smp_bi->align_base_quals[i] - 33) * MLN10TO10); // base error probability
             for (auto &b: _UNIQ_BASES) {
                 // convert the quality phred scale to be the base confident probabilty value
                 allele_lh[_B_IDX[b]] = (smp_bi->align_bases[i] == b) ? 1.0 - epsilon : epsilon / (_UNIQ_BASES.size() - 1);

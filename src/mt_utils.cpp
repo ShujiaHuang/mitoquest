@@ -82,8 +82,7 @@ AlleleInfo collect_allele_info(std::vector<VariantInfo>& variants) {
         }
     }
     AlleleInfo ai; 
-    ai.ref = shared_ref;  // set raw ref
-    std::transform(shared_ref.begin(), shared_ref.end(), shared_ref.begin(), ::toupper);
+    ai.ref = shared_ref;  // set raw ref and should be upper base already
 
     // Normalize ALTs and update variants
     std::set<std::string> unique_alts;
@@ -91,7 +90,6 @@ AlleleInfo collect_allele_info(std::vector<VariantInfo>& variants) {
         for (size_t j = 0; j < smp_var.alt_bases.size(); j++) {
             std::string alt = smp_var.alt_bases[j];
             std::string ref = smp_var.ref_bases[j];
-            std::transform(ref.begin(), ref.end(), ref.begin(), ::toupper);
 
             // rebase if Indels
             if (alt[0] == '-') {

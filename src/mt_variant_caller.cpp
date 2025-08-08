@@ -556,9 +556,6 @@ void seek_position(const std::string &fa_seq,                               // m
                 ab.ref_base  = "";
                 ab.read_base = "+" + aligned_pairs[i].read_base;
 
-                // Need to convert the read_base to upper case if it is a insertion in case of the read base is lower case.
-                std::transform(ab.read_base.begin(), ab.read_base.end(), ab.read_base.begin(), ::toupper);
-
                 // mean quality of the whole insertion sequence
                 double total_score = 0;
                 for (size_t j = 0; j < aligned_pairs[i].read_base.size(); ++j) {
@@ -576,9 +573,6 @@ void seek_position(const std::string &fa_seq,                               // m
                 ab.ref_base  = aligned_pairs[i].ref_base;
                 ab.read_base = "-" + aligned_pairs[i].ref_base;  // aligned_pairs[i].ref_base 识别用的 (后面不直接用，要替换的)，同位点可以有多类型的 DEL 
 
-                // Need to convert the read_base to upper case if it is a deletion in case of the ref is lower case.
-                std::transform(ab.read_base.begin(), ab.read_base.end(), ab.read_base.begin(), ::toupper);
-
                 // set to be mean quality of the whole read if deletion
                 ab.base_qual = static_cast<char>(al.mean_qqual() + 33); // 33 is the offset of base QUAL;
             } else {
@@ -588,6 +582,10 @@ void seek_position(const std::string &fa_seq,                               // m
             // qpos is 0-based, conver to 1-based to set the rank of base on read.
             ab.rpr = aligned_pairs[i].qpos + 1;
             if (ab.base_qual < min_baseq + 33) continue;  // filter low quality bases, 33 is the offset of base QUAL;
+
+            // Need to convert the ref and read_base to upper case in case of the base is a lower case.
+            std::transform(ab.ref_base.begin(), ab.ref_base.end(), ab.ref_base.begin(), ::toupper);
+            std::transform(ab.read_base.begin(), ab.read_base.end(), ab.read_base.begin(), ::toupper);
 
             // 以 map_ref_pos 为 key，将所有的 read_bases 信息存入 map 中，多个突变共享同个 ref_pos，
             if (sample_posinfo_map.find(map_ref_pos) == sample_posinfo_map.end()) {
@@ -617,6 +615,7 @@ void seek_position(const std::string &fa_seq,                               // m
         for (auto ab: raw_align_info.align_bases) {
             if (ab.read_base[0] == '-' || ab.read_base[0] == '+') {
                 ab.ref_base = fa_seq[leftmost_pos - 1] + ab.ref_base;  // add one leftmost ref-base
+                std::transform(ab.ref_base.begin(), ab.ref_base.end(), ab.ref_base.begin(), ::toupper);
                 indel_info.align_bases.push_back(ab); // 同位点可以有多类型的 DEL/INS
             } else {
                 non_indel_info.align_bases.push_back(ab);
@@ -675,10 +674,7 @@ VariantInfo get_pos_variant_info(const BaseType &bt, const BaseType::BatchInfo *
             major_allele_depth  = bt.get_base_depth(b);
         }
 
-        std::string upper_ref_base(ref_base);
-        std::transform(upper_ref_base.begin(), upper_ref_base.end(), upper_ref_base.begin(), ::toupper);
-
-        if (b == upper_ref_base) {
+        if (b == ref_base) {
             vi.var_types.push_back("REF");
         } else if (b.size() == 1 && ref_base.size() == 1) {
             vi.var_types.push_back("SNV");
@@ -720,9 +716,8 @@ VCFRecord joint_variant_in_pos(std::vector<VariantInfo> vvi, const double hf_cut
     // Set basic VCF fields
     vcf_record.chrom = vvi[0].ref_id;  // variant's reference id
     vcf_record.pos   = vvi[0].ref_pos; // variant's reference position 
-    vcf_record.ref   = ai.ref;         // the final REF to be used in VCF
+    vcf_record.ref   = ai.ref;         // the final REF (upper case) to be used in VCF
     vcf_record.alt   = ai.alts;        // have been uniqued and sorted by length and then by ASCII
-    std::transform(ai.ref.begin(), ai.ref.end(), ai.ref.begin(), ::toupper);
 
     std::vector<std::string> ref_alt_order = {ai.ref}; // First element must be REF allele
     ref_alt_order.insert(ref_alt_order.end(), ai.alts.begin(), ai.alts.end());
