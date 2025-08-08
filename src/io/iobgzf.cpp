@@ -52,6 +52,12 @@ namespace ngslib {
     }
 
     // Read operations
+    BGZFile& BGZFile::reado(std::string &line) {
+        // 用这个函数虽然可以和运算符匹配但坏处是不知道文件被读完了没有，这很糟糕
+        bool is_eof = read(line, '\n');
+        return *this;
+    }
+
     BGZFile& BGZFile::read_bytes(std::string &data, size_t size) {
         if (!_bgzf || _mode.find('r') == std::string::npos) {
             throw std::runtime_error("[iobgzf.cpp::BGZFile:read] File not open for reading");
@@ -74,11 +80,12 @@ namespace ngslib {
 
         kstring_t s; s.l = s.m = 0; s.s = nullptr; // initialize kstring
         int ret = bgzf_getline(_bgzf, delim, &s);
-        
         if (ret >= 0) {
             data.assign(s.s, s.l);  // assign the read data to the string
-            free(s.s);  // free the allocated memory
+            free(s.s);              // free the allocated memory
             return true;
+        } else {
+            data.clear();  // clear data if hit the end of file
         }
         
         if (s.s) free(s.s);
@@ -86,14 +93,15 @@ namespace ngslib {
     }
 
     bool BGZFile::readline_with_index(tbx_t* tbx, hts_itr_t* itr, std::string& line) {
-        kstring_t s; s.s = NULL; s.l = s.m = 0; // must be refreshed in loop
+        kstring_t s; s.s = nullptr; s.l = s.m = 0; // must be refreshed in loop
         int ret = tbx_bgzf_itr_next(_bgzf, tbx, itr, &s);
         if (ret < 0) {
+            line.clear();
             free(s.s);
             return false;
         }
 
-        line = std::string(s.s);
+        line.assign(s.s, s.l);
         free(s.s);
         return true;
     }

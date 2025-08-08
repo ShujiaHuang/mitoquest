@@ -97,6 +97,7 @@ namespace ngslib {
     
         // Functions for I/O operations
         BGZFile& write(const std::string &data); // Write operations
+        BGZFile& reado(std::string &line);       // Read operations (read one line per call)
 
         // Read up to _size_ bytes from the file storing into _data_.
         BGZFile& read_bytes(std::string &data, size_t size = DEFAULT_BUFFER_SIZE);
@@ -147,7 +148,8 @@ namespace ngslib {
 
     // Non-member operator overloads
     inline BGZFile& operator>>(BGZFile& file, std::string& data) {
-        return file.read_bytes(data);
+        // 用这个函数虽然可以和运算符匹配但坏处是不知道文件被读完了没有，这很糟糕
+        return file.reado(data);
     }
 
     inline BGZFile& operator<<(BGZFile& file, const std::string& data) {
