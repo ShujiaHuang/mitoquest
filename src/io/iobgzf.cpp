@@ -75,7 +75,7 @@ namespace ngslib {
     // Read data by _delim_. default is a complete line
     bool BGZFile::read(std::string &data, char delim) {
         if (!_bgzf || _mode.find('r') == std::string::npos) {
-            throw std::runtime_error("File not open for reading");
+            throw std::runtime_error("[iobgzf.cpp::BGZFile:read] File not open for reading");
         }
 
         kstring_t s; s.l = s.m = 0; s.s = nullptr; // initialize kstring
@@ -93,6 +93,10 @@ namespace ngslib {
     }
 
     bool BGZFile::readline_with_index(tbx_t* tbx, hts_itr_t* itr, std::string& line) {
+        if (!_bgzf || _mode.find('r') == std::string::npos) {
+            throw std::runtime_error("[iobgzf.cpp::BGZFile:readline_with_index] File not open for reading");
+        }
+
         kstring_t s; s.s = nullptr; s.l = s.m = 0; // must be refreshed in loop
         int ret = tbx_bgzf_itr_next(_bgzf, tbx, itr, &s);
         if (ret < 0) {
