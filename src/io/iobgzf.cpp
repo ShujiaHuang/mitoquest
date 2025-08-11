@@ -31,6 +31,7 @@ namespace ngslib {
         std::vector<std::unique_ptr<BGZFile>> files;
         files.reserve(filenames.size());
         for (const auto& filename : filenames) {
+            // 这里调用了移动复制函数，而不是复制构造函数
             files.push_back(std::make_unique<BGZFile>(filename, mode));
         }
 
@@ -86,9 +87,9 @@ namespace ngslib {
             return true;
         } else {
             data.clear();  // clear data if hit the end of file
+            if (s.s) free(s.s);
         }
         
-        if (s.s) free(s.s);
         return false;  // EOF or error
     }
 
@@ -97,7 +98,8 @@ namespace ngslib {
             throw std::runtime_error("[iobgzf.cpp::BGZFile:readline_with_index] File not open for reading");
         }
 
-        kstring_t s; s.s = nullptr; s.l = s.m = 0; // must be refreshed in loop
+        // Fetch one line from input file and return.
+        kstring_t s; s.s = nullptr; s.l = s.m = 0; // must be refreshed
         int ret = tbx_bgzf_itr_next(_bgzf, tbx, itr, &s);
         if (ret < 0) {
             line.clear();
