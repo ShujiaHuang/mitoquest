@@ -302,8 +302,8 @@ void VCFSubsetSamples::run() {
 
             // 在这里添加记录子集化处理
             ngslib::VCFRecord subset_rec = rec.subset_samples(subset_hdr, sample_indices);
-            if (!subset_rec.cleanup_alleles(subset_hdr)) { // 先清理不再出现的 ALT 等位基因
-                throw std::runtime_error("Error cleaning up alleles in subset record at "
+            if (!subset_rec.cleanup_genotypes(subset_hdr)) { // 清理不再出现的 ALT 等位基因, 并对样本 Genotype 进行更新
+                throw std::runtime_error("Error cleaning up genotypes in subset record at "
                     + subset_rec.chrom(subset_hdr) + ":" + std::to_string(subset_rec.pos() + 1));
             }  
 
@@ -312,10 +312,11 @@ void VCFSubsetSamples::run() {
                 // Note: This will modify the subset_rec in place
                 bool is_valid = recalculate_info(subset_hdr, subset_rec);
                 if (!is_valid) {
-                    std::cout << "[INFO] No valid genotypes for any kept samples at "
-                              << subset_rec.chrom(subset_hdr) << ":" << (subset_rec.pos() + 1)
-                              << ". Skipping this record.\n";
-                    continue; // Skip this record
+                    // Output for debug
+                    // std::cout << "[INFO] No valid genotypes for any kept samples at "
+                    //           << subset_rec.chrom(subset_hdr) << ":" << (subset_rec.pos() + 1)
+                    //           << ". Skipping this record.\n";
+                    continue; // No genotypes for any kept samples at this POS, Skip it.
                 }
             }
 

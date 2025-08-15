@@ -706,7 +706,7 @@ namespace ngslib {
         return subset_rec;
     }
 
-    bool VCFRecord::cleanup_alleles(const ngslib::VCFHeader& hdr) {
+    bool VCFRecord::cleanup_genotypes(const ngslib::VCFHeader& hdr) {
         // 1. 基本检查
         if (!is_valid_unsafe() || !hdr.is_valid()) return false;
     
@@ -759,21 +759,19 @@ namespace ngslib {
         // 8. 更新基因型数据
         std::vector<std::vector<int>> new_genotypes;
         new_genotypes.reserve(genotypes.size());
-        
         for (const auto& sample_gt : genotypes) {
             std::vector<int> new_gt;
             new_gt.reserve(sample_gt.size());
             for (int gt : sample_gt) {  
 
-                if (gt >= 0 &&  // gt may be missing
-                    gt < allele_used.size() && 
-                    allele_used[gt]) 
+                if (allele_used[gt] && gt >= 0 &&  // gt may be missing
+                    gt < allele_used.size()) 
                 {
                     new_gt.push_back(allele_map[gt]);  // 映射到新的等位基因索引
                 } else {
-                    // new_gt.push_back(-1);  // 保持缺失值
-                    // new_gt.push_back(bcf_gt_missing);  // 保持缺失值
-                    new_gt.push_back(bcf_int32_missing);  // 保持缺失值
+                    // new_gt.push_back(bcf_gt_missing);     // 标记缺失值
+                    // new_gt.push_back(bcf_int32_missing);  // 标记缺失值
+                    new_gt.push_back(-1);  // 标记缺失值
                 }
             }
             new_genotypes.push_back(std::move(new_gt));
@@ -930,7 +928,7 @@ namespace ngslib {
                 if (j < sample_gt.size()) {
                     // 实际的基因型值
                     if (sample_gt[j] < 0) {
-                        curr_sample[j] = bcf_int32_missing;
+                        curr_sample[j] = bcf_gt_missing;
                     } else {
                         // curr_sample[j] = bcf_gt_is_phased(sample_gt[j]) ? bcf_gt_phased(sample_gt[j]) : bcf_gt_unphased(sample_gt[j]);
                         curr_sample[j] = bcf_gt_unphased(sample_gt[j]);
