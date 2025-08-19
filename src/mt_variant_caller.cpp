@@ -1,7 +1,7 @@
 #include "mt_variant_caller.h"
 
 // MtVariantCaller implementation
-void MtVariantCaller::usage(const Config &config) {
+void MtVariantCaller::usage(const Config &config) const {
     std::cout << MITOQUEST_DESCRIPTION            << "\n"
               << "Version: " << MITOQUEST_VERSION << "\n\n"
 
@@ -24,6 +24,8 @@ void MtVariantCaller::usage(const Config &config) {
               << "  -c, --chunk INT            Chunk size for parallel processing (default: " << config.chunk_size << ")\n"
               << "  -t, --threads INT          Number of threads (default: all available threads [" << config.thread_count << "])\n"
               << "  -h, --help                 Print this help message.\n\n";
+    
+    return;
 }
 
 MtVariantCaller::MtVariantCaller(int argc, char* argv[]) {
@@ -67,12 +69,12 @@ MtVariantCaller::MtVariantCaller(int argc, char* argv[]) {
     std::vector<std::string> bv;
     while ((opt = getopt_long(argc, argv, "f:b:o:Q:q:r:j:c:t:pPh", MT_CMDLINE_LOPTS, NULL)) != -1) {
         switch (opt) {
-            case 'f': config.reference_file = optarg;                    break;
-            case 'o': config.output_file    = optarg;                    break;
+            case 'f': config.reference_file = optarg;                     break;
+            case 'o': config.output_file    = optarg;                     break;
             case 'b': 
                 bv = ngslib::get_firstcolumn_from_file(optarg);
                 config.bam_files.insert(config.bam_files.end(), 
-                                        bv.begin(), bv.end());
+                                        bv.begin(), bv.end()); 
                 break;
 
             case 'Q': config.min_baseq               = std::atoi(optarg); break;
@@ -156,7 +158,7 @@ MtVariantCaller::MtVariantCaller(int argc, char* argv[]) {
     // set parameters
     _config   = config;
     reference = _config.reference_file; // load fasta
-    _get_calling_interval();
+    _make_calling_interval();
     // _print_calling_interval();
 
     // keep the order of '_samples_id' as the same as input bamfiles
@@ -218,7 +220,7 @@ void MtVariantCaller::_get_sample_id_from_bam() {
     return;
 }
 
-void MtVariantCaller::_get_calling_interval() {
+void MtVariantCaller::_make_calling_interval() {
     std::vector<ngslib::GenomeRegion> regions;
     if (!_config.calling_regions.empty()) {
         std::vector<std::string> rg_v;
@@ -305,7 +307,7 @@ void MtVariantCaller::_caller_process() {
         samples_var_v.reserve(_samples_id.size());  // reserve the memory before push_back
 
         //////////////////////////////////////////////
-        bool is_empty = _fetch_var_in_region(gr, samples_var_v);
+        bool is_empty = _call_in_region(gr, samples_var_v);
         if (is_empty) {
             std::cerr << "[WARNING] No reads in region: " << gr.to_string() << "\n";
             continue;
@@ -343,7 +345,7 @@ void MtVariantCaller::_caller_process() {
     }
 }
 
-bool MtVariantCaller::_fetch_var_in_region(const ngslib::GenomeRegion gr, std::vector<PosVariantMap> &samples_var_v) {
+bool MtVariantCaller::_call_in_region(const ngslib::GenomeRegion gr, std::vector<PosVariantMap> &samples_var_v) {
     ThreadPool thread_pool(this->_config.thread_count);  // set multiple-thread
 
     std::vector<std::future<PosVariantMap>> pileup_results;
@@ -351,13 +353,13 @@ bool MtVariantCaller::_fetch_var_in_region(const ngslib::GenomeRegion gr, std::v
 
     std::string fa_seq = this->reference[gr.chrom];     // use the whole sequence of ``ref_id`` for simply
     // Loop all alignment files
-    for(size_t i(0); i < this->_config.bam_files.size(); ++i) { // The same order as this->_samples_id
+    for (auto sample_bam_fn : this->_config.bam_files) { // The same order as this->_samples_id
+    // for(size_t i(0); i < this->_config.bam_files.size(); ++i) { 
         pileup_results.emplace_back(
-            thread_pool.submit(call_variant_in_sample, 
-                               this->_config.bam_files[i], 
-                               std::cref(fa_seq), 
-                               gr,
-                               std::cref(this->_config))
+            thread_pool.submit(std::bind(&MtVariantCaller::_call_variant_in_sample, this,
+                                         sample_bam_fn, 
+                                         std::cref(fa_seq), // 外部变量，不变，共用，传引用，省内存
+                                         gr))
         );
     }
 
@@ -381,65 +383,10 @@ bool MtVariantCaller::_fetch_var_in_region(const ngslib::GenomeRegion gr, std::v
     return is_empty;  // no cover reads in 'GenomeRegion' if empty.
 }
 
-bool MtVariantCaller::_variant_joint(const std::vector<PosVariantMap> &samples_var_v, 
-                                     const ngslib::GenomeRegion gr,
-                                     const std::string out_vcf_fn)
-{
-    // 1. integrate the variant information of all samples in the region
-    // 2. call the variant by the integrated information
-    // 3. output the variant information to the VCF file
-    ThreadPool thread_pool(this->_config.thread_count);  // set multiple-thread
-    std::vector<std::future<VCFRecord>> results;
-
-    for (uint32_t pos(gr.start); pos < gr.end + 1; ++pos) {
-        std::vector<VariantInfo> vvi;
-        vvi.reserve(samples_var_v.size()); // reserve the memory before push_back
-
-        // get the variant information of all samples in the position
-        bool is_empty = true;
-        PosVariantMap::const_iterator smp_pos_it;
-        for (size_t i(0); i < samples_var_v.size(); ++i) {
-
-            smp_pos_it = samples_var_v[i].find(pos);
-            if (smp_pos_it != samples_var_v[i].end()) {
-
-                vvi.push_back(smp_pos_it->second);
-                if (is_empty) is_empty = false;
-            } else {
-
-                VariantInfo vi(gr.chrom, pos, 0, 0); // Empty VariantInfo
-                vvi.push_back(vi);
-            }
-        }
-
-        // ignore the position which no reads cover in all samples
-        if (!is_empty) { 
-            // performance multi-thread per-position
-            results.emplace_back(thread_pool.submit(joint_variant_in_pos, vvi, _config.heteroplasmy_threshold));  // return VCFRecord
-        }
-    }
-
-    bool is_empty = true;
-    ngslib::BGZFile OUT(out_vcf_fn, "wb");
-    for (auto && p: results) { // Run and make sure all processes are finished
-        if (p.valid()) {
-            VCFRecord vcf_record = p.get();
-            if (vcf_record.is_valid()) {
-                if (is_empty) is_empty = false;
-                OUT << vcf_record.to_string() << "\n";  // write to a file
-            }
-        }
-    }
-    OUT.close(); // 要调用该 close 函数，确保所有数据完成写入和文件生成
-    
-    return is_empty;  // no variant in the region if empty.
-}
-
 // Call variant information in the region for each sample.
-PosVariantMap call_variant_in_sample(const std::string sample_bam_fn, 
-                                     const std::string &fa_seq,
-                                     const ngslib::GenomeRegion gr,
-                                     const MtVariantCaller::Config &config) 
+PosVariantMap MtVariantCaller::_call_variant_in_sample(const std::string sample_bam_fn, 
+                                                       const std::string &fa_seq,
+                                                       const ngslib::GenomeRegion gr) 
 {
     // The expend size of region, 100bp is enough.
     static const uint32_t REG_EXTEND_SIZE = 100;
@@ -449,7 +396,7 @@ PosVariantMap call_variant_in_sample(const std::string sample_bam_fn,
     std::string rg_extend_str = gr_extend.to_string(); // chr:start-end
 
     // 位点信息存入该变量, 且由于是按区间读取比对数据，key 值无需包含 ref_id，已经不言自明
-    ngslib::Bam bf(sample_bam_fn, "r", config.reference_file); // open bamfile in reading mode (one sample per bamfile)
+    ngslib::Bam bf(sample_bam_fn, "r", this->_config.reference_file); // open bamfile in reading mode (one sample per bamfile)
     PosMap sample_posinfo_map;     // key: position, value: alignment information
     if (bf.fetch(rg_extend_str)) { // Set 'bf' only fetch alignment reads in 'rg_extend_str'.
         hts_pos_t map_ref_start, map_ref_end;  // hts_pos_t is uint64_t
@@ -457,15 +404,15 @@ PosVariantMap call_variant_in_sample(const std::string sample_bam_fn,
 
         ngslib::BamRecord al;  // alignment read
         while (bf.next(al) >= 0) {  // -1 => hit the end of alignement file.
-            if ((al.mapq() < config.min_mapq) || al.is_duplicate() || al.is_qc_fail() ||
-                (al.is_paired() && config.proper_pairs_only && !al.is_proper_pair()))
+            if ((al.mapq() < this->_config.min_mapq) || al.is_duplicate() || al.is_qc_fail() ||
+                (al.is_paired() && this->_config.proper_pairs_only && !al.is_proper_pair()))
             {
                 // std::cout << "[TEST] " << al.qname() << " al.mapq: " << al.mapq() << " al.is_duplicate: " 
                 //           << al.is_duplicate() << " al.is_qc_fail: " <<  al.is_qc_fail() << std::endl;
                 continue;
             }
 
-            if (al.is_paired() && config.pairs_map_only) {
+            if (al.is_paired() && this->_config.pairs_map_only) {
                 std::string tid_name(al.tid_name(bf.header()));
                 std::string mate_tid_name(al.mate_tid_name(bf.header()));
 
@@ -485,12 +432,7 @@ PosVariantMap call_variant_in_sample(const std::string sample_bam_fn,
 
         if (sample_target_reads.size() > 0) {
             // get alignment information of [i] sample.
-            seek_position(fa_seq, 
-                          sample_target_reads,
-                          gr, 
-                          config.min_baseq,
-                          config.heteroplasmy_threshold,
-                          sample_posinfo_map);
+            _seek_position(fa_seq, sample_target_reads, gr, sample_posinfo_map);
         }
     }
 
@@ -499,7 +441,7 @@ PosVariantMap call_variant_in_sample(const std::string sample_bam_fn,
     PosVariantMap sample_var_m;
     for (auto &pos_align_info: sample_posinfo_map) {
         // Call basetype to infer the best bases combination for each mapping position
-        VariantInfo vi = basetype_caller_unit(pos_align_info.second, config.heteroplasmy_threshold);
+        VariantInfo vi = _basetype_caller_unit(pos_align_info.second);
 
         // key: position, value: variant information, 由于是按区间抽提，key 值无需再包含 ref_id，因为已经不言自明 
         sample_var_m.insert({pos_align_info.first, vi});
@@ -510,15 +452,12 @@ PosVariantMap call_variant_in_sample(const std::string sample_bam_fn,
     return sample_var_m;
 }
 
-void seek_position(const std::string &fa_seq,                               // must be the whole chromosome sequence
-                   const std::vector<ngslib::BamRecord> &sample_map_reads,  // record the alignment reads of sample
-                   const ngslib::GenomeRegion gr,
-                   const int min_baseq,
-                   const double min_af,
-                   PosMap &sample_posinfo_map)  // key: position, value: alignment information
+void MtVariantCaller::_seek_position(const std::string &fa_seq,                               // must be the whole chromosome sequence
+                                     const std::vector<ngslib::BamRecord> &sample_map_reads,  // record the alignment reads of sample
+                                     const ngslib::GenomeRegion gr, 
+                                     PosMap &sample_posinfo_map)  // key: position, value: alignment information
 {
-    if (!sample_posinfo_map.empty())
-        throw std::runtime_error("[seek_position] 'sample_posinfo_map' must be empty.");
+    if (!sample_posinfo_map.empty()) throw std::runtime_error("[seek_position] 'sample_posinfo_map' must be empty.");
 
     // A vector of: (cigar_op, read position, reference position, read base, read_qual, reference base)
     std::vector<ngslib::ReadAlignedPair> aligned_pairs;
@@ -581,7 +520,7 @@ void seek_position(const std::string &fa_seq,                               // m
 
             // qpos is 0-based, conver to 1-based to set the rank of base on read.
             ab.rpr = aligned_pairs[i].qpos + 1;
-            if (ab.base_qual < min_baseq + 33) continue;  // filter low quality bases, 33 is the offset of base QUAL;
+            if (ab.base_qual < this->_config.min_baseq + 33) continue;  // filter low quality bases, 33 is the offset of base QUAL;
 
             // Need to convert the ref and read_base to upper case in case of the base is a lower case.
             std::transform(ab.ref_base.begin(), ab.ref_base.end(), ab.ref_base.begin(), ::toupper);
@@ -627,17 +566,18 @@ void seek_position(const std::string &fa_seq,                               // m
         }
 
         double total_depth = double(indel_info.align_bases.size() + non_indel_info.align_bases.size());
-        if (indel_info.align_bases.size() / total_depth >= min_af) {  // filter noise singnal
+        if (indel_info.align_bases.size() / total_depth >= this->_config.heteroplasmy_threshold) {  // filter noise singnal
             sample_posinfo_map[leftmost_pos] = indel_info;  // replace
         }
 
-        if (non_indel_info.align_bases.size() / total_depth >= min_af) {  // filter noise singnal
+        if (non_indel_info.align_bases.size() / total_depth >= this->_config.heteroplasmy_threshold) {  // filter noise singnal
             sample_posinfo_map[pos] = non_indel_info;  // replace
         }
     }
 }
 
-VariantInfo basetype_caller_unit(const AlignInfo &pos_align_info, const double min_af) {
+VariantInfo MtVariantCaller::_basetype_caller_unit(const AlignInfo &pos_align_info) {
+
     BaseType::BatchInfo smp_bi(pos_align_info.ref_id, pos_align_info.ref_pos);
     for (auto &ab: pos_align_info.align_bases) {
         smp_bi.ref_bases.push_back(ab.ref_base);  // REF may be single base for SNVs or a sub-seq for Indels
@@ -649,13 +589,13 @@ VariantInfo basetype_caller_unit(const AlignInfo &pos_align_info, const double m
         smp_bi.align_base_quals.push_back(ab.base_qual);
     }
 
-    BaseType bt(&smp_bi, min_af);
+    BaseType bt(&smp_bi, this->_config.heteroplasmy_threshold);
     bt.lrt();  // likelihood ratio test to detect candidate variants
 
-    return get_pos_variant_info(bt, &smp_bi);
+    return _pos_variant_info(bt, &smp_bi);
 }
 
-VariantInfo get_pos_variant_info(const BaseType &bt, const BaseType::BatchInfo *smp_bi) {
+VariantInfo MtVariantCaller::_pos_variant_info(const BaseType &bt, const BaseType::BatchInfo *smp_bi) {
     VariantInfo vi(bt.get_ref_id(), bt.get_ref_pos(), bt.get_total_depth(), bt.get_var_qual());
     int major_allele_depth = 0;
     vi.major_allele_idx    = 0;
@@ -701,7 +641,61 @@ VariantInfo get_pos_variant_info(const BaseType &bt, const BaseType::BatchInfo *
     return vi;
 }
 
-VCFRecord joint_variant_in_pos(std::vector<VariantInfo> vvi, const double hf_cutoff) {
+bool MtVariantCaller::_variant_joint(const std::vector<PosVariantMap> &samples_var_v, 
+                                     const ngslib::GenomeRegion gr,
+                                     const std::string out_vcf_fn)
+{
+    // 1. integrate the variant information of all samples in the region
+    // 2. call the variant by the integrated information
+    // 3. output the variant information to the VCF file
+    ThreadPool thread_pool(this->_config.thread_count);  // set multiple-thread
+    std::vector<std::future<VCFRecord>> results;
+
+    for (uint32_t pos(gr.start); pos < gr.end + 1; ++pos) {
+        // get the variant information of all samples in the position
+        bool is_empty = true;
+        PosVariantMap::const_iterator smp_pos_it;
+
+        std::vector<VariantInfo> vvi;
+        vvi.reserve(samples_var_v.size()); // reserve the memory before push_back
+        for (size_t i(0); i < samples_var_v.size(); ++i) {
+
+            smp_pos_it = samples_var_v[i].find(pos);
+            if (smp_pos_it != samples_var_v[i].end()) {
+
+                vvi.push_back(smp_pos_it->second);
+                if (is_empty) is_empty = false;
+            } else {
+
+                VariantInfo vi(gr.chrom, pos, 0, 0); // Empty VariantInfo
+                vvi.push_back(vi);
+            }
+        }
+
+        // ignore the position which no reads cover in all samples
+        if (!is_empty) { 
+            // performance multi-thread per-position, return VCFRecord
+            results.emplace_back(thread_pool.submit(std::bind(&MtVariantCaller::_joint_variant_in_pos, this, vvi)));  
+        }
+    }
+
+    bool is_empty = true;
+    ngslib::BGZFile OUT(out_vcf_fn, "wb");
+    for (auto && p: results) { // Run and make sure all processes are finished
+        if (p.valid()) {
+            VCFRecord vcf_record = p.get();
+            if (vcf_record.is_valid()) {
+                if (is_empty) is_empty = false;
+                OUT << vcf_record.to_string() << "\n";  // write to a file
+            }
+        }
+    }
+    OUT.close(); // 要调用该 close 函数，确保所有数据完成写入和文件生成
+    
+    return is_empty;  // no variant in the region if empty.
+}
+
+VCFRecord MtVariantCaller::_joint_variant_in_pos(std::vector<VariantInfo> vvi) {
     // 1. Call the variant by the integrated information
     // 2. Return the variant information in VCF format
     if (vvi.empty()) return VCFRecord(); // Return empty record if no variants
@@ -733,7 +727,8 @@ VCFRecord joint_variant_in_pos(std::vector<VariantInfo> vvi, const double hf_cut
     int total_available_ind_count = 0;
     for (const auto& smp_var_info : vvi) {
         // Collect and format sample information 
-        auto sa = process_sample_variant(smp_var_info, ref_alt_order, hf_cutoff);
+        auto sa = process_sample_variant(smp_var_info, ref_alt_order, 
+                                         this->_config.heteroplasmy_threshold);
         
         // Update variant quality
         if (smp_var_info.qual > vcf_record.qual && smp_var_info.qual != 10000) {
