@@ -930,8 +930,7 @@ namespace ngslib {
                     if (sample_gt[j] < 0) {
                         curr_sample[j] = bcf_gt_missing;
                     } else {
-                        // curr_sample[j] = bcf_gt_is_phased(sample_gt[j]) ? bcf_gt_phased(sample_gt[j]) : bcf_gt_unphased(sample_gt[j]);
-                        curr_sample[j] = bcf_gt_unphased(sample_gt[j]);
+                        curr_sample[j] = bcf_gt_is_phased(sample_gt[j]) ? bcf_gt_phased(sample_gt[j]) : bcf_gt_unphased(sample_gt[j]);
                     }
                 } else {
                     // 对于倍性较低的样本，用向量结束标记填充
