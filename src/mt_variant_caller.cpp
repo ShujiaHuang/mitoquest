@@ -170,8 +170,8 @@ void MtVariantCaller::_get_sample_id_from_bam() {
 
     // Loading sample ID in BAM/CRMA files from RG tag.
     if (_config.filename_has_samplename)
-        std::cout << "[INFO] load samples id from filename directly, becuase you set "
-                     "--filename-has-samplename\n";
+        std::cout << "[INFO] Get samples' id from filename directly, "
+                     "becuase you set --filename-has-samplename\n";
 
     _samples_id.clear();
 
@@ -185,7 +185,7 @@ void MtVariantCaller::_get_sample_id_from_bam() {
 
         if (_config.filename_has_samplename) {
             filename = ngslib::remove_filename_extension(ngslib::basename(_config.bam_files[i]));
-            si = filename.find('.');
+            si = filename.find('.');  // first index of '.'
             samplename = si > 0 && si != std::string::npos ? filename.substr(0, si) : filename;
         } else {
             // Get sampleID from BAM header, a bit time-consuming.
@@ -354,7 +354,6 @@ bool MtVariantCaller::_call_in_region(const ngslib::GenomeRegion gr, std::vector
     std::string fa_seq = this->reference[gr.chrom];     // use the whole sequence of ``ref_id`` for simply
     // Loop all alignment files
     for (auto sample_bam_fn : this->_config.bam_files) { // The same order as this->_samples_id
-    // for(size_t i(0); i < this->_config.bam_files.size(); ++i) { 
         pileup_results.emplace_back(
             thread_pool.submit(std::bind(&MtVariantCaller::_call_variant_in_sample, this,
                                          sample_bam_fn, 
