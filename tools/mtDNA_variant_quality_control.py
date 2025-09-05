@@ -231,7 +231,7 @@ def write_vcf(input_vcf_path, output_vcf_path, results, pos_kl_div):
     with pysam.VariantFile(input_vcf_path) as vcf_in:
 
         # Add new FORMAT fields to header
-        vcf_in.header.add_line('##FORMAT=<ID=PP,Number=1,Type=Float,Description="Posterior probability of true mutation">')
+        vcf_in.header.add_line('##FORMAT=<ID=PP,Number=1,Type=Float,Description="Posterior probability of true genotype">')
         vcf_in.header.add_line('##FORMAT=<ID=IS_MUT,Number=1,Type=String,Description="Mutation call (True=mutation, False=not)">')
         vcf_in.header.add_line('##FILTER=<ID=QC_FAIL,Description="Failed mtDNA QC filter">')
         
