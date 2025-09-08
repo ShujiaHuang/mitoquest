@@ -36,7 +36,7 @@ jobs:
     - name: Install Dependencies (macOS)
       if: runner.os == 'macOS'
       run: |
-        brew install cmake autoconf automake zlib bzip2 xz curl googletest openssl@3
+        brew install autoconf automake zlib bzip2 xz curl googletest openssl@3
 
     - name: Configure CMake
       run: |
