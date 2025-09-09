@@ -519,6 +519,7 @@ def calculate_kl_divergence_multi(vafs, q_alpha, q_beta, bin_edges):
 
     return kl_div if kl_div > 0 else 0
 
+# Alternative implementation using histogram for KL divergence calculation (Not be used for final version)
 # def calculate_kl_divergence_multi(vafs, noise_alpha, noise_beta, bins=100):
 #     """Calculate KL divergence for multi-sample VAF distribution."""
 #     if len(vafs) == 0:
@@ -591,8 +592,6 @@ def main():
         plot_beta_fit_and_vaf(alpha_hist, beta_hist, vaf_true_list, vaf_false_list, 
                               save_path=args.output.split('.')[0] + '_beta_fit_vaf.png')
         print(f"Quality control analysis completed. Results saved to {args.output_vcf}")
-
-        
         
     except Exception as e:
         print(f"Error: {str(e)}")
