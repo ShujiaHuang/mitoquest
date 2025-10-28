@@ -739,8 +739,14 @@ namespace ngslib {
         }
     
         // 6. 检查是否需要清理
-        if (std::all_of(allele_used.begin(), allele_used.end(), [](bool v){ return v; })) {
-            return true;  // 所有等位基因都在使用，无需清理
+        bool all_alleles_used = std::all_of(allele_used.begin(), allele_used.end(), [](bool v){ return v; });
+        bool all_single_base = (current_ref.length() == 1) && std::all_of(
+            current_alts.begin(), current_alts.end(), [](const std::string& alt)
+            { return alt.length() == 1; }
+        );
+                              
+        if (all_alleles_used && all_single_base) {
+            return true;  // 所有等位基因都在使用且都是单碱基，无需清理
         }
     
         // 7. 创建新的等位基因列表
@@ -769,8 +775,6 @@ namespace ngslib {
                 {
                     new_gt.push_back(allele_map[gt]);  // 映射到新的等位基因索引
                 } else {
-                    // new_gt.push_back(bcf_gt_missing);     // 标记缺失值
-                    // new_gt.push_back(bcf_int32_missing);  // 标记缺失值
                     new_gt.push_back(-1);  // 标记缺失值
                 }
             }
@@ -928,7 +932,7 @@ namespace ngslib {
                 if (j < sample_gt.size()) {
                     // 实际的基因型值
                     if (sample_gt[j] < 0) {
-                        curr_sample[j] = bcf_gt_missing;
+                        curr_sample[j] = bcf_gt_missing;  // 标记缺失的基因型，输出为 ‘.’
                     } else {
                         curr_sample[j] = bcf_gt_is_phased(sample_gt[j]) ? bcf_gt_phased(sample_gt[j]) : bcf_gt_unphased(sample_gt[j]);
                     }
