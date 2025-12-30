@@ -753,43 +753,6 @@ def annotate(input_file, annotated_txt, annotated_vcf, anno_file_path):
                         clinvar_int_list[i]                                                          + '\t' +
                         chimp_ref_str                                                                + '\n')
 
-            # f.write(CHROM + '\t' + POS  + '\t' + ID        + '\t' + 
-            #         REFs  + '\t' + ALTs + '\t' + INFO      + '\t' +
-            #         rcrs_pos2trinuc[POS]                   + '\t' +
-            #         ','.join(vep_symbol_list)              + '\t' + 
-            #         mitomap_locus_id                       + '\t' +
-            #         ','.join(vep_conseq_list)              + '\t' +
-            #         ','.join(vep_aa_list)                  + '\t' +
-            #         ','.join(vep_pp_list)                  + '\t' +
-            #         ','.join(vep_codon_change_list)        + '\t' +
-            #         ','.join(map(str, max_hl_list))        + '\t' +
-            #         ','.join(map(str, gnomad_af_hom_list)) + '\t' +
-            #         ','.join(map(str, gnomad_af_het_list)) + '\t' +
-            #         ','.join(map(str, gnomad_ac_hom_list)) + '\t' +
-            #         ','.join(map(str, gnomad_ac_het_list)) + '\t' +
-            #         ','.join(map(str, in_phylo_list))      + '\t' +
-            #         phylop[int(POS)]                       + '\t' +
-            #         tRNA_pos_str                           + '\t' +
-            #         tRNA_dom_str                           + '\t' +
-            #         RNA_base                               + '\t' +
-            #         RNA_mod_str                            + '\t' +
-            #         str(RNA_bridge)                        + '\t' +
-            #         uniprot_annot                          + '\t' +
-            #         other_prot_annot                       + '\t' +
-            #         ','.join(apogee_score_list)            + '\t' +
-            #         ','.join(map(str, mitotip_score_list)) + '\t' +
-            #         ','.join(map(str, hmtvar_scores_list)) + '\t' +
-            #         ','.join(map(str, helix_max_hl_list))  + '\t' +
-            #         ','.join(map(str, helix_af_hom_list))  + '\t' +
-            #         ','.join(map(str, helix_af_het_list))  + '\t' +
-            #         ','.join(map(str, mitomap_ac_list))    + '\t' +
-            #         ','.join(map(str, mitomap_af_list))    + '\t' +
-            #         ','.join(mitomap_status_list)          + '\t' +
-            #         ','.join(mitomap_plasmy_list)          + '\t' +
-            #         ','.join(mitomap_dz_list)              + '\t' +
-            #         ','.join(clinvar_int_list)             + '\t' +
-            #         chimp_ref_str                          + '\n')
-
             chimp_ref_str = "".join([chimp_dict[(REFs[i], int(POS)+i)] for i in range(len(REFs))])
             anno_info = "trinucleotide="         + rcrs_pos2trinuc[POS]                                + ';' + \
                         "symbol="                + ','.join(vep_symbol_list)                           + ';' + \
