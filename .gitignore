@@ -5,7 +5,8 @@ build/
 learn_from/
 bin/mitoquest
 bin/mitoquest_tests
-
+__pycache__/
+.pytest_cache/
 .vscode/
 .ipynb_checkpoints/
 .DS_Store
