@@ -174,9 +174,7 @@ void MtVariantCaller::_get_sample_id_from_bam() {
                      "becuase you set --filename-has-samplename\n";
 
     _samples_id.clear();
-
     std::string samplename, filename;
-    size_t si;
     for (size_t i(0); i < _config.bam_files.size(); ++i) {
 
         if ((i+1) % 1000 == 0)
@@ -185,6 +183,7 @@ void MtVariantCaller::_get_sample_id_from_bam() {
 
         if (_config.filename_has_samplename) {
             filename = ngslib::remove_filename_extension(ngslib::basename(_config.bam_files[i]));
+            size_t si;
             si = filename.find('.');  // first index of '.'
             samplename = si > 0 && si != std::string::npos ? filename.substr(0, si) : filename;
         } else {
@@ -649,7 +648,6 @@ bool MtVariantCaller::_variant_joint(const std::vector<PosVariantMap> &samples_v
     // 3. output the variant information to the VCF file
     ThreadPool thread_pool(this->_config.thread_count);  // set multiple-thread
     std::vector<std::future<VCFRecord>> results;
-
     for (uint32_t pos(gr.start); pos < gr.end + 1; ++pos) {
         // get the variant information of all samples in the position
         bool is_empty = true;
@@ -705,8 +703,8 @@ VCFRecord MtVariantCaller::_joint_variant_in_pos(std::vector<VariantInfo> vvi) {
         return VCFRecord(); // Return empty record if no variants
     }
     
-    VCFRecord vcf_record;
     // Set basic VCF fields
+    VCFRecord vcf_record;
     vcf_record.chrom = vvi[0].ref_id;  // variant's reference id
     vcf_record.pos   = vvi[0].ref_pos; // variant's reference position 
     vcf_record.ref   = ai.ref;         // the final REF (upper case) to be used in VCF
@@ -726,8 +724,10 @@ VCFRecord MtVariantCaller::_joint_variant_in_pos(std::vector<VariantInfo> vvi) {
     int total_available_ind_count = 0;
     for (const auto& smp_var_info : vvi) {
         // Collect and format sample information 
-        auto sa = process_sample_variant(smp_var_info, ref_alt_order, 
-                                         this->_config.heteroplasmy_threshold);
+        auto sa = process_sample_variant(
+            smp_var_info, ref_alt_order, 
+            this->_config.heteroplasmy_threshold
+        );
         
         // Update variant quality
         if (smp_var_info.qual > vcf_record.qual && smp_var_info.qual != 10000) {
@@ -764,13 +764,15 @@ VCFRecord MtVariantCaller::_joint_variant_in_pos(std::vector<VariantInfo> vvi) {
                                  vcf_record.chrom + ":" + std::to_string(vcf_record.pos));
     }
 
+    int float_precision = 6; // floating number precision
+
     // Set INFO field
     std::vector<int> ac;
     std::vector<std::string> af;
     for (const auto& alt : vcf_record.alt) { 
         // Only record the counts (AC) and frequencies (AF) of non-ref allele in INFO field
         ac.push_back(ai.allele_counts[alt]);
-        af.push_back(format_double(ai.allele_counts[alt] / ai.total_alleles, 4)); 
+        af.push_back(format_double(ai.allele_counts[alt] / ai.total_alleles, float_precision)); 
     }
 
     std::string pt; // plasmic type
@@ -785,16 +787,15 @@ VCFRecord MtVariantCaller::_joint_variant_in_pos(std::vector<VariantInfo> vvi) {
     } else {
         pt = "Unknown"; // Fallback case
     }
-
     vcf_record.info = "AF=" + ngslib::join(af, ",") + ";"
                       "AC=" + ngslib::join(ac, ",") + ";"
                       "AN=" + std::to_string(int(ai.total_alleles)) + ";"
                       "HOM_N="   + std::to_string(hom_ind_count) + ";"
                       "HET_N="   + std::to_string(het_ind_count) + ";"
                       "Total_N=" + std::to_string(total_available_ind_count) + ";"
-                      "HOM_PF="  + format_double(double(hom_ind_count) / total_available_ind_count, 4) + ";"
-                      "HET_PF="  + format_double(double(het_ind_count) / total_available_ind_count, 4) + ";"
-                      "SUM_PF="  + format_double(double(hom_ind_count + het_ind_count) / total_available_ind_count, 4) + ";"
+                      "HOM_PF="  + format_double(double(hom_ind_count) / total_available_ind_count, float_precision) + ";"
+                      "HET_PF="  + format_double(double(het_ind_count) / total_available_ind_count, float_precision) + ";"
+                      "SUM_PF="  + format_double(double(hom_ind_count + het_ind_count) / total_available_ind_count, float_precision) + ";"
                       "PT=" + pt;
 
     return vcf_record;

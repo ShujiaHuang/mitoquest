@@ -204,8 +204,6 @@ bool VCFSubsetSamples::recalculate_info(const ngslib::VCFHeader& hdr, ngslib::VC
     rec.update_info_int(hdr, "HET_N",   &het_ind_count, 1);
     rec.update_info_int(hdr, "Total_N", &available_ind_count, 1);
 
-    // Update AF, HOM_PF, HET_PF, SUM_PF in the record's INFO field
-
     // If AN is 0 (all kept samples had missing genotypes), set AF to missing or 0
     std::vector<float> af(n_alt, 0.0f); // Or std::vector<float> af(n_alt, ngslib::VCFRecord::FLOAT_MISSING);
 
@@ -225,6 +223,8 @@ bool VCFSubsetSamples::recalculate_info(const ngslib::VCFHeader& hdr, ngslib::VC
         het_pf = static_cast<double>(het_ind_count) / available_ind_count;
         sum_pf = static_cast<double>(hom_ind_count + het_ind_count) / available_ind_count;
     }
+    
+    // Update AF, HOM_PF, HET_PF, SUM_PF in the record's INFO field
     rec.update_info_float(hdr, "AF", af.data(), af.size());
     rec.update_info_float(hdr, "HOM_PF", &hom_pf, 1);
     rec.update_info_float(hdr, "HET_PF", &het_pf, 1);

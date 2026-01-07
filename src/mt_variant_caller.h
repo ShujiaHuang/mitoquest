@@ -69,7 +69,8 @@ private:
     ngslib::GenomeRegion _make_genome_region(std::string gregion);
 
     void _caller_process();  // main process function
-    bool _call_in_region(const ngslib::GenomeRegion genome_region, std::vector<PosVariantMap> &samples_var_v);
+    bool _call_in_region(const ngslib::GenomeRegion genome_region, 
+                         std::vector<PosVariantMap> &samples_var_v);
 
     PosVariantMap _call_variant_in_sample(const std::string sample_bam_fn, 
                                           const std::string &fa_seq, 
@@ -80,6 +81,12 @@ private:
                         const ngslib::GenomeRegion gr,
                         PosMap &sample_posinfo_map);  // assign values inplace
 
+    /**
+     * @brief call variant in a position by BaseType
+     * 
+     * @param pos_align_info 
+     * @return VariantInfo 
+     */
     VariantInfo _basetype_caller_unit(const AlignInfo &pos_align_info);
 
     /**
@@ -99,8 +106,6 @@ private:
 
     VCFRecord _joint_variant_in_pos(std::vector<VariantInfo> variant_infos);
 };
-
-
 
 #endif // _MT_VARIANT_CALLER_H_
 

@@ -190,8 +190,8 @@ inline bool is_autosomal(const std::string& chrom_name) {
     return std::regex_match(chrom_name, autosomal_regex);
 }
 
-// 最多只保留小数点后 3 位
-std::string format_double(double value, int precision = 3);
+// 最多只保留小数点后 6 位
+std::string format_double(double value, int precision = 6);
 
 // get the total depth for a reference position
 int get_total_depth(const AlignInfo &align_infor);
