@@ -132,8 +132,8 @@ def plot_variant_counts(sample_variant_count, save_path='variant_counts_per_samp
     
     plt.figure(figsize=(10, 6))
     ax = plt.gca()
-    ax.hist(all_counts, bins=100, color='tab:gray', alpha=0.4, label=f'Total Variants (Mean: {np.mean(all_counts):.0f})')
-    ax.hist(mut_counts, bins=100, color='tab:orange', alpha=0.4, label=f'Called Mutations (Mean: {np.mean(mut_counts):.0f})')
+    ax.hist(all_counts, bins=50, color='tab:gray', alpha=0.4, label=f'Total Variants (Mean: {np.mean(all_counts):.0f})')
+    ax.hist(mut_counts, bins=50, color='tab:orange', alpha=0.4, label=f'Called Mutations (Mean: {np.mean(mut_counts):.0f})')
     ax.set_xlabel('Variant Counts per Sample')
     ax.set_ylabel('Number of Samples')
     ax.set_title('Distribution of Variant Counts per Sample')
@@ -259,7 +259,7 @@ def write_vcf(input_vcf_path, output_vcf_path, results, pos_kl_div):
     for r in results:
         key = (r['chrom'], r['pos'], r['sample'])
         # GT, PP, IS_MUT
-        result_lookup[key] = (r['alt'], r['posterior'], int(r['is_mutation']))
+        result_lookup[key] = (r['gt'], r['posterior'], int(r['is_mutation']))
 
     df_results = pd.DataFrame(results)
     qc_status = df_results.groupby(['chrom', 'pos'])['is_mutation'].max().reset_index().set_index(['chrom', 'pos']).to_dict()['is_mutation']
@@ -277,9 +277,10 @@ def write_vcf(input_vcf_path, output_vcf_path, results, pos_kl_div):
                 for sample in record.samples:
                     key = (record.chrom, record.pos, sample)
                     if key in result_lookup:
-                        alt, pp, is_mut = result_lookup[key]
+                        gt, pp, is_mut = result_lookup[key]
                         record.samples[sample].update(
-                            {'GT': alt, 'PP': float(pp), 
+                            {'GT': gt, 
+                             'PP': float(pp), 
                              'IS_MUT': 'True' if is_mut else 'False'}
                         )
 
@@ -414,8 +415,8 @@ def qc(input_vcf_path, output_vcf_path, args):
                 'chrom': variant['chrom'],
                 'pos': variant['pos'],
                 'ref': variant['ref'],
-                # 'alt': [ref_alts[g_idx] if g_idx is not None else '.' for g_idx in gt] if (gt and (not is_pre_filtered)) else ['.'],
-                'alt': gt if gt and (not is_pre_filtered) else [None],
+                'alt': [ref_alts[g_idx] if (g_idx is not None) else '.' for g_idx in gt] if gt and (not is_pre_filtered) else ['.'],
+                'gt': gt if gt and (not is_pre_filtered) else [None],
                 
                 'vaf': vaf,
                 'A': ads,
@@ -445,12 +446,12 @@ def qc(input_vcf_path, output_vcf_path, args):
     }
     sample_index = {s: i for i, s in enumerate(samples)}
     for r in results:
-        if any(gt for gt in r['alt']):  # gt is not None and gt != 0
+        if any(gt for gt in r['gt']):  # gt is not None and gt != 0
             sample_variant_count['all'][sample_index[r['sample']]] += 1
             
         if r['is_mutation']:
             vaf_true_list.extend([v for v in r['vaf'] if v is not None and 0 < v < 1])
-            if any(gt for gt in r['alt']):  # gt is not None and gt != 0
+            if any(gt for gt in r['gt']):  # gt is not None and gt != 0
                 sample_variant_count['mutations'][sample_index[r['sample']]] += 1
         else:
             vaf_false_list.extend([v for v in r['vaf'] if v is not None and 0 < v < 1])
@@ -682,13 +683,16 @@ def main():
     args = parser.parse_args()
     try:
         # Parse VCF file
-        # (variants, vaf_true_list, vaf_false_list, alpha_hist, beta_hist, diff_hist) = qc(args.vcf, args.output_vcf, args.bins, args.lambda_kl, args.pi, args.threshold)
         (variants, sample_variant_count, vaf_true_list, vaf_false_list, 
          alpha_hist, beta_hist, diff_hist) = qc(args.vcf, args.output_vcf, args)
         
         # Save results to CSV
         df_results = pd.DataFrame(variants).explode('alt')
-        df_results = df_results[df_results['ref'] != df_results['alt']]
+        # Filter out records where ref==alt and keep only mutations, then drop the 'gt' column if present
+        df_results = df_results[
+            (df_results['ref'] != df_results['alt']) & 
+            df_results['is_mutation']
+        ].drop(columns=['gt', 'pre_filtered'], errors='ignore')
         df_results.to_csv(args.output, sep='\t', index=False)
         
         # Plot convergence of beta parameters and mutation calls
