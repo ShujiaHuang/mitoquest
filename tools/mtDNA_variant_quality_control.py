@@ -33,6 +33,23 @@ matplotlib.use('Agg')  # Use non-interactive backend suitable for cluster/termin
 import matplotlib.pyplot as plt
 
 
+GLOBAL_BLACKLIST_SITES_SET = set()
+_GLOBAL_BLACKLISTED_REGIONS = [
+    # blacklisted regions (chr, start, end)
+    ('chrM', 299, 317),
+    ('chrM', 511, 525),
+    ('chrM', 564, 571),
+    ('chrM', 952, 955),
+    ('chrM', 3106, 3108),
+    ('chrM', 5895, 5899),
+    ('chrM', 8268, 8279),
+    ('chrM', 13645, 13650),
+    ('chrM', 16180, 16187),
+]
+for chrom, start, end in _GLOBAL_BLACKLISTED_REGIONS:
+    for pos in range(start, end + 1):
+        GLOBAL_BLACKLIST_SITES_SET.add((chrom, pos))
+
 def plot_beta_fit_convergence(alpha_hist, beta_hist, diff_hist, save_path='beta_fit_convergence.png'):
     plt.figure(figsize=(8, 5))
     ax1 = plt.gca()
@@ -108,6 +125,23 @@ def plot_beta_fit_and_vaf(alpha_hist, beta_hist, vaf_true_list, vaf_false_list, 
     plt.savefig(save_path, dpi=300)
     plt.close()
 
+# Histogram of variant counts for all samples
+def plot_variant_counts(sample_variant_count, save_path='variant_counts_per_sample.png'):
+    all_counts = sample_variant_count['all']
+    mut_counts = sample_variant_count['mutations']
+    
+    plt.figure(figsize=(10, 6))
+    ax = plt.gca()
+    ax.hist(all_counts, bins=100, color='tab:gray', alpha=0.7, label=f'Total Variants (Mean: {np.mean(all_counts):.0f})')
+    ax.hist(mut_counts, bins=100, color='tab:orange', alpha=0.7, label=f'Called Mutations (Mean: {np.mean(mut_counts):.0f})')
+    ax.set_xlabel('Variant Counts per Sample')
+    ax.set_ylabel('Number of Samples')
+    ax.set_title('Distribution of Variant Counts per Sample')
+    ax.legend()
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=300)
+    plt.close()
+    
 
 def check_index_file(variant_file_path):
     """
@@ -224,32 +258,40 @@ def write_vcf(input_vcf_path, output_vcf_path, results, pos_kl_div):
     result_lookup = {}
     for r in results:
         key = (r['chrom'], r['pos'], r['sample'])
-        result_lookup[key] = (r['posterior'], int(r['is_mutation']))
+        # GT, PP, IS_MUT
+        result_lookup[key] = (r['alt'], r['posterior'], int(r['is_mutation']))
 
     df_results = pd.DataFrame(results)
     qc_status = df_results.groupby(['chrom', 'pos'])['is_mutation'].max().reset_index().set_index(['chrom', 'pos']).to_dict()['is_mutation']
     with pysam.VariantFile(input_vcf_path) as vcf_in:
-
         # Add new FORMAT fields to header
         vcf_in.header.add_line('##FORMAT=<ID=PP,Number=1,Type=Float,Description="Posterior probability of true genotype">')
         vcf_in.header.add_line('##FORMAT=<ID=IS_MUT,Number=1,Type=String,Description="Mutation call (True=mutation, False=not)">')
-        vcf_in.header.add_line('##FILTER=<ID=QC_FAIL,Description="Failed mtDNA QC filter">')
-        
+        vcf_in.header.add_line('##FILTER=<ID=PASS,Description="Passed mtDNA QC filter">')
+        vcf_in.header.add_line('##FILTER=<ID=BLACKLISTED_SITE,Description="Site is in the blacklisted regions">')
+        vcf_in.header.add_line('##FILTER=<ID=LOW_QUALITY,Description="Low quality site based on KL divergence">')
+        # vcf_in.header.add_line('##FILTER=<ID=QC_FAIL,Description="Failed mtDNA QC filter">')
+        # vcf_in.header.info['KL_DIV'] = ('1', 'Float', 'Kullback-Leibler divergence of multi-sample VAF distribution from background noise distribution')
         with pysam.VariantFile(output_vcf_path, 'w', header=vcf_in.header) as vcf_out:
             for record in vcf_in:
                 for sample in record.samples:
                     key = (record.chrom, record.pos, sample)
                     if key in result_lookup:
-                        pp, is_mut = result_lookup[key]
-                        record.samples[sample].update({'PP': float(pp), 'IS_MUT': 'True' if is_mut else 'False'})
+                        alt, pp, is_mut = result_lookup[key]
+                        record.samples[sample].update(
+                            {'GT': alt, 'PP': float(pp), 
+                             'IS_MUT': 'True' if is_mut else 'False'}
+                        )
 
-                # Fix: use record.filter.clear() and record.filter.add() to update FILTER.
+                # Use record.filter.clear() and record.filter.add() to update FILTER.
                 record.filter.clear()
                 chrom_pos = (record.chrom, record.pos)
                 if qc_status.get(chrom_pos, False):
                     record.filter.add('PASS')
+                elif chrom_pos in GLOBAL_BLACKLIST_SITES_SET:
+                    record.filter.add('BLACKLISTED_SITE')
                 else:
-                    record.filter.add('QC_FAIL')
+                    record.filter.add('LOW_QUALITY')
                 
                 record.qual = pos_kl_div.get(chrom_pos, 0)
                 vcf_out.write(record)
@@ -259,7 +301,7 @@ def write_vcf(input_vcf_path, output_vcf_path, results, pos_kl_div):
             pysam.tabix_index(output_vcf_path, preset='vcf', force=True)
 
 
-def qc(input_vcf_path, output_vcf_path, bins=100, lambda_kl=0.1, pi=5e-8 * 16569, threshold=0.9):
+def qc(input_vcf_path, output_vcf_path, args):
     """Parse VCF file using pysam to extract variant information and store original records."""
     # Only get samples id from input vcffile
     _vcf = pysam.VariantFile(input_vcf_path, 'r')
@@ -269,6 +311,18 @@ def qc(input_vcf_path, output_vcf_path, bins=100, lambda_kl=0.1, pi=5e-8 * 16569
     results = []
     pos_kl_div = {} # Store multi-sample KL divergence for each position
     for variant in variant_generator(input_vcf_path):
+        chrom_pos = (variant['chrom'], variant['pos'])
+        if chrom_pos in GLOBAL_BLACKLIST_SITES_SET:
+            sys.stderr.write(f"[INFO] Variant at {variant['chrom']}:{variant['pos']} is "
+                             f"in blacklisted regions. Skipping.\n")
+            continue
+        
+        # Maximum ALT alleles per site
+        if len(variant['alt']) > args.max_alt_alleles:
+            sys.stderr.write(f"[INFO] Variant at {variant['chrom']}:{variant['pos']} has "
+                             f"more than {args.max_alt_alleles} ALT alleles. Skipping.\n")
+            continue
+
         # Process each variant as needed
         ref_alts = [variant.get('ref', '')] + list(variant.get('alt', []))
         sample_gts = []
@@ -281,9 +335,17 @@ def qc(input_vcf_path, output_vcf_path, bins=100, lambda_kl=0.1, pi=5e-8 * 16569
             sample_gts.append(gt)
             vaf_obs.append(hf)
             ploidy = len(gt)
+            
+            # Pre-filtering based on DP and HQ thresholds
+            if variant['samples'][sample].get('DP', 0) < args.DP_threshold:
+                continue
+            
+            sample_hq = variant['samples'][sample].get('HQ', (0))
+            if any(hq < args.HQ_threshold for hq in sample_hq):
+                continue
+            
             if (ploidy == 1) and (hf is not None) and all(h is not None for h in hf): 
-                # Only use non mutated (homozygous) samples to 
-                # estimate background error rate.
+                # Only use non mutated (homozygous) samples to estimate background error rate.
                 background_error_rates.append(1.0 - sum(hf))
         
         if len(background_error_rates) == 0:
@@ -304,62 +366,93 @@ def qc(input_vcf_path, output_vcf_path, bins=100, lambda_kl=0.1, pi=5e-8 * 16569
             sys.stderr.write(f" - {sample}, VAF: {vaf}\n")
             
             # Calculate KL divergence for each sample for each ALT
-            dp = variant['samples'][sample].get('DP')
-            ad = list(variant['samples'][sample].get('AD'))
-            
-            pp = 1.0 # Initialize posterior probability
             kl_div_singles = []
-            for v_obs, a_obs in zip(vaf, ad):
-                if (v_obs is None) or (a_obs is None) or (dp is None):
-                    pp = 0
-                    sys.stderr.write(f"[WARNING] Missing VAF, AD, or DP for sample {sample} "
-                                     f"at {variant['chrom']}:{variant['pos']}. Skipping.\n")
-                    continue
-                
-                kl_div = calculate_kl_divergence_single(v_obs, q_alpha, q_beta)
-                kl_div_singles.append(kl_div)
-                
-                # Bayesian filter to compute posterior probability of true mutation
-                posterior = bayesian_filter(
-                    A=a_obs,
-                    D=dp,
-                    p_error=p_error,
-                    alpha_h1=1,
-                    beta_h1=1,
-                    lambda_kl=lambda_kl,
-                    kl_div=kl_div,
-                    pi=pi
-                )
-                pp *= posterior
+            dp  = variant['samples'][sample].get('DP')
+            hqs = variant['samples'][sample].get('HQ')  # A tuple
+            ads = variant['samples'][sample].get('AD')  # A tuple
+            
+            # Pre-filtering based on DP and HQ thresholds
+            is_pre_filtered = False
+            if dp < args.DP_threshold:
+                sys.stderr.write(f"[WARNING] Sample {sample} at {variant['chrom']}:{variant['pos']} "
+                                 f"failed DP threshold ({dp} < {args.DP_threshold}). Skipping.\n")
+                pp = 0.0
+                is_pre_filtered = True
+            elif any(hq < args.HQ_threshold for hq in hqs):
+                sys.stderr.write(f"[WARNING] Sample {sample} at {variant['chrom']}:{variant['pos']} "
+                                 f"failed HQ threshold ({hqs} < {args.HQ_threshold}). Skipping.\n")
+                pp = 0.0
+                is_pre_filtered = True
+            else :
+                # Calculate posterior probability for each sample
+                pp = 1.0 # Initialize posterior probability
+                for v_obs, a_obs in zip(vaf, ads):
+                    if (v_obs is None) or (a_obs is None) or (dp is None):
+                        pp = 0
+                        sys.stderr.write(f"[WARNING] Missing VAF, AD, or DP for sample {sample} "
+                                         f"at {variant['chrom']}:{variant['pos']}. Skipping.\n")
+                        continue
+                    
+                    kl_div = calculate_kl_divergence_single(v_obs, q_alpha, q_beta)
+                    kl_div_singles.append(kl_div)
+                    
+                    # Bayesian filter to compute posterior probability of true mutation
+                    posterior = bayesian_filter(
+                        A=a_obs,
+                        D=dp,
+                        p_error=p_error,
+                        alpha_h1=1,  # Use initial Beta(1,1), will be updated later in ``iterative_beta_fit_and_call``
+                        beta_h1=1,   # Use initial Beta(1,1), will be updated later in ``iterative_beta_fit_and_call``
+                        lambda_kl=args.lambda_kl,
+                        kl_div=kl_div,
+                        pi=args.pi
+                    )
+                    pp *= posterior
 
             results.append({
                 'sample': sample,
                 'chrom': variant['chrom'],
                 'pos': variant['pos'],
                 'ref': variant['ref'],
-                'alt': [ref_alts[g_idx] if g_idx is not None else '.' for g_idx in gt] if gt else ['.'],
+                # 'alt': [ref_alts[g_idx] if g_idx is not None else '.' for g_idx in gt] if (gt and (not is_pre_filtered)) else ['.'],
+                # 'alt': [g_idx if g_idx is not None else None for g_idx in gt] if (gt and (not is_pre_filtered)) else [None],
+                'alt': gt if gt and (not is_pre_filtered) else [None],
                 
                 'vaf': vaf,
-                'A': ad,
+                'A': ads,
                 'D': dp,
                 'p_error': p_error,
                 
                 'ploidy': len(gt),
                 'kl_divergence_single': kl_div_singles,
                 'posterior': pp,
-                'is_mutation': pp > threshold
+                'is_mutation': pp > args.threshold,  # Initial mutation call based on threshold
+                'pre_filtered': is_pre_filtered
             })
         
         # Calculate multi-sample KL divergence for the position
         kl_div_multi = calculate_kl_divergence_multi(vaf_obs, q_alpha, q_beta, bin_edges)
         pos_kl_div[(variant['chrom'], variant['pos'])] = kl_div_multi if np.isfinite(kl_div_multi) else 10000
 
-    results, alpha_h1, beta_h1, alpha_hist, beta_hist, diff_hist = iterative_beta_fit_and_call(results, lambda_kl=lambda_kl, pi=pi, threshold=threshold)
+    results, alpha_h1, beta_h1, alpha_hist, beta_hist, diff_hist = iterative_beta_fit_and_call(
+        results, lambda_kl=args.lambda_kl, pi=args.pi, threshold=args.threshold
+    )
+
     vaf_true_list = []
     vaf_false_list = []
+    sample_variant_count = {
+        'all': [0 for _ in samples], 
+        'mutations': [0 for _ in samples]
+    }
+    sample_index = {s: i for i, s in enumerate(samples)}
     for r in results:
+        if any(gt for gt in r['alt']):  # gt is not None and gt != 0
+            sample_variant_count['all'][sample_index[r['sample']]] += 1
+            
         if r['is_mutation']:
             vaf_true_list.extend([v for v in r['vaf'] if v is not None and 0 < v < 1])
+            if any(gt for gt in r['alt']):  # gt is not None and gt != 0
+                sample_variant_count['mutations'][sample_index[r['sample']]] += 1
         else:
             vaf_false_list.extend([v for v in r['vaf'] if v is not None and 0 < v < 1])
 
@@ -371,7 +464,7 @@ def qc(input_vcf_path, output_vcf_path, bins=100, lambda_kl=0.1, pi=5e-8 * 16569
     print(f"Total variants processed: {len(results)}, Beta distribution for true variants: Beta({alpha_h1}, {beta_h1}).\n")
     write_vcf(input_vcf_path, output_vcf_path, results, pos_kl_div)
 
-    return results, vaf_true_list, vaf_false_list, alpha_hist, beta_hist, diff_hist
+    return results, sample_variant_count, vaf_true_list, vaf_false_list, alpha_hist, beta_hist, diff_hist
 
 
 def iterative_beta_fit_and_call(results, lambda_kl=0.1, pi=5e-8 * 16569, threshold=0.9, max_iter=50, tol=1e-5):
@@ -380,17 +473,15 @@ def iterative_beta_fit_and_call(results, lambda_kl=0.1, pi=5e-8 * 16569, thresho
     until convergence. For multi-allelic sites, treat each ALT as an independent event and use the
     product of posteriors as the final posterior for the site.
     """
-    
     safe_alpha_h1, safe_beta_h1 = 1, 1  # Default values for Beta distribution parameters
     alpha_hist, beta_hist, diff_hist = [1], [1], []
     prev_is_mut = [r['is_mutation'] for r in results]
-
     for i in range(max_iter):
         # 1. Collect VAFs from currently called mutations
         het_var_list = []
         hom_var_list = []
         for r in results:
-            if r['is_mutation'] and r.get('vaf') is not None:
+            if r['is_mutation'] and (not r['pre_filtered']) and (r.get('vaf') is not None):
                 if r['ploidy'] > 1:
                     het_var_list.extend([v for v in r['vaf'] if v is not None and 0 < v < 1])
                 else:
@@ -399,8 +490,8 @@ def iterative_beta_fit_and_call(results, lambda_kl=0.1, pi=5e-8 * 16569, thresho
         # hom_var_list = np.array(hom_var_list)
         # np.random.shuffle(hom_var_list) # Random shuffling
         # n = min(len(het_var_list), len(hom_var_list)) 
-        step = len(hom_var_list) // len(het_var_list) if len(hom_var_list) > len(het_var_list) else 1
-        vaf_list = het_var_list + hom_var_list[::step]  # Use same number of het and hom variants
+        by_step = len(hom_var_list) // len(het_var_list) if len(hom_var_list) > len(het_var_list) else 1
+        vaf_list = het_var_list + hom_var_list[::by_step]  # Use same number of het and hom variants, by downsampling hom variants by step
         print(f"- Iteration {i+1}: {len(vaf_list)} VAFs collected for Beta fitting.")
 
         # 2. Fit Beta distribution parameters using MLE
@@ -414,6 +505,9 @@ def iterative_beta_fit_and_call(results, lambda_kl=0.1, pi=5e-8 * 16569, thresho
         
         # 3. Recalculate posterior and is_mutation for each record
         for r in results:
+            if r['pre_filtered']:
+                continue  # Skip pre-filtered samples
+            
             # For multi-allelic sites, calculate posterior for each ALT and take the product
             new_pps = []
             for a_obs, kl_div in zip(r['A'], r['kl_divergence_single']):
@@ -421,16 +515,16 @@ def iterative_beta_fit_and_call(results, lambda_kl=0.1, pi=5e-8 * 16569, thresho
                     A=a_obs,
                     D=r['D'],
                     p_error=r['p_error'],
-                    alpha_h1=safe_alpha_h1,
-                    beta_h1=safe_beta_h1,
+                    alpha_h1=safe_alpha_h1,  # Use updated Beta parameters
+                    beta_h1=safe_beta_h1,    # Use updated Beta parameters
                     lambda_kl=lambda_kl,
                     kl_div=kl_div,
                     pi=pi,
                 )
                 new_pps.append(new_pp)
 
-            r['posterior'] = np.prod(new_pps)
-            r['is_mutation'] = r['posterior'] > threshold
+            r['posterior'] = np.prod(new_pps)  # Update posterior as product of individual posteriors
+            r['is_mutation'] = r['posterior'] > threshold  # Update mutation call based on new posterior
             
         # 4. Check for convergence
         curr_is_mut = [r['is_mutation'] for r in results]
@@ -568,15 +662,30 @@ def main():
     parser.add_argument('--vcf', required=True, help="Input VCF file path")
     parser.add_argument('--output', required=True, help="Output CSV file path")
     parser.add_argument('--output-vcf', required=True, help="Output quality-controlled VCF file path")
-    parser.add_argument('--bins', type=int, default=100, help="Number of histogram bins")
-    parser.add_argument('--lambda-kl', type=float, default=0.1, help="Weight for KL divergence")
-    parser.add_argument('--pi', type=float, default=5e-8 * 16569, help="Prior probability of mutation")
-    parser.add_argument('--threshold', type=float, default=0.9, help="Posterior probability threshold for calling mutations")
+    
+    # For maximum ALT alleles per site
+    parser.add_argument('--max-alt-alleles', type=int, default=2, help="Maximum number of ALT alleles per site to consider. Default is 2")
+    
+    # For per-sample pre-filtering parameters
+    parser.add_argument('--DP-threshold', type=int, default=200, 
+                        help="Minimum depth (DP) threshold for considering variants "
+                             "for each sample. Default is 200")
+    parser.add_argument('--HQ-threshold', type=int, default=20, 
+                        help="Minimum base quality (HQ) threshold for considering "
+                             "variants for each sample. Default is 20")
+    
+    # For Bayesian filter parameters
+    parser.add_argument('--bins', type=int, default=100, help="Number of histogram bins. Default is 100")
+    parser.add_argument('--lambda-kl', type=float, default=0.1, help="Weight for KL divergence. Default is 0.1")
+    parser.add_argument('--pi', type=float, default=5e-8 * 16569, help="Prior probability of mutation. Default is 5e-8 * 16569")
+    parser.add_argument('--threshold', type=float, default=0.9, help="Posterior probability threshold for calling mutations. Default is 0.9")
     
     args = parser.parse_args()
     try:
         # Parse VCF file
-        variants, vaf_true_list, vaf_false_list, alpha_hist, beta_hist, diff_hist = qc(args.vcf, args.output_vcf, args.bins, args.lambda_kl, args.pi, args.threshold)
+        # (variants, vaf_true_list, vaf_false_list, alpha_hist, beta_hist, diff_hist) = qc(args.vcf, args.output_vcf, args.bins, args.lambda_kl, args.pi, args.threshold)
+        (variants, sample_variant_count, vaf_true_list, vaf_false_list, 
+         alpha_hist, beta_hist, diff_hist) = qc(args.vcf, args.output_vcf, args)
         
         # Save results to CSV
         df_results = pd.DataFrame(variants).explode('alt')
@@ -592,6 +701,10 @@ def main():
         plot_beta_fit_and_vaf(alpha_hist, beta_hist, vaf_true_list, vaf_false_list, 
                               save_path=args.output.split('.')[0] + '_beta_fit_vaf.png')
         print(f"Quality control analysis completed. Results saved to {args.output_vcf}")
+        
+        # Plot variant counts per sample
+        plot_variant_counts(sample_variant_count, 
+                            save_path=args.output.split('.')[0] + '_variant_counts_per_sample.png')
         
     except Exception as e:
         print(f"Error: {str(e)}")
