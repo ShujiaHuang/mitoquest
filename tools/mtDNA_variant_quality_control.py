@@ -132,8 +132,8 @@ def plot_variant_counts(sample_variant_count, save_path='variant_counts_per_samp
     
     plt.figure(figsize=(10, 6))
     ax = plt.gca()
-    ax.hist(all_counts, bins=100, color='tab:gray', alpha=0.7, label=f'Total Variants (Mean: {np.mean(all_counts):.0f})')
-    ax.hist(mut_counts, bins=100, color='tab:orange', alpha=0.7, label=f'Called Mutations (Mean: {np.mean(mut_counts):.0f})')
+    ax.hist(all_counts, bins=100, color='tab:gray', alpha=0.4, label=f'Total Variants (Mean: {np.mean(all_counts):.0f})')
+    ax.hist(mut_counts, bins=100, color='tab:orange', alpha=0.4, label=f'Called Mutations (Mean: {np.mean(mut_counts):.0f})')
     ax.set_xlabel('Variant Counts per Sample')
     ax.set_ylabel('Number of Samples')
     ax.set_title('Distribution of Variant Counts per Sample')
@@ -415,7 +415,6 @@ def qc(input_vcf_path, output_vcf_path, args):
                 'pos': variant['pos'],
                 'ref': variant['ref'],
                 # 'alt': [ref_alts[g_idx] if g_idx is not None else '.' for g_idx in gt] if (gt and (not is_pre_filtered)) else ['.'],
-                # 'alt': [g_idx if g_idx is not None else None for g_idx in gt] if (gt and (not is_pre_filtered)) else [None],
                 'alt': gt if gt and (not is_pre_filtered) else [None],
                 
                 'vaf': vaf,
