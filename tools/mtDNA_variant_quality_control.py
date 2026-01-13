@@ -309,6 +309,8 @@ def qc(input_vcf_path, output_vcf_path, args):
     _vcf.close()
     
     results = []
+    fs_threshold  = 1000
+    sor_threshold = 1000
     pos_kl_div = {} # Store multi-sample KL divergence for each position
     for variant in variant_generator(input_vcf_path):
         chrom_pos = (variant['chrom'], variant['pos'])
@@ -345,11 +347,11 @@ def qc(input_vcf_path, output_vcf_path, args):
                 continue
             
             sample_fs = variant['samples'][sample].get('FS')
-            if (sample_fs is not None) and any(fs > args.FS_threshold for fs in sample_fs):
+            if (sample_fs is not None) and any(fs > fs_threshold for fs in sample_fs):
                 continue
 
             sample_sor = variant['samples'][sample].get('SOR')
-            if (sample_sor is not None) and any(sor > args.SOR_threshold for sor in sample_sor):
+            if (sample_sor is not None) and any(sor > sor_threshold for sor in sample_sor):
                 continue
 
             if (ploidy == 1) and (hf is not None) and all(h is not None for h in hf): 
@@ -395,14 +397,14 @@ def qc(input_vcf_path, output_vcf_path, args):
                                  f"failed HQ threshold ({hqs} < {args.HQ_threshold}). Skipping.\n")
                 pp = 0.0
                 is_pre_filtered = True
-            elif (fss is not None) and any(fs > args.FS_threshold for fs in fss):
+            elif (fss is not None) and any(fs > fs_threshold for fs in fss):
                 sys.stderr.write(f"[WARNING] Sample {sample} at {variant['chrom']}:{variant['pos']} "
-                                 f"failed FS threshold ({fss} > {args.FS_threshold}). Skipping.\n")
+                                 f"failed FS threshold ({fss} > {fs_threshold}). Skipping.\n")
                 pp = 0.0
                 is_pre_filtered = True
-            elif (sors is not None) and any(sor > args.SOR_threshold for sor in sors):
+            elif (sors is not None) and any(sor > sor_threshold for sor in sors):
                 sys.stderr.write(f"[WARNING] Sample {sample} at {variant['chrom']}:{variant['pos']} "
-                                 f"failed SOR threshold ({sors} > {args.SOR_threshold}). Skipping.\n")
+                                 f"failed SOR threshold ({sors} > {sor_threshold}). Skipping.\n")
                 pp = 0.0
                 is_pre_filtered = True
             else :
@@ -692,12 +694,6 @@ def main():
     parser.add_argument('--HQ-threshold', type=int, default=20, 
                         help="Minimum base quality (HQ) threshold for considering "
                              "variants for each sample. Default is 20")
-    parser.add_argument('--FS-threshold', type=float, default=60.0, 
-                        help="Fisher Strand (FS) threshold for filtering variants. "
-                             "Default is 60.0")
-    parser.add_argument('--SOR-threshold', type=float, default=3.0, 
-                        help="Strand Odds Ratio (SOR) threshold for filtering variants. "
-                             "Default is 3.0")
     
     # For Bayesian filter parameters
     parser.add_argument('--bins', type=int, default=100, help="Number of histogram bins. Default is 100")
