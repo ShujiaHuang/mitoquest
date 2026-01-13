@@ -362,7 +362,8 @@ def qc(input_vcf_path, output_vcf_path, args):
         p_error = np.mean(background_error_rates)
 
         # QC for each sample
-        sys.stderr.write(f"Processing variant at {variant['chrom']}:{variant['pos']}. Background Error Rate: {p_error}. \n")
+        sys.stderr.write(f"Processing variant at {variant['chrom']}:{variant['pos']}. "
+                         f"Background Error Rate: {p_error}. \n")
         for sample, gt, vaf in zip(samples, sample_gts, vaf_obs):
             sys.stderr.write(f" - {sample}, VAF: {vaf}\n")
             
@@ -416,7 +417,7 @@ def qc(input_vcf_path, output_vcf_path, args):
                 'pos': variant['pos'],
                 'ref': variant['ref'],
                 'alt': [ref_alts[g_idx] if (g_idx is not None) else '.' for g_idx in gt] if gt and (not is_pre_filtered) else ['.'],
-                'gt': gt if gt and (not is_pre_filtered) else [None],
+                'gt': gt if gt and (not is_pre_filtered and pp > args.threshold) else [None],  # A GT tuple
                 
                 'vaf': vaf,
                 'A': ads,
@@ -438,13 +439,13 @@ def qc(input_vcf_path, output_vcf_path, args):
         results, lambda_kl=args.lambda_kl, pi=args.pi, threshold=args.threshold
     )
 
-    vaf_true_list = []
-    vaf_false_list = []
     sample_variant_count = {
         'all': [0 for _ in samples], 
         'mutations': [0 for _ in samples]
     }
     sample_index = {s: i for i, s in enumerate(samples)}
+    vaf_true_list = []
+    vaf_false_list = []
     for r in results:
         if any(gt for gt in r['gt']):  # gt is not None and gt != 0
             sample_variant_count['all'][sample_index[r['sample']]] += 1
