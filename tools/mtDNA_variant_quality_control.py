@@ -133,11 +133,11 @@ def plot_variant_counts(sample_variant_count, save_path='variant_counts_per_samp
     plt.figure(figsize=(10, 6))
     ax = plt.gca()
     ax.hist(all_counts, bins=50, color='tab:gray', alpha=0.4, label=f'Total Variants (Mean: {np.mean(all_counts):.0f})')
-    ax.hist(mut_counts, bins=50, color='tab:orange', alpha=0.4, label=f'Called Mutations (Mean: {np.mean(mut_counts):.0f})')
+    ax.hist(mut_counts, bins=50, color='tab:orange', alpha=0.4, label=f'Good Variants (Mean: {np.mean(mut_counts):.0f})')
     ax.set_xlabel('Variant Counts per Sample')
     ax.set_ylabel('Number of Samples')
     ax.set_title('Distribution of Variant Counts per Sample')
-    ax.legend()
+    ax.legend(loc='upper right')
     plt.tight_layout()
     plt.savefig(save_path, dpi=300)
     plt.close()
@@ -254,19 +254,18 @@ def write_vcf(input_vcf_path, output_vcf_path, results, pos_kl_div):
         output_vcf_path: str, output VCF file path
         results: list of dict, each dict contains sample, chrom, pos, pp, is_mutation
     """
-    # Build lookup: {(chrom, pos, sample): (pp, is_mutation)}
     result_lookup = {}
     for r in results:
         key = (r['chrom'], r['pos'], r['sample'])
         # GT, PP, IS_MUT
-        result_lookup[key] = (r['gt'], r['posterior'], int(r['is_mutation']))
+        result_lookup[key] = (r['gt'], r['posterior'], r['is_mutation'])
 
     df_results = pd.DataFrame(results)
     qc_status = df_results.groupby(['chrom', 'pos'])['is_mutation'].max().reset_index().set_index(['chrom', 'pos']).to_dict()['is_mutation']
     with pysam.VariantFile(input_vcf_path) as vcf_in:
         # Add new FORMAT fields to header
         vcf_in.header.add_line('##FORMAT=<ID=PP,Number=1,Type=Float,Description="Posterior probability of true genotype">')
-        vcf_in.header.add_line('##FORMAT=<ID=IS_MUT,Number=1,Type=String,Description="Good call (True=Good, False=bad)">')
+        vcf_in.header.add_line('##FORMAT=<ID=GOOD_CALL,Number=1,Type=String,Description="Good call (True=Good, False=bad)">')
         vcf_in.header.add_line('##FILTER=<ID=PASS,Description="Passed mtDNA QC filter">')
         vcf_in.header.add_line('##FILTER=<ID=BLACKLISTED_SITE,Description="Site is in the blacklisted regions">')
         vcf_in.header.add_line('##FILTER=<ID=LOW_QUALITY,Description="Low quality site based on KL divergence from background noise distribution">')
@@ -281,7 +280,7 @@ def write_vcf(input_vcf_path, output_vcf_path, results, pos_kl_div):
                         record.samples[sample].update(
                             {'GT': gt, 
                              'PP': float(pp), 
-                             'IS_MUT': 'True' if is_mut else 'False'}
+                             'GOOD_CALL': 'True' if is_mut else 'False'}
                         )
 
                 # Use record.filter.clear() and record.filter.add() to update FILTER.
@@ -314,8 +313,8 @@ def qc(input_vcf_path, output_vcf_path, args):
     for variant in variant_generator(input_vcf_path):
         chrom_pos = (variant['chrom'], variant['pos'])
         if chrom_pos in GLOBAL_BLACKLIST_SITES_SET:
-            sys.stderr.write(f"[INFO] Variant at {variant['chrom']}:{variant['pos']} is "
-                             f"in blacklisted regions. Skipping.\n")
+            sys.stderr.write(f"[INFO] Variant at {variant['chrom']}:{variant['pos']} "
+                             f"is located in blacklisted regions. Skipping.\n")
             continue
         
         # Maximum ALT alleles per site
@@ -345,6 +344,14 @@ def qc(input_vcf_path, output_vcf_path, args):
             if any(hq < args.HQ_threshold for hq in sample_hq):
                 continue
             
+            sample_fs = variant['samples'][sample].get('FS')
+            if (sample_fs is not None) and any(fs > args.FS_threshold for fs in sample_fs):
+                continue
+
+            sample_sor = variant['samples'][sample].get('SOR')
+            if (sample_sor is not None) and any(sor > args.SOR_threshold for sor in sample_sor):
+                continue
+
             if (ploidy == 1) and (hf is not None) and all(h is not None for h in hf): 
                 # Only use non mutated (homozygous) samples to estimate background error rate.
                 background_error_rates.append(1.0 - sum(hf))
@@ -369,13 +376,15 @@ def qc(input_vcf_path, output_vcf_path, args):
             
             # Calculate KL divergence for each sample for each ALT
             kl_div_singles = []
-            dp  = variant['samples'][sample].get('DP')
-            hqs = variant['samples'][sample].get('HQ')  # A tuple
-            ads = variant['samples'][sample].get('AD')  # A tuple
-            ploidy = len(gt)
+            dp   = variant['samples'][sample].get('DP')
+            hqs  = variant['samples'][sample].get('HQ')   # A tuple
+            ads  = variant['samples'][sample].get('AD')   # A tuple
+            fss  = variant['samples'][sample].get('FS')   # A tuple
+            sors = variant['samples'][sample].get('SOR')  # A tuple
             
             # Pre-filtering based on DP and HQ thresholds
             is_pre_filtered = False
+            ploidy = len(gt)
             if dp / ploidy < args.DP_to_ploidy_threshold:
                 sys.stderr.write(f"[WARNING] Sample {sample} at {variant['chrom']}:{variant['pos']} failed DP/Ploidy "
                                  f"threshold ({dp}/{ploidy} < {args.DP_to_ploidy_threshold}). Skipping.\n")
@@ -384,6 +393,16 @@ def qc(input_vcf_path, output_vcf_path, args):
             elif any(hq < args.HQ_threshold for hq in hqs):
                 sys.stderr.write(f"[WARNING] Sample {sample} at {variant['chrom']}:{variant['pos']} "
                                  f"failed HQ threshold ({hqs} < {args.HQ_threshold}). Skipping.\n")
+                pp = 0.0
+                is_pre_filtered = True
+            elif (fss is not None) and any(fs > args.FS_threshold for fs in fss):
+                sys.stderr.write(f"[WARNING] Sample {sample} at {variant['chrom']}:{variant['pos']} "
+                                 f"failed FS threshold ({fss} > {args.FS_threshold}). Skipping.\n")
+                pp = 0.0
+                is_pre_filtered = True
+            elif (sors is not None) and any(sor > args.SOR_threshold for sor in sors):
+                sys.stderr.write(f"[WARNING] Sample {sample} at {variant['chrom']}:{variant['pos']} "
+                                 f"failed SOR threshold ({sors} > {args.SOR_threshold}). Skipping.\n")
                 pp = 0.0
                 is_pre_filtered = True
             else :
@@ -417,7 +436,7 @@ def qc(input_vcf_path, output_vcf_path, args):
                 'chrom': variant['chrom'],
                 'pos': variant['pos'],
                 'ref': variant['ref'],
-                'alt': [ref_alts[g_idx] if (g_idx is not None) else '.' for g_idx in gt] if gt and (not is_pre_filtered) else ['.'],
+                'alt': [ref_alts[g_idx] if (g_idx is not None) else '.' for g_idx in gt] if gt else ['.'],
                 'gt': gt if gt and (not is_pre_filtered and pp > args.threshold) else [None],  # A GT tuple
                 
                 'vaf': vaf,
@@ -448,7 +467,7 @@ def qc(input_vcf_path, output_vcf_path, args):
     vaf_true_list = []
     vaf_false_list = []
     for r in results:
-        if any(gt for gt in r['gt']):  # gt is not None and gt != 0
+        if any(alt != '.' and alt != r['ref'] for alt in r['alt']):  # raw variant exists
             sample_variant_count['all'][sample_index[r['sample']]] += 1
             
         if r['is_mutation']:
@@ -489,9 +508,6 @@ def iterative_beta_fit_and_call(results, lambda_kl=0.1, pi=5e-8 * 16569, thresho
                 else:
                     hom_var_list.extend([v for v in r['vaf'] if v is not None and 0 < v < 1])
                 
-        # hom_var_list = np.array(hom_var_list)
-        # np.random.shuffle(hom_var_list) # Random shuffling
-        # n = min(len(het_var_list), len(hom_var_list)) 
         by_step = len(hom_var_list) // len(het_var_list) if len(hom_var_list) > len(het_var_list) else 1
         vaf_list = het_var_list + hom_var_list[::by_step]  # Use same number of het and hom variants, by downsampling hom variants by step
         print(f"- Iteration {i+1}: {len(vaf_list)} VAFs collected for Beta fitting.")
@@ -527,6 +543,7 @@ def iterative_beta_fit_and_call(results, lambda_kl=0.1, pi=5e-8 * 16569, thresho
 
             r['posterior'] = np.prod(new_pps)  # Update posterior as product of individual posteriors
             r['is_mutation'] = r['posterior'] > threshold  # Update mutation call based on new posterior
+            r['gt'] = r['gt'] if r['is_mutation'] else [None]
             
         # 4. Check for convergence
         curr_is_mut = [r['is_mutation'] for r in results]
@@ -675,6 +692,12 @@ def main():
     parser.add_argument('--HQ-threshold', type=int, default=20, 
                         help="Minimum base quality (HQ) threshold for considering "
                              "variants for each sample. Default is 20")
+    parser.add_argument('--FS-threshold', type=float, default=60.0, 
+                        help="Fisher Strand (FS) threshold for filtering variants. "
+                             "Default is 60.0")
+    parser.add_argument('--SOR-threshold', type=float, default=3.0, 
+                        help="Strand Odds Ratio (SOR) threshold for filtering variants. "
+                             "Default is 3.0")
     
     # For Bayesian filter parameters
     parser.add_argument('--bins', type=int, default=100, help="Number of histogram bins. Default is 100")
