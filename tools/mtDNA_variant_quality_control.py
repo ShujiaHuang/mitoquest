@@ -266,11 +266,11 @@ def write_vcf(input_vcf_path, output_vcf_path, results, pos_kl_div):
     with pysam.VariantFile(input_vcf_path) as vcf_in:
         # Add new FORMAT fields to header
         vcf_in.header.add_line('##FORMAT=<ID=PP,Number=1,Type=Float,Description="Posterior probability of true genotype">')
-        vcf_in.header.add_line('##FORMAT=<ID=IS_MUT,Number=1,Type=String,Description="Mutation call (True=mutation, False=not)">')
+        vcf_in.header.add_line('##FORMAT=<ID=IS_MUT,Number=1,Type=String,Description="Good call (True=Good, False=bad)">')
         vcf_in.header.add_line('##FILTER=<ID=PASS,Description="Passed mtDNA QC filter">')
         vcf_in.header.add_line('##FILTER=<ID=BLACKLISTED_SITE,Description="Site is in the blacklisted regions">')
-        vcf_in.header.add_line('##FILTER=<ID=LOW_QUALITY,Description="Low quality site based on KL divergence">')
-        # vcf_in.header.add_line('##FILTER=<ID=QC_FAIL,Description="Failed mtDNA QC filter">')
+        vcf_in.header.add_line('##FILTER=<ID=LOW_QUALITY,Description="Low quality site based on KL divergence from background noise distribution">')
+        vcf_in.header.add_line(f'##QC_command=python {" ".join(sys.argv)}')
         # vcf_in.header.info['KL_DIV'] = ('1', 'Float', 'Kullback-Leibler divergence of multi-sample VAF distribution from background noise distribution')
         with pysam.VariantFile(output_vcf_path, 'w', header=vcf_in.header) as vcf_out:
             for record in vcf_in:
@@ -338,7 +338,7 @@ def qc(input_vcf_path, output_vcf_path, args):
             ploidy = len(gt)
             
             # Pre-filtering based on DP and HQ thresholds
-            if variant['samples'][sample].get('DP', 0) < args.DP_threshold:
+            if variant['samples'][sample].get('DP', 0) / ploidy < args.DP_to_ploidy_threshold:
                 continue
             
             sample_hq = variant['samples'][sample].get('HQ', (0))
@@ -372,12 +372,13 @@ def qc(input_vcf_path, output_vcf_path, args):
             dp  = variant['samples'][sample].get('DP')
             hqs = variant['samples'][sample].get('HQ')  # A tuple
             ads = variant['samples'][sample].get('AD')  # A tuple
+            ploidy = len(gt)
             
             # Pre-filtering based on DP and HQ thresholds
             is_pre_filtered = False
-            if dp < args.DP_threshold:
-                sys.stderr.write(f"[WARNING] Sample {sample} at {variant['chrom']}:{variant['pos']} "
-                                 f"failed DP threshold ({dp} < {args.DP_threshold}). Skipping.\n")
+            if dp / ploidy < args.DP_to_ploidy_threshold:
+                sys.stderr.write(f"[WARNING] Sample {sample} at {variant['chrom']}:{variant['pos']} failed DP/Ploidy "
+                                 f"threshold ({dp}/{ploidy} < {args.DP_to_ploidy_threshold}). Skipping.\n")
                 pp = 0.0
                 is_pre_filtered = True
             elif any(hq < args.HQ_threshold for hq in hqs):
@@ -668,9 +669,9 @@ def main():
     parser.add_argument('--max-alt-alleles', type=int, default=2, help="Maximum number of ALT alleles per site to consider. Default is 2")
     
     # For per-sample pre-filtering parameters
-    parser.add_argument('--DP-threshold', type=int, default=200, 
-                        help="Minimum depth (DP) threshold for considering variants "
-                             "for each sample. Default is 200")
+    parser.add_argument('--DP-to-ploidy-threshold', type=int, default=100, 
+                        help="Minimum depth (DP/ploidy) threshold for considering variants "
+                             "for each sample. Default is 100")
     parser.add_argument('--HQ-threshold', type=int, default=20, 
                         help="Minimum base quality (HQ) threshold for considering "
                              "variants for each sample. Default is 20")
