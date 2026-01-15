@@ -215,7 +215,6 @@ std::string format_sample_string(const VCFSampleAnnotation& sa, const VariantInf
 std::string vcf_header_define(const std::string &ref_file_path, const std::vector<std::string> &samples, const std::string other_comment) {
     std::vector<std::string> header = {
         "##fileformat=VCFv4.2",
-
         "##FORMAT=<ID=GT,Number=1,Type=String,Description=\"Genotype\">",
         "##FORMAT=<ID=GQ,Number=1,Type=Integer,Description=\"Genotype Quality\">",
         "##FORMAT=<ID=DP,Number=1,Type=Integer,Description=\"Total read depth on the REF position\">",
@@ -227,34 +226,30 @@ std::string vcf_header_define(const std::string &ref_file_path, const std::vecto
         "##FORMAT=<ID=AQ,Number=A,Type=Integer,Description=\"Allele quality, phred quality scores of pvalue of one-tail Fisher exact test "
             "to determine if the rate of allele is significantly greater than user defined cutoff (-j), in the order listed by GT. "
             "[CAUTION] In most cases, the minor allele corresponds to the heteroplasmic allele; therefore, the AQ at the minor allele position "
-            "reflects the quality value of heterozygous allele mostly.\">",
+            "reflects the quality value of heterozygous allele mostly\">",
         "##FORMAT=<ID=LAF,Number=A,Type=Float,Description=\"Transformed AF: The logit of the allele fraction (AF) is "
-            "computed as logit(AF) = ln(AF/(1-AF)) for each allele, in the order listed by GT.\">",
+            "computed as logit(AF) = ln(AF/(1-AF)) for each allele, in the order listed by GT\">",
         "##FORMAT=<ID=SB,Number=1,Type=String,Description=\"Allele-specific forward/reverse read counts for strand bias tests for the alleles, in "
             "the order listed by GT, separated by ';'. Format: fwd,rev;fwd,rev;...\">",
         "##FORMAT=<ID=FS,Number=A,Type=Float,Description=\"An ordered, comma delimited list of phred-scaled p-value using Fisher's exact test to detect strand bias\">",
         "##FORMAT=<ID=SOR,Number=A,Type=Float,Description=\"An ordered, comma delimited list of strand bias estimated by the Symmetric Odds Ratio test\">",
         "##FORMAT=<ID=VT,Number=1,Type=String,Description=\"An ordered, comma delimited list of variant type: REF, SNV, INS, DEL, or MNV\">",
         "##INFO=<ID=AN,Number=1,Type=Integer,Description=\"Number of samples with non-missing GT at this site\">",
-        "##INFO=<ID=REF_N,Number=1,Type=Integer,Description=\"Total number of individuals exhibiting the reference state in the population.\">",
-        "##INFO=<ID=HOM_N,Number=1,Type=Integer,Description=\"Total number of individuals exhibiting the homoplasmic state in the population.\">",
-        "##INFO=<ID=HET_N,Number=1,Type=Integer,Description=\"Total number of individuals exhibiting the heteroplasmic state in the population.\">",
+        "##INFO=<ID=REF_N,Number=1,Type=Integer,Description=\"Total number of individuals exhibiting the reference state in the population\">",
+        "##INFO=<ID=HET_N,Number=1,Type=Integer,Description=\"Total number of individuals exhibiting the heteroplasmic state in the population\">",
+        "##INFO=<ID=HOM_N,Number=1,Type=Integer,Description=\"Total number of individuals exhibiting the homoplasmic state in the population\">",
         "##INFO=<ID=DP_MEAN,Number=1,Type=Float,Description=\"Mean mitochondrial sequencing depth across samples contributing to AN\">",
         "##INFO=<ID=DP_MEDIAN,Number=1,Type=Integer,Description=\"Median mitochondrial sequencing depth across samples contributing to AN\">",
-        "##INFO=<ID=VAF_MEAN,Number=A,Type=Float,Description=\"Mean mitochondrial variant allele fraction(VAF) across all samples contributing to AN, with VAF=0 assigned to samples without detectable variant\">",
+        "##INFO=<ID=VAF_MEAN,Number=A,Type=Float,Description=\"Mean mitochondrial variant allele fraction(VAF) across all samples contributing to AN, "
+            "with VAF=0 assigned to samples without detectable variant\">",
         "##INFO=<ID=VAF_MEDIAN,Number=A,Type=Float,Description=\"Median mitochondrial VAF across all samples contributing to AN\">",
         "##INFO=<ID=VAF_MEAN_HET,Number=A,Type=Float,Description=\"Mean mitochondrial VAF among heteroplasmic samples only\">",
         "##INFO=<ID=VAF_MEDIAN_HET,Number=A,Type=Float,Description=\"Median mitochondrial VAF among heteroplasmic samples only\">",
         "##INFO=<ID=PT,Number=1,Type=String,Description=\"Type of plasmicity observed in population: Ref, Hom, Het, or Mixed(Hom and Het)\">"
 
 
-        // "##INFO=<ID=HOM_N,Number=1,Type=Integer,Description=\"Total number of individuals exhibiting the homoplasmic state for the non-reference allele in the population.\">",
-        // "##INFO=<ID=HET_N,Number=1,Type=Integer,Description=\"Total number of individuals exhibiting the heteroplasmic state for the non-reference allele in the population.\">",
-        // "##INFO=<ID=Total_N,Number=1,Type=Integer,Description=\"Available sample size in this record.\">",
-        // "##INFO=<ID=HOM_PF,Number=1,Type=Float,Description=\"Total frequency of individuals exhibiting the homoplasmic state for the non-reference allele in the population.\">",
-        // "##INFO=<ID=HET_PF,Number=1,Type=Float,Description=\"Total frequency of individuals exhibiting the heteroplasmic state for the non-reference allele in the population.\">",
-        // "##INFO=<ID=SUM_PF,Number=1,Type=Float,Description=\"Total frequency: HOM_PF+HET_PF.\">",
-        // "##INFO=<ID=PT,Number=1,Type=String,Description=\"Type of plasmicity observed in population: Ref, Hom, Het, or Mixed(Hom and Het)\">"
+        // "##INFO=<ID=HOM_PF,Number=1,Type=Float,Description=\"Total frequency of individuals exhibiting the homoplasmic state for the non-reference allele in the population\">",
+        // "##INFO=<ID=HET_PF,Number=1,Type=Float,Description=\"Total frequency of individuals exhibiting the heteroplasmic state for the non-reference allele in the population\">",
     };  // initial by common information of header
 
     ngslib::Fasta fa = ref_file_path;
