@@ -103,7 +103,6 @@ void VCFSubsetSamples::parse_args(int argc, char* argv[]) {
         // Guess output format based on output file extension using helper function
         std::string lower_fname = _output_vcf_path;
         std::transform(lower_fname.begin(), lower_fname.end(), lower_fname.begin(), ::tolower); // Convert to lowercase
-
         if (ngslib::suffix_name(lower_fname) == ".bcf") { // Use helper from anonymous namespace
             _output_mode = "wb";
         } else if (ngslib::suffix_name(lower_fname) == ".gz") { // Use helper from anonymous namespace
@@ -130,7 +129,7 @@ bool VCFSubsetSamples::recalculate_info(const ngslib::VCFHeader& hdr, ngslib::VC
     }
 
     int n_alt = rec.n_alt();
-    if (n_alt == 0) return true; // No ALT alleles, nothing to count
+    if (n_alt == 0) return false; // No ALT alleles, nothing to count
 
     // Get genotypes for all samples
     std::vector<std::vector<int>> genotypes;
@@ -149,7 +148,7 @@ bool VCFSubsetSamples::recalculate_info(const ngslib::VCFHeader& hdr, ngslib::VC
     int hom_ind_count = 0;
     int het_ind_count = 0;
     int available_ind_count = 0;
-
+    
     for (size_t i = 0; i < genotypes.size(); ++i) {
         // Get the genotype for this sample
         const std::vector<int>& gt = genotypes[i];
@@ -309,7 +308,7 @@ void VCFSubsetSamples::run() {
                     + subset_rec.chrom(subset_hdr) + ":" + std::to_string(subset_rec.pos() + 1));
             }  
 
-            // Recalculate INFO fields (AC, AN, AF, ...) based on the kept samples
+            // Recalculate INFO fields (AN, VAF_MEAN, ...) based on the kept samples
             if (_update_info) {
                 // Note: This will modify the subset_rec in place
                 bool is_valid = recalculate_info(subset_hdr, subset_rec);
