@@ -71,7 +71,6 @@ StrandBiasInfo strand_bias(const std::string &major_base,
 }
 
 AlleleInfo collect_allele_info(std::vector<VariantInfo>& variants) {
-    
     // Find longest REF
     std::string shared_ref;
     for (const auto& smp_var : variants) {
@@ -93,11 +92,11 @@ AlleleInfo collect_allele_info(std::vector<VariantInfo>& variants) {
 
             // rebase if Indels
             if (alt[0] == '-') {
-                alt = ref[0];               // replace by the first ref bases for DEL seq
-                smp_var.alt_bases[j] = alt; // Update the ALT sequence
+                alt = ref[0];               // replace the bases by the first ref base
+                smp_var.alt_bases[j] = alt; // rewrite deletion seq
             } else if (alt[0] == '+') {
                 alt = ref + alt.substr(1);  // replace the first base('+') by ref bases
-                smp_var.alt_bases[j] = alt; // rewrite deletion seq
+                smp_var.alt_bases[j] = alt; // rewrite insertion seq
             }
             
             if (ref != shared_ref && shared_ref.length() > ref.length()) {
@@ -109,13 +108,14 @@ AlleleInfo collect_allele_info(std::vector<VariantInfo>& variants) {
     }
     unique_alts.erase(shared_ref);  // Remove REF from ALTs
 
-    // Set ALT field: Unique and sorted ALT sequences by length and then by ASCII
+    // Set ALT field: Unique and sorted ALT (non-reference) sequences by length and then by ASCII
     ai.alts = ngslib::get_unique_strings(
         std::vector<std::string>(unique_alts.begin(), unique_alts.end())
     );
 
     for (const auto& alt : ai.alts) {
-        ai.allele_counts[alt] = 0;
+        ai.alt_all_freqs[alt] = std::vector<double>();
+        ai.alt_het_freqs[alt] = std::vector<double>();
     }
     
     return ai;
@@ -138,23 +138,22 @@ VCFSampleAnnotation process_sample_variant(const VariantInfo& var_info,
                 sa.sample_alts.push_back(alt);
                 sa.allele_depths.push_back(var_info.depths[j]);
                 
-                // allele_freqs.push_back(var_info.freqs[j]); // 这里不要用 lrt 计算出来的 allele frequency，因为可能不知为何会有负数（极少情况下）
+                // double h = var_info.freqs[j]; // 这里不要用 lrt 计算出来的 allele frequency，因为可能不知为何会有负数（极少情况下）
                 // calculate the allele frequency by allele_depth/total_depth
                 double h = double(var_info.depths[j]) / double(var_info.total_depth);
                 sa.allele_freqs.push_back(h);
-                sa.logit_hf.push_back(log(h/(1-h)));
+                sa.logit_af.push_back(log(h/(1-h)));
                 
-                sa.ci_strings.push_back(format_double(var_info.ci[j].first) + "," + 
-                                        format_double(var_info.ci[j].second));
+                sa.ci_strings.push_back(format_double(var_info.ci[j].first, 4) + "," + 
+                                        format_double(var_info.ci[j].second, 4));
                 
                 sa.sb_strings.push_back(std::to_string(var_info.strand_bias[j].fwd) + "," + 
                                         std::to_string(var_info.strand_bias[j].rev));
                 
                 sa.fs_strings.push_back(var_info.strand_bias[j].fs != 10000 ?
-                                        format_double(var_info.strand_bias[j].fs) : "10000"); // it's a phred-scale score
-                
+                                        format_double(var_info.strand_bias[j].fs, 3) : "10000"); // it's a phred-scale score
                 sa.sor_strings.push_back(var_info.strand_bias[j].sor != 10000 ?
-                                         format_double(var_info.strand_bias[j].sor) : "10000");
+                                         format_double(var_info.strand_bias[j].sor, 3) : "10000");
                 
                 sa.var_types.push_back(var_info.var_types[j]);
 
@@ -177,13 +176,13 @@ VCFSampleAnnotation process_sample_variant(const VariantInfo& var_info,
                  */
                 int obs_major_count = var_info.depths[var_info.major_allele_idx];
                 int obs_minor_count = var_info.depths[j];
-                double hq = -10 * log10(fisher_exact_test(obs_major_count, obs_minor_count,
+                double aq = -10 * log10(fisher_exact_test(obs_major_count, obs_minor_count,
                                                           exp_major_count, exp_minor_count,
                                                           TestSide::LESS));
-                if (std::isinf(hq)) {
-                    hq = 10000;
+                if (std::isinf(aq)) {
+                    aq = 10000;
                 }
-                sa.hq.push_back(int(hq));
+                sa.aq.push_back(int(aq));
             }
         }
     }
@@ -198,13 +197,13 @@ std::string format_sample_string(const VCFSampleAnnotation& sa, const VariantInf
     }
 
     std::string sample_info = ngslib::join(sa.gtcode, "/")         + ":" +  // GT, genotype
-                              std::to_string(int(var_info.qual))   + ":" +  // GQ, genotype quality (Variant quality)
+                              std::to_string(int(var_info.qual))   + ":" +  // GQ, genotype quality
                               std::to_string(var_info.total_depth) + ":" +  // DP, total depth
                               ngslib::join(sa.allele_depths, ",")  + ":" +  // AD, active allele depth, so sum(AD) <= PD
-                              ngslib::join(sa.allele_freqs, ",")   + ":" +  // HF, allele frequency, homo-/hetero-plasmy
+                              ngslib::join(sa.allele_freqs, ",")   + ":" +  // AF, allele frequency
                               ngslib::join(sa.ci_strings, ";")     + ":" +  // CI, confidence interval
-                              ngslib::join(sa.hq, ",")             + ":" +  // HQ, homo-/hetero-plasmy quality score
-                              ngslib::join(sa.logit_hf, ",")       + ":" +  // LHF,Transformed homo-/hetero-plasmy by `logit`
+                              ngslib::join(sa.aq, ",")             + ":" +  // AQ, allele quality score
+                              ngslib::join(sa.logit_af, ",")       + ":" +  // LAF,Transformed allele frequency by `logit`
                               ngslib::join(sa.sb_strings, ";")     + ":" +  // SB, strand bias
                               ngslib::join(sa.fs_strings, ",")     + ":" +  // FS, fisher-exact-test strand bias
                               ngslib::join(sa.sor_strings, ",")    + ":" +  // SOR,Strand odds ratio
@@ -216,34 +215,46 @@ std::string format_sample_string(const VCFSampleAnnotation& sa, const VariantInf
 std::string vcf_header_define(const std::string &ref_file_path, const std::vector<std::string> &samples, const std::string other_comment) {
     std::vector<std::string> header = {
         "##fileformat=VCFv4.2",
+
         "##FORMAT=<ID=GT,Number=1,Type=String,Description=\"Genotype\">",
         "##FORMAT=<ID=GQ,Number=1,Type=Integer,Description=\"Genotype Quality\">",
         "##FORMAT=<ID=DP,Number=1,Type=Integer,Description=\"Total read depth on the REF position\">",
-        "##FORMAT=<ID=AD,Number=R,Type=Integer,Description=\"Allelic depths for the ref and alt alleles in the order listed\">",
-        "##FORMAT=<ID=HF,Number=A,Type=Float,Description=\"Heteroplasmy/Homoplasmy fraction for the ref and alt alleles in the order listed\">",
-        "##FORMAT=<ID=CI,Number=1,Type=String,Description=\"95\% confidence interval around the estimated homoplasmy/heteroplasmy fraction for "
-        "the GT alleles in the order listed. format: ci_low,ci_up;ci_low,ci_up;...\">",
-        "##FORMAT=<ID=HQ,Number=A,Type=Integer,Description=\"Heteroplasmy/Homoplasmy Quality, phred quality scores of pvalue of one-tail Fisher exact test "
-        "to determine if the rate of allele is significantly greater than user defined cutoff (-j), in the order listed by GT. "
-        "[CAUTION] In most cases, the minor allele corresponds to the heteroplasmic allele; therefore, the HQ at the minor allele position "
-        "reflects the quality value of heterozygous allele mostly.\">",
-        "##FORMAT=<ID=LHF,Number=A,Type=Float,Description=\"Transformed heteroplasmy/homoplasmy: The logit of the heteroplasmy/homoplasmy fraction (HF) is "
-        "computed as logit(HF) = ln(HF/(1-HF)) for each allele, in the order listed by GT.\">",
+        "##FORMAT=<ID=AD,Number=R,Type=Integer,Description=\"Allelic depth for each allele, in the order listed by GT\">",
+        "##FORMAT=<ID=AF,Number=A,Type=Float,Description=\"Allele fraction for each allele, in the order listed by GT. Fraction "
+            "of non-reference allele corresponds to the variant allele fraction(VAF)\">",
+        "##FORMAT=<ID=CI,Number=1,Type=String,Description=\"95\% confidence interval around the estimated allele fraction for "
+            "the allele in the order listed by GT. format: ci_low,ci_up;ci_low,ci_up;...\">",
+        "##FORMAT=<ID=AQ,Number=A,Type=Integer,Description=\"Allele quality, phred quality scores of pvalue of one-tail Fisher exact test "
+            "to determine if the rate of allele is significantly greater than user defined cutoff (-j), in the order listed by GT. "
+            "[CAUTION] In most cases, the minor allele corresponds to the heteroplasmic allele; therefore, the AQ at the minor allele position "
+            "reflects the quality value of heterozygous allele mostly.\">",
+        "##FORMAT=<ID=LAF,Number=A,Type=Float,Description=\"Transformed AF: The logit of the allele fraction (AF) is "
+            "computed as logit(AF) = ln(AF/(1-AF)) for each allele, in the order listed by GT.\">",
         "##FORMAT=<ID=SB,Number=1,Type=String,Description=\"Allele-specific forward/reverse read counts for strand bias tests for the alleles, in "
-        "the order listed by GT, separated by ';'. Format: fwd,rev;fwd,rev;...\">",
+            "the order listed by GT, separated by ';'. Format: fwd,rev;fwd,rev;...\">",
         "##FORMAT=<ID=FS,Number=A,Type=Float,Description=\"An ordered, comma delimited list of phred-scaled p-value using Fisher's exact test to detect strand bias\">",
         "##FORMAT=<ID=SOR,Number=A,Type=Float,Description=\"An ordered, comma delimited list of strand bias estimated by the Symmetric Odds Ratio test\">",
         "##FORMAT=<ID=VT,Number=1,Type=String,Description=\"An ordered, comma delimited list of variant type: REF, SNV, INS, DEL, or MNV\">",
-        "##INFO=<ID=AF,Number=A,Type=Float,Description=\"An ordered, comma delimited list of non-reference allele frequencies\">",
-        "##INFO=<ID=AC,Number=A,Type=Integer,Description=\"An ordered, comma delimited list of non-reference allele count in genotypes\">",
-        "##INFO=<ID=AN,Number=1,Type=Integer,Description=\"Total number of ref and non-reference allele in called genotypes\">",
-        "##INFO=<ID=HOM_N,Number=1,Type=Integer,Description=\"Total number of individuals exhibiting the homoplasmic state for the non-reference allele in the population.\">",
-        "##INFO=<ID=HET_N,Number=1,Type=Integer,Description=\"Total number of individuals exhibiting the heteroplasmic state for the non-reference allele in the population.\">",
-        "##INFO=<ID=Total_N,Number=1,Type=Integer,Description=\"Available sample size in this record.\">",
-        "##INFO=<ID=HOM_PF,Number=1,Type=Float,Description=\"Total frequency of individuals exhibiting the homoplasmic state for the non-reference allele in the population.\">",
-        "##INFO=<ID=HET_PF,Number=1,Type=Float,Description=\"Total frequency of individuals exhibiting the heteroplasmic state for the non-reference allele in the population.\">",
-        "##INFO=<ID=SUM_PF,Number=1,Type=Float,Description=\"Total frequency: HOM_PF+HET_PF.\">",
+        "##INFO=<ID=AN,Number=1,Type=Integer,Description=\"Number of samples with non-missing GT at this site\">",
+        "##INFO=<ID=REF_N,Number=1,Type=Integer,Description=\"Total number of individuals exhibiting the reference state in the population.\">",
+        "##INFO=<ID=HOM_N,Number=1,Type=Integer,Description=\"Total number of individuals exhibiting the homoplasmic state in the population.\">",
+        "##INFO=<ID=HET_N,Number=1,Type=Integer,Description=\"Total number of individuals exhibiting the heteroplasmic state in the population.\">",
+        "##INFO=<ID=DP_MEAN,Number=1,Type=Float,Description=\"Mean mitochondrial sequencing depth across samples contributing to AN\">",
+        "##INFO=<ID=DP_MEDIAN,Number=1,Type=Integer,Description=\"Median mitochondrial sequencing depth across samples contributing to AN\">",
+        "##INFO=<ID=VAF_MEAN,Number=A,Type=Float,Description=\"Mean mitochondrial variant allele fraction(VAF) across all samples contributing to AN, with VAF=0 assigned to samples without detectable variant\">",
+        "##INFO=<ID=VAF_MEDIAN,Number=A,Type=Float,Description=\"Median mitochondrial VAF across all samples contributing to AN\">",
+        "##INFO=<ID=VAF_MEAN_HET,Number=A,Type=Float,Description=\"Mean mitochondrial VAF among heteroplasmic samples only\">",
+        "##INFO=<ID=VAF_MEDIAN_HET,Number=A,Type=Float,Description=\"Median mitochondrial VAF among heteroplasmic samples only\">",
         "##INFO=<ID=PT,Number=1,Type=String,Description=\"Type of plasmicity observed in population: Ref, Hom, Het, or Mixed(Hom and Het)\">"
+
+
+        // "##INFO=<ID=HOM_N,Number=1,Type=Integer,Description=\"Total number of individuals exhibiting the homoplasmic state for the non-reference allele in the population.\">",
+        // "##INFO=<ID=HET_N,Number=1,Type=Integer,Description=\"Total number of individuals exhibiting the heteroplasmic state for the non-reference allele in the population.\">",
+        // "##INFO=<ID=Total_N,Number=1,Type=Integer,Description=\"Available sample size in this record.\">",
+        // "##INFO=<ID=HOM_PF,Number=1,Type=Float,Description=\"Total frequency of individuals exhibiting the homoplasmic state for the non-reference allele in the population.\">",
+        // "##INFO=<ID=HET_PF,Number=1,Type=Float,Description=\"Total frequency of individuals exhibiting the heteroplasmic state for the non-reference allele in the population.\">",
+        // "##INFO=<ID=SUM_PF,Number=1,Type=Float,Description=\"Total frequency: HOM_PF+HET_PF.\">",
+        // "##INFO=<ID=PT,Number=1,Type=String,Description=\"Type of plasmicity observed in population: Ref, Hom, Het, or Mixed(Hom and Het)\">"
     };  // initial by common information of header
 
     ngslib::Fasta fa = ref_file_path;

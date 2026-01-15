@@ -21,6 +21,7 @@
 #include "io/utils.h"
 #include "external/thread_pool.h"
 
+#include "algorithm.h"
 #include "basetype.h"
 #include "mt_utils.h"
 

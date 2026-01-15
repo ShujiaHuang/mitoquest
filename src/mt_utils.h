@@ -77,8 +77,8 @@ struct VariantInfo {
     int qual;  // quality score
 
     size_t major_allele_idx;             // The index of major allele in `alt_bases` vector
-    std::vector<std::string> ref_bases;  // REF, it's raw REF alleles  
-    std::vector<std::string> alt_bases;  // ALT, it's REF and non-REF alleles
+    std::vector<std::string> ref_bases;  // REF, raw REF alleles  
+    std::vector<std::string> alt_bases;  // ALT, REF and non-REF alleles
     std::vector<std::string> var_types;  // REF, SNV, INS, DEL, or MNV
     std::vector<int> depths;             // depth for each type of base
     std::vector<double> freqs;           // frequency for each type of base
@@ -91,20 +91,21 @@ struct VariantInfo {
 };
 typedef robin_hood::unordered_map<uint32_t, VariantInfo> PosVariantMap;  // key: ref_pos, value: VariantInfo
 
+// Variants allele information across multiple samples
 struct AlleleInfo {
     std::string ref;
     std::vector<std::string> alts;  // uniq ALT alleles string
-    std::map<std::string, int> allele_counts;
-    double total_alleles = 0;
+    std::map<std::string, std::vector<double>> alt_all_freqs; // key: ALT allele string, value: variant (non-reference) allele fraction across all samples
+    std::map<std::string, std::vector<double>> alt_het_freqs; // key: ALT allele string, value: variant (non-reference) allele fraction among heteroplasmic samples only
 };
 
 struct VCFSampleAnnotation {
     std::vector<size_t> gtcode;           // Genotype
-    std::vector<std::string> sample_alts; 
-    std::vector<int> allele_depths;       // AD, allele depth
-    std::vector<int> hq;                  // HQ: phred quality score of homo-/hetero-phasmy allele
-    std::vector<double> allele_freqs;     // HF, allele frequency is the homo-/hetero-phasmy fraction
-    std::vector<double> logit_hf;         // LHF: logit transformed homo-/hetero-phasmy fraction
+    std::vector<std::string> sample_alts; // ALT alleles for this sample, could be ref or non-ref alleles
+    std::vector<int> allele_depths;       //  AD, allele depth
+    std::vector<int> aq;                  //  AQ, phred quality score of allele
+    std::vector<double> allele_freqs;     //  AF, allele fraction
+    std::vector<double> logit_af;         // LAF, logit transformed allele fraction
     std::vector<std::string> ci_strings;
     std::vector<std::string> sb_strings;
     std::vector<std::string> fs_strings;

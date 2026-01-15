@@ -698,7 +698,7 @@ VCFRecord MtVariantCaller::_joint_variant_in_pos(std::vector<VariantInfo> vvi) {
     if (vvi.empty()) return VCFRecord(); // Return empty record if no variants
 
     // First pass: collect and normalized all alleles by using the longest REF
-    AlleleInfo ai = collect_allele_info(vvi);  // vvi.alt_bases will be replaced by the normalized alleles
+    AlleleInfo ai = collect_allele_info(vvi);  // ``vvi.alt_bases`` will be replaced by the normalized alleles in ``collect_allele_info``
     if (ai.alts.empty()) {
         return VCFRecord(); // Return empty record if no variants
     }
@@ -717,36 +717,37 @@ VCFRecord MtVariantCaller::_joint_variant_in_pos(std::vector<VariantInfo> vvi) {
     vcf_record.qual = 0;
     
     // Process sample information
-    vcf_record.format = "GT:GQ:DP:AD:HF:CI:HQ:LHF:SB:FS:SOR:VT";
-    int ref_ind_count = 0; // Count of individuals with REF allele
-    int hom_ind_count = 0;
-    int het_ind_count = 0;
-    int total_available_ind_count = 0;
+    vcf_record.format = "GT:GQ:DP:AD:AF:CI:AQ:LAF:SB:FS:SOR:VT";
+    int ref_ind_count = 0; // count of reference individuals
+    int hom_ind_count = 0; // count of homozygous individuals
+    int het_ind_count = 0; // count of heterozygous individuals
+    
+    std::vector<int> all_available_dp;    // collect depth of all samples with non-missing genotype
+    all_available_dp.reserve(vvi.size()); // reserve the memory before push_back
     for (const auto& smp_var_info : vvi) {
         // Collect and format sample information 
-        auto sa = process_sample_variant(
-            smp_var_info, ref_alt_order, 
-            this->_config.heteroplasmy_threshold
-        );
+        auto sa = process_sample_variant(smp_var_info, ref_alt_order, this->_config.heteroplasmy_threshold);
         
         // Update variant quality
         if (smp_var_info.qual > vcf_record.qual && smp_var_info.qual != 10000) {
             vcf_record.qual = smp_var_info.qual;
         }
 
-        // Update allele counts
-        for (const auto& alt : sa.sample_alts) {
-            ai.allele_counts[alt]++;
-            ai.total_alleles++;
-        }
+        if (sa.gtcode.size() > 0) { // only count non-missing genotype
+            all_available_dp.push_back(smp_var_info.total_depth);
+            
+            // collect variant alleles fraction (VAF) of all samples with non-missing genotype
+            for (size_t i(0); i < sa.allele_freqs.size(); ++i) {
+                if (sa.sample_alts[i] == ai.ref) continue; // only record non-ref allele VAFs 
+                ai.alt_all_freqs[sa.sample_alts[i]].push_back(sa.allele_freqs[i]);
 
-        // Format sample string
-        vcf_record.samples.push_back(format_sample_string(sa, smp_var_info));
+                if (sa.gtcode.size() > 1) { // heteroplasmic sample only
+                    ai.alt_het_freqs[sa.sample_alts[i]].push_back(sa.allele_freqs[i]);
+                }
+            }
 
-        // Count the number of homozygous and heterozygous individuals
-        if (sa.gtcode.size() > 0) {
             // Check if the sample is homozygous or heterozygous
-            if (sa.gtcode.size() == 1) {  // non-reference
+            if (sa.gtcode.size() == 1) {
                 if (sa.gtcode[0] != 0) {
                     hom_ind_count++;
                 } else {
@@ -755,47 +756,68 @@ VCFRecord MtVariantCaller::_joint_variant_in_pos(std::vector<VariantInfo> vvi) {
             } else if (sa.gtcode.size() > 1) {
                 het_ind_count++;
             }
-            total_available_ind_count++;
         }
+
+        // Format sample string
+        vcf_record.samples.push_back(format_sample_string(sa, smp_var_info));
     }
 
-    if (total_available_ind_count == 0) {
+    if (all_available_dp.empty()) {
         throw std::runtime_error("[ERROR] No available individuals in this position: " +
                                  vcf_record.chrom + ":" + std::to_string(vcf_record.pos));
     }
 
-    int float_precision = 6; // floating number precision
-
     // Set INFO field
-    std::vector<int> ac;
-    std::vector<std::string> af;
+    std::vector<std::string> vaf_means;   // collect mean VAF of each alt allele
+    std::vector<std::string> vaf_medians; // collect median VAF of each alt allele
+    std::vector<std::string> vaf_means_het;   // collect mean VAF of each alt allele in heteroplasmic samples
+    std::vector<std::string> vaf_medians_het; // collect median VAF of each alt allele in heteroplasmic samples
+    int float_precision = 6;  // floating number precision
     for (const auto& alt : vcf_record.alt) { 
-        // Only record the counts (AC) and frequencies (AF) of non-ref allele in INFO field
-        ac.push_back(ai.allele_counts[alt]);
-        af.push_back(format_double(ai.allele_counts[alt] / ai.total_alleles, float_precision)); 
+        // Calculate mean and median VAF for each alt allele
+        const auto& vafs = ai.alt_all_freqs[alt];
+        if (vafs.empty()) {
+            vaf_means.push_back("0");
+            vaf_medians.push_back("0");
+        } else {
+            vaf_means.push_back(format_double(mean(vafs), float_precision));
+            vaf_medians.push_back(format_double(median(vafs), float_precision));
+        }
+
+        // Calculate mean and median VAF for each alt allele in heteroplasmic samples only
+        const auto& vafs_het = ai.alt_het_freqs[alt];
+        if (vafs_het.empty()) {
+            vaf_means_het.push_back("0");
+            vaf_medians_het.push_back("0");
+        } else {
+            vaf_means_het.push_back(format_double(mean(vafs_het), float_precision));
+            vaf_medians_het.push_back(format_double(median(vafs_het), float_precision));
+        }
     }
 
-    std::string pt; // plasmic type
+    std::string pt; // initial type of plasmicity observed in population
     if (ref_ind_count > 0 && hom_ind_count + het_ind_count == 0) {
         pt = "Ref";
-    } else if (hom_ind_count > 0 && het_ind_count == 0) {
+    } else if (hom_ind_count > 0 && het_ind_count == 0) { // only hom-ref and hom-alt
         pt = "Hom";
-    } else if (het_ind_count > 0 && hom_ind_count == 0) {
+    } else if (het_ind_count > 0 && hom_ind_count == 0) { // only hom-ref and het-alt
         pt = "Het";
-    } else if (het_ind_count > 0 && hom_ind_count > 0) {
+    } else if (het_ind_count > 0 && hom_ind_count > 0) {  // both het-alt and hom-alt
         pt = "Mixed";
     } else {
         pt = "Unknown"; // Fallback case
     }
-    vcf_record.info = "AF=" + ngslib::join(af, ",") + ";"
-                      "AC=" + ngslib::join(ac, ",") + ";"
-                      "AN=" + std::to_string(int(ai.total_alleles)) + ";"
-                      "HOM_N="   + std::to_string(hom_ind_count) + ";"
-                      "HET_N="   + std::to_string(het_ind_count) + ";"
-                      "Total_N=" + std::to_string(total_available_ind_count) + ";"
-                      "HOM_PF="  + format_double(double(hom_ind_count) / total_available_ind_count, float_precision) + ";"
-                      "HET_PF="  + format_double(double(het_ind_count) / total_available_ind_count, float_precision) + ";"
-                      "SUM_PF="  + format_double(double(hom_ind_count + het_ind_count) / total_available_ind_count, float_precision) + ";"
+
+    vcf_record.info = "AN=" + std::to_string(all_available_dp.size()) + ";"
+                      "REF_N=" + std::to_string(ref_ind_count) + ";"
+                      "HET_N=" + std::to_string(het_ind_count) + ";"
+                      "HOM_N=" + std::to_string(hom_ind_count) + ";"
+                      "DP_MEAN=" + format_double(mean(all_available_dp), 0) + ";"
+                      "DP_MEDIAN=" + format_double(median(all_available_dp), 0) + ";"
+                      "VAF_MEAN=" + ngslib::join(vaf_means, ",") + ";"
+                      "VAF_MEDIAN=" + ngslib::join(vaf_medians, ",") + ";"
+                      "VAF_MEAN_HET=" + ngslib::join(vaf_means_het, ",") + ";"
+                      "VAF_MEDIAN_HET=" + ngslib::join(vaf_medians_het, ",") + ";"
                       "PT=" + pt;
 
     return vcf_record;
