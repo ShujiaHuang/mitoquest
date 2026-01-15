@@ -54,6 +54,21 @@ double mean(const std::vector<T> &values) {
     return static_cast<double>(sum(values)) / values.size();
 }
 
+// median the value for all the data which could call '+' operator
+template<typename T>  // T must be a numeric type
+double median(const std::vector<T> &value) {
+    size_t n = value.size();
+    if (n == 0) return 0.0;
+
+    std::vector<T> value_copy = value; // make a copy to avoid modifying the original vector
+    std::sort(value_copy.begin(), value_copy.end());
+    if (n % 2 == 0) {
+        return (value_copy[n/2-1] + value_copy[n/2]) / 2.0;
+    } else {
+        return value_copy[n/2];
+    }
+}
+
 // standard deviation the value for all the data which could call '+' operator
 template<typename T>  // T must be a numeric type
 double stddev(const std::vector<T> &values) {
@@ -75,20 +90,6 @@ double standard_error(const std::vector<T> &values) {
         throw std::invalid_argument("Cannot calculate standard error of less than 2 values");
     }
     return stddev(values) / std::sqrt(values.size());
-}
-
-// median the value for all the data which could call '+' operator
-template<typename T>  // T must be a numeric type
-double median(std::vector<T> &value) {
-    size_t n = value.size();
-    if (n == 0) return 0.0;
-
-    std::sort(value.begin(), value.end());
-    if (n % 2 == 0) {
-        return (value[n/2-1] + value[n/2]) / 2.0;
-    } else {
-        return value[n/2];
-    }
 }
 
 // Helper function for inverse error function is used in confidence interval calculations
