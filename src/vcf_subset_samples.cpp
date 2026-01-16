@@ -110,7 +110,7 @@ void VCFSubsetSamples::parse_args(int argc, char* argv[]) {
         } else {
             _output_mode = "w"; // Default to uncompressed VCF for .vcf or unknown
         }
-        std::cout << "[INFO] Guessed output mode based on input extension: " << _output_mode << "\n";
+        // std::cout << "[INFO] Guessed output mode based on input extension: " << _output_mode << "\n";
     }
 }
 
@@ -120,18 +120,20 @@ VCFSubsetSamples::VCFSubsetSamples(int argc, char* argv[]) {
 }
 
 // Recalculate INFO fields
+// Updated based on logic from MtVariantCaller::_joint_variant_in_pos
 bool VCFSubsetSamples::recalculate_info(const ngslib::VCFHeader& hdr, ngslib::VCFRecord& rec) {
     // Requires GT field in FORMAT, and record unpacked for FORMAT and INFO
     if (rec.unpack(BCF_UN_FMT | BCF_UN_INFO) < 0) {
             std::cerr << "Warning: Failed to unpack record for INFO recalculation at "
-                      << rec.chrom(hdr) << ":" << (rec.pos() + 1) << ". Skipping INFO update.\n";
+                      << rec.chrom(hdr) << ":" << (rec.pos() + 1) 
+                      << ". Skipping INFO update.\n";
             return true;
     }
 
-    int n_alt = rec.n_alt();
-    if (n_alt == 0) return false; // No ALT alleles, nothing to count
+    int n_alt = rec.n_alt(); // Number of ALT alleles (without REF), 0 if none
+    if (n_alt == 0) return true; // No ALT alleles, nothing to count, keep as is.
 
-    // Get genotypes for all samples
+    // 1. Get genotypes for all samples
     std::vector<std::vector<int>> genotypes;
     int max_ploidy = rec.get_genotypes(hdr, genotypes);
     if (max_ploidy <= 0) {
@@ -139,97 +141,150 @@ bool VCFSubsetSamples::recalculate_info(const ngslib::VCFHeader& hdr, ngslib::VC
         std::cerr << "Warning: GT field missing or unreadable at "
                   << rec.chrom(hdr) << ":" << (rec.pos() + 1) 
                   << ". Skipping INFO update.\n";
-        return true;
+        return true;  // Keep original INFO
     }
 
-    std::vector<int> ac(n_alt, 0); // Allele count for each ALT allele
-    int an = 0;                    // Allele number (total non-missing alleles)
-    int ref_ind_count = 0;         // Count of individuals with REF allele
+    int n_samples = genotypes.size();
+
+    // 2. Get Depth (DP) from FORMAT for all samples
+    std::vector<int> fmt_dp_vec;
+    int n_dp_per_sample = rec.get_format_int(hdr, "DP", fmt_dp_vec);
+    if (n_dp_per_sample < 0 || n_dp_per_sample > 1) {
+        throw std::runtime_error("[Error]: Error reading DP FORMAT field at "
+                                 + rec.chrom(hdr) + ":" + std::to_string(rec.pos() + 1));
+    }
+
+    // 3. Get AF from FORMAT for all samples
+    std::vector<float> fmt_af_vec;
+    int n_af_per_sample = rec.get_format_float(hdr, "AF", fmt_af_vec);
+    if (fmt_af_vec.size() != n_samples * n_af_per_sample) {
+        throw std::runtime_error(
+            "[Error]: Mismatch in AF FORMAT field size at "
+            + rec.chrom(hdr) + ":" + std::to_string(rec.pos() + 1)
+        );
+    }
+    if (n_af_per_sample < 0) {
+        throw std::runtime_error(
+            "[Error]: Error reading AF FORMAT field at "
+            + rec.chrom(hdr) + ":" + std::to_string(rec.pos() + 1)
+        );
+
+    } else if (n_af_per_sample == 0) {
+        // AF field not present, we cannot recalculate allele frequencies
+        // Proceed without updating INFO
+        std::cerr << "Warning: AF FORMAT field not present at "
+                  << rec.chrom(hdr) << ":" << (rec.pos() + 1) 
+                  << ". Skipping INFO update.\n";
+        return true;  // Keep original INFO
+
+    } else if (n_af_per_sample < n_alt) { // should compare with max_ploidy? No!
+        // AF field does not have enough values per sample
+        throw std::runtime_error(
+            "[Error]: Insufficient AF FORMAT values at " 
+            + rec.chrom(hdr) + ":" + std::to_string(rec.pos() + 1) 
+            + ". Expected at least " + std::to_string(n_alt) + " per sample, got " 
+            + std::to_string(n_af_per_sample) + "."
+        );
+        return true;  // Keep original INFO
+    }
+
+    // --- Statistics Containers ---
+    int ref_ind_count = 0;  // Count of individuals with REF allele
     int hom_ind_count = 0;
     int het_ind_count = 0;
-    int available_ind_count = 0;
-    
-    for (size_t i = 0; i < genotypes.size(); ++i) {
+    int available_ind_count = 0; // Available individuals number with non-missing GT
+
+    // DP for all non-missing GT samples, equal to available_ind_count if DP present
+    std::vector<int> all_available_dp; 
+    all_available_dp.reserve(n_samples);
+
+    // VAF collectors: [allele_index][sample_values]
+    std::vector<std::vector<double>> alt_all_freqs(n_alt); // any sample with non-missing VAF
+    std::vector<std::vector<double>> alt_het_freqs(n_alt); // only het samples
+
+    // --- Loop through Samples ---
+    for (size_t i = 0; i < n_samples; ++i) { // `i` is the index of sample
         // Get the genotype for this sample
         const std::vector<int>& gt = genotypes[i];
-        std::vector<int> non_missing_al;
+        std::vector<int> non_missing_al; // Non-missing alleles for this sample
+        std::map<int, int> al_to_idx;
 
-        // Count alleles for this sample
-        for (int allele_code : gt) { // Allele code (0=REF, 1=ALT1, ...)
-            if (allele_code >= 0) {  // Check if allele is not missing (-1)
-                an++;                // Count this allele towards AN
-                if (allele_code > 0) { // Is it an ALT allele?
-                    if (allele_code - 1 < ac.size()) { // Ensure index is within bounds
-                        ac[allele_code - 1]++;         // Increment count for the corresponding ALT allele
-                    } else {
-                        throw std::runtime_error("[Error]: Allele code (" + std::to_string(allele_code) + ") "
-                                                 "out of bounds for ALT alleles (" + std::to_string(n_alt) + ") "
-                                                 "at " + rec.chrom(hdr) + ":" + std::to_string(rec.pos() + 1));
-                    }
-                }
-                non_missing_al.push_back(allele_code); // Add non-missing allele
+        // Process GT
+        for (int j(0); j < gt.size(); ++j) { // Allele code (0=REF, 1=ALT1, ...), may be < 1 if error
+            al_to_idx[gt[j]] = j;
+            if (gt[j] >= 0) {  // Check if allele is not missing (-1)
+                non_missing_al.push_back(gt[j]); // Add non-missing allele
             }
         }
 
-        // Count homozygous and heterozygous individuals
+        // Logic from MtVariantCaller: only count non-missing genotype
         if (non_missing_al.size() > 0) {
-            // Check if the sample is homozygous or heterozygous
-            if (non_missing_al.size() == 1) {  // non-reference
+            available_ind_count++;
+            // collect DP
+            if (n_dp_per_sample > 0) {
+                if (std::isnan(fmt_dp_vec[i])) continue; // DP is missing for this sample, skip
+                if (fmt_dp_vec[i] != ngslib::VCFRecord::INT_MISSING &&
+                    fmt_dp_vec[i] != ngslib::VCFRecord::INT_VECTOR_END) {
+                    all_available_dp.push_back(fmt_dp_vec[i]); // Store DP, usually one per sample
+                }
+            }
+
+            // Determine Genotype Status (Ref/Hom/Het)
+            bool is_het_sample = false;
+            if (non_missing_al.size() == 1) { // Haploid or one valid allele
                 if (non_missing_al[0] != 0) {
                     hom_ind_count++;
                 } else {
                     ref_ind_count++;
                 }
-            } else if (non_missing_al.size() > 1) {
-                het_ind_count++;
+            } else if (non_missing_al.size() > 1) { // Diploid or more: 0/1, 1/1, 0/2, 0/1/2, etc.
+                // Check if all alleles are the same
+                bool all_same = std::all_of(
+                    non_missing_al.begin(), 
+                    non_missing_al.end(), 
+                    [&](int a){ return a == non_missing_al[0]; }  // Lambda to check equality
+                );
+                
+                if (all_same) { // Homozygous
+                    if (non_missing_al[0] != 0) hom_ind_count++;
+                    else ref_ind_count++;
+                } else {
+                    het_ind_count++;
+                    is_het_sample = true;
+                }
             }
-            available_ind_count++;
-        }
-    }
 
-    if ((!_keep_all_site) && (an == 0)) {
+            // Collect VAFs if AF FORMAT is available (Number = A or R)
+            for (int al: non_missing_al) {
+                if (al == 0) continue; // Skip REF allele
+
+                // Calculate index in flattened array: sample_idx * n_values + al_to_idx[al]
+                size_t af_idx = i * n_af_per_sample + al_to_idx[al];
+                float val = fmt_af_vec[af_idx];
+                if (std::isnan(val)) continue;
+                if (val != ngslib::VCFRecord::FLOAT_MISSING && 
+                    val != ngslib::VCFRecord::FLOAT_VECTOR_END) {
+                    // store the VAF for this allele
+                    alt_all_freqs[al - 1].push_back(val);
+                    if (is_het_sample) {
+                        alt_het_freqs[al - 1].push_back(val);
+                    }
+                }
+            }
+        } // End of non-missing GT processing
+    } // End of sample loop
+    // --- Check Validity ---
+    if ((!_keep_all_site) && all_available_dp.empty()) {
         std::cerr << "[INFO] No valid genotypes for any kept samples at " 
                   << rec.chrom(hdr) << ":" << (rec.pos() + 1) 
                   << ". Skipping this record.\n";
         return false;
     }
-
     if ((!_keep_all_site) && (hom_ind_count + het_ind_count == 0)) return false;  // Non variants on this site
 
-    // Update AC, AN, HOM_N, HET_N, Total_N in the record's INFO field
-    rec.update_info_int(hdr, "AC", ac.data(), ac.size());
-    rec.update_info_int(hdr, "AN",      &an, 1);
-    rec.update_info_int(hdr, "HOM_N",   &hom_ind_count, 1);
-    rec.update_info_int(hdr, "HET_N",   &het_ind_count, 1);
-    rec.update_info_int(hdr, "Total_N", &available_ind_count, 1);
+    // --- Update INFO ---
 
-    // If AN is 0 (all kept samples had missing genotypes), set AF to missing or 0
-    std::vector<float> af(n_alt, 0.0f); // Or std::vector<float> af(n_alt, ngslib::VCFRecord::FLOAT_MISSING);
-
-    // If all kept samples had missing genotypes, set PF fields to 0 (or missing)
-    float hom_pf = 0.0f; // Or ngslib::VCFRecord::FLOAT_MISSING;
-    float het_pf = 0.0f; // Or ngslib::VCFRecord::FLOAT_MISSING;
-    float sum_pf = 0.0f; // Or ngslib::VCFRecord::FLOAT_MISSING;
-    if (an > 0) {
-        for (int i = 0; i < n_alt; ++i) {
-            af[i] = static_cast<float>(ac[i]) / an;
-            // Handle potential NaN/Inf just in case, though unlikely here
-            if (std::isnan(af[i]) || std::isinf(af[i])) {
-                af[i] = 0.0f; // Or some other placeholder like VCFRecord::FLOAT_MISSING
-            }
-        }
-        hom_pf = static_cast<double>(hom_ind_count) / available_ind_count;
-        het_pf = static_cast<double>(het_ind_count) / available_ind_count;
-        sum_pf = static_cast<double>(hom_ind_count + het_ind_count) / available_ind_count;
-    }
-    
-    // Update AF, HOM_PF, HET_PF, SUM_PF in the record's INFO field
-    rec.update_info_float(hdr, "AF", af.data(), af.size());
-    rec.update_info_float(hdr, "HOM_PF", &hom_pf, 1);
-    rec.update_info_float(hdr, "HET_PF", &het_pf, 1);
-    rec.update_info_float(hdr, "SUM_PF", &sum_pf, 1);
-
-    // Update PT in the record's INFO field
+    // Determine Plasmic Type (PT)
     std::string pt; // plasmic type
     if (ref_ind_count > 0 && hom_ind_count + het_ind_count == 0) {
         pt = "Ref";
@@ -242,7 +297,33 @@ bool VCFSubsetSamples::recalculate_info(const ngslib::VCFHeader& hdr, ngslib::VC
     } else {
         pt = "Unknown"; // Fallback case
     }
+    // Update PT in the record's INFO field
     rec.update_info_string(hdr, "PT", pt.c_str());
+
+    // Update AN, REF_N, HET_N, HOM_N in the record's INFO field
+    rec.update_info_int(hdr, "AN",    &available_ind_count, 1);
+    rec.update_info_int(hdr, "REF_N", &ref_ind_count, 1);
+    rec.update_info_int(hdr, "HET_N", &het_ind_count, 1);
+    rec.update_info_int(hdr, "HOM_N", &hom_ind_count, 1);
+
+    // Update DP_MEAN and DP_MEDIAN in the record's INFO field
+    int dp_mean = (!all_available_dp.empty()) ? static_cast<int>(mean(all_available_dp)) : 0;
+    int dp_median = (!all_available_dp.empty()) ? static_cast<int>(median(all_available_dp)) : 0;
+    rec.update_info_int(hdr, "DP_MEAN", &dp_mean, 1);
+    rec.update_info_int(hdr, "DP_MEDIAN", &dp_median, 1);
+
+    // Update VAF_*
+    std::vector<float> v_mean(n_alt), v_median(n_alt), v_mean_het(n_alt), v_median_het(n_alt);
+    for (int i = 0; i < n_alt; ++i) {
+        v_mean[i] = (!alt_all_freqs[i].empty()) ? static_cast<float>(mean(alt_all_freqs[i])) : 0;
+        v_median[i] = (!alt_all_freqs[i].empty()) ? static_cast<float>(median(alt_all_freqs[i])) : 0;
+        v_mean_het[i] = (!alt_het_freqs[i].empty()) ? static_cast<float>(mean(alt_het_freqs[i])) : 0;
+        v_median_het[i] = (!alt_het_freqs[i].empty()) ? static_cast<float>(median(alt_het_freqs[i])) : 0;
+    }
+    rec.update_info_float(hdr, "VAF_MEAN", v_mean.data(), n_alt);
+    rec.update_info_float(hdr, "VAF_MEDIAN", v_median.data(), n_alt);
+    rec.update_info_float(hdr, "VAF_MEAN_HET", v_mean_het.data(), n_alt);
+    rec.update_info_float(hdr, "VAF_MEDIAN_HET", v_median_het.data(), n_alt);
 
     return true;
 }

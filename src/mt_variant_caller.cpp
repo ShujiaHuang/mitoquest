@@ -721,7 +721,6 @@ VCFRecord MtVariantCaller::_joint_variant_in_pos(std::vector<VariantInfo> vvi) {
     int ref_ind_count = 0; // count of reference individuals
     int hom_ind_count = 0; // count of homozygous individuals
     int het_ind_count = 0; // count of heterozygous individuals
-    
     std::vector<int> all_available_dp;    // collect depth of all samples with non-missing genotype
     all_available_dp.reserve(vvi.size()); // reserve the memory before push_back
     for (const auto& smp_var_info : vvi) {
@@ -735,12 +734,12 @@ VCFRecord MtVariantCaller::_joint_variant_in_pos(std::vector<VariantInfo> vvi) {
 
         if (sa.gtcode.size() > 0) { // only count non-missing genotype
             all_available_dp.push_back(smp_var_info.total_depth);
-            
+
             // collect variant alleles fraction (VAF) of all samples with non-missing genotype
             for (size_t i(0); i < sa.allele_freqs.size(); ++i) {
                 if (sa.sample_alts[i] == ai.ref) continue; // only record non-ref allele VAFs 
+                
                 ai.alt_all_freqs[sa.sample_alts[i]].push_back(sa.allele_freqs[i]);
-
                 if (sa.gtcode.size() > 1) { // heteroplasmic sample only
                     ai.alt_het_freqs[sa.sample_alts[i]].push_back(sa.allele_freqs[i]);
                 }
@@ -812,8 +811,8 @@ VCFRecord MtVariantCaller::_joint_variant_in_pos(std::vector<VariantInfo> vvi) {
                       "REF_N=" + std::to_string(ref_ind_count) + ";"
                       "HET_N=" + std::to_string(het_ind_count) + ";"
                       "HOM_N=" + std::to_string(hom_ind_count) + ";"
-                      "DP_MEAN=" + format_double(mean(all_available_dp), 0) + ";"
-                      "DP_MEDIAN=" + format_double(median(all_available_dp), 0) + ";"
+                      "DP_MEAN=" + format_double(mean(all_available_dp), 0) + ";"      // Interger
+                      "DP_MEDIAN=" + format_double(median(all_available_dp), 0) + ";"  // Interger
                       "VAF_MEAN=" + ngslib::join(vaf_means, ",") + ";"
                       "VAF_MEDIAN=" + ngslib::join(vaf_medians, ",") + ";"
                       "VAF_MEAN_HET=" + ngslib::join(vaf_means_het, ",") + ";"

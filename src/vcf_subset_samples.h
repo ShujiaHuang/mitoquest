@@ -13,8 +13,10 @@
 #include <limits>    // For numeric_limits
 #include <stdexcept> // For std::runtime_error
 
-#include "version.h"  // For version info in usage
-#include "io/utils.h" // For get_firstcolumn_from_file, suffix_name
+#include "version.h"   // For version info in usage
+#include "algorithm.h" // For ngslib::mean, ngslib::median
+#include "mt_utils.h"
+#include "io/utils.h"  // For get_firstcolumn_from_file, suffix_name
 #include "io/vcf.h"
 
 /**

@@ -355,6 +355,14 @@ namespace ngslib {
         // 错误处理
         if (total_values < 0) {
             if (buffer) free(buffer);
+            
+            /**
+             * @brief 
+             * return -1;  // 头文件中没有这个 FORMAT 字段
+             * return -2;  // 类型不匹配
+             * return -3;  // 该记录中不存在这个标签，或标签被标记为删除
+             * return -4;  // 内存分配失败
+             */
             return total_values; // Return htslib error code
         }
 
