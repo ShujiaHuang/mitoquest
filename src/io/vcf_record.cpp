@@ -349,40 +349,49 @@ namespace ngslib {
         if (!is_valid_unsafe() || !hdr.is_valid() || n_samples() == 0) return BCF_ERR_TAG_INVALID;
 
         int32_t* buffer = nullptr;
-        int n_values_per_sample = 0; // htslib expects pointer to int
-        int ret = bcf_get_format_int32(hdr.hts_header(), _b.get(), tag.c_str(), &buffer, &n_values_per_sample);
+        int buffer_capacity = 0;  // 缓冲区容量（元素个数）
+        int total_values = bcf_get_format_int32(hdr.hts_header(), _b.get(), tag.c_str(), &buffer, &buffer_capacity);
 
-        if (ret < 0) {
+        // 错误处理
+        if (total_values < 0) {
             if (buffer) free(buffer);
-            return ret; // Return htslib error code
+            return total_values; // Return htslib error code
         }
 
-        int total_values = n_samples() * n_values_per_sample;
+        // 成功：复制数据到 vector
         if (total_values > 0 && buffer) {
             values.assign(buffer, buffer + total_values);
         }
         if (buffer) free(buffer);
-        return n_values_per_sample; // Return number of values *per sample*
+
+        int n_values_per_sample = (n_samples() > 0) ? (total_values / n_samples()) : 0;
+        return n_values_per_sample; // Return number of values *per-sample*
     }
 
     int VCFRecord::get_format_float(const VCFHeader& hdr, const std::string& tag, std::vector<float>& values) const {
         values.clear();
-        if (!is_valid_unsafe() || !hdr.is_valid() || n_samples() == 0) return BCF_ERR_TAG_INVALID;
-
-        float* buffer = nullptr;
-        int n_values_per_sample = 0;
-        int ret = bcf_get_format_float(hdr.hts_header(), _b.get(), tag.c_str(), &buffer, &n_values_per_sample);
-
-        if (ret < 0) {
-            if (buffer) free(buffer);
-            return ret;
+        if (!is_valid_unsafe() || !hdr.is_valid() || n_samples() == 0) {
+            return BCF_ERR_TAG_INVALID;
         }
 
-        int total_values = n_samples() * n_values_per_sample;
+        float* buffer = nullptr;
+        int buffer_capacity = 0;  // 缓冲区容量（元素个数）
+        int total_values = bcf_get_format_float(hdr.hts_header(), _b.get(), tag.c_str(), &buffer, &buffer_capacity);
+
+        // 错误处理
+        if (total_values < 0) {
+            if (buffer) free(buffer);
+            return total_values;  // 返回错误码
+        }
+
+        // 成功：复制数据到 vector
         if (total_values > 0 && buffer) {
             values.assign(buffer, buffer + total_values);
         }
         if (buffer) free(buffer);
+        
+        // 返回每个样本的值数量
+        int n_values_per_sample = (n_samples() > 0) ? (total_values / n_samples()) : 0;
         return n_values_per_sample;
     }
 
@@ -391,22 +400,21 @@ namespace ngslib {
         if (!is_valid_unsafe() || !hdr.is_valid() || n_samples() == 0) return BCF_ERR_TAG_INVALID;
 
         char** buffer = nullptr; // Array of strings
-        int n_values_per_sample = 0; // Number of strings per sample (usually 1)
-        int ret = bcf_get_format_string(hdr.hts_header(), _b.get(), tag.c_str(), &buffer, &n_values_per_sample);
+        int buffer_capacity = 0; // Number of strings per sample (usually 1)
+        int total_values = bcf_get_format_string(hdr.hts_header(), _b.get(), tag.c_str(), &buffer, &buffer_capacity);
 
-        if (ret < 0) {
+        if (total_values < 0) {
             // Note: bcf_get_format_string allocates buffer[0] contiguously for all strings.
             // Only need to free buffer[0] and buffer itself.
             if (buffer) {
                 if (buffer[0]) free(buffer[0]);
                 free(buffer);
             }
-            return ret;
+            return total_values;
         }
 
         int n_samp = n_samples();
-        values.resize(n_samp * n_values_per_sample); // Resize the output vector
-
+        values.resize(total_values); // Resize the output vector
         if (buffer && buffer[0]) {
              // Data is in buffer[0], laid out contiguously, separated by terminators?
              // Or is buffer an array of char* pointers? The docs are a bit ambiguous.
@@ -427,6 +435,7 @@ namespace ngslib {
              if (buffer[0]) free(buffer[0]);
              free(buffer);
         }
+        int n_values_per_sample = (n_samp > 0) ? (total_values / n_samp) : 0;
         return n_values_per_sample; // Usually 1 for strings
     }
 
