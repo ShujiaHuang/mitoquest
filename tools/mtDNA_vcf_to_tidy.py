@@ -22,6 +22,7 @@ import pysam
 class VariantRecord:
     """Represents a single variant for one sample and one alt allele."""
     sample_id: str
+    chrom: str
     pos: int
     ref: str
     alt: str
@@ -33,6 +34,7 @@ class VariantRecord:
         """Convert record to TSV line."""
         return "\t".join([
             self.sample_id,
+            self.chrom,
             str(self.pos),
             self.ref,
             self.alt,
@@ -44,7 +46,7 @@ class VariantRecord:
 
 class VCFProcessor:
     """Processor for VCF files using pysam."""
-    HEADER_COLUMNS = ["sample_id", "pos", "ref", "alt", "vaf", "depth", "GT"]
+    HEADER_COLUMNS = ["Sample_id", "Chrom", "Pos", "REF", "ALT", "VAF", "Depth", "GT"]
     def __init__(self, vcf_path: str):
         """
         Initialize VCF processor.
@@ -114,9 +116,10 @@ class VCFProcessor:
         VariantRecord
             Variant records for each sample and alt allele
         """
-        pos = record.pos
-        ref = record.ref
-        alts = record.alts if record.alts else []
+        chrom = record.chrom
+        pos   = record.pos
+        ref   = record.ref
+        alts  = record.alts if record.alts else []
         
         for sample_id in samples:
             sample = record.samples[sample_id]
@@ -134,6 +137,7 @@ class VCFProcessor:
                 
                 yield VariantRecord(
                     sample_id=sample_id,
+                    chrom=chrom,
                     pos=pos,
                     ref=ref,
                     alt=alt,
