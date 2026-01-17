@@ -10,7 +10,7 @@
 ../../bin/mitoquest caller -t 4 -f chrM_rCRS.decoy.fa.gz -r chrM:5745-5747 -o t smp4.cram
 
 ## Annotation
-python ../../tools/mito_annotate.py -d ~/Projects/mitoquest/data -i tt_bak -o t.ann.txt -v t.ann.vcf
+python ../../tools/mito_annotate.py -d ~/Projects/mitoquest/data -i test2.vcf -o t.ann.txt -v t.ann.vcf
 
 ## subsam
 ../../bin/mitoquest subsam -i test2.vcf -o tt.subsam 00115121204M17BFF2 
@@ -25,3 +25,6 @@ bcftools mpileup -a 'FORMAT/DP' -Ov -f chrM_rCRS.decoy.fa.gz -T t.ann.vcf smp4.c
 python ../../tools/mtDNA_variant_quality_control.py --vcf t.ann.vcf.gz --output test.csv --output-vcf test.vcf
 
 python ../../tools/vcf_validator.py tt
+
+python ../../tools/rewrite_vcf.py tt.vcf tt_oo
+python ../../tools/mtDNA_vcf_to_tidy.py -i tt.subsam -o t1
