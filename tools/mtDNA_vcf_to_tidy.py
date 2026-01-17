@@ -300,7 +300,7 @@ def write_tidy_table(
             
             # Write records
             for record in records:
-                if record.genotype == 0: 
+                if record.genotype == "0": 
                     continue
                 
                 f.write(record.to_tsv_line() + "\n")
