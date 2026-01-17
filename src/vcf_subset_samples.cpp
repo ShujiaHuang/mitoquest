@@ -157,6 +157,8 @@ bool VCFSubsetSamples::recalculate_info(const ngslib::VCFHeader& hdr, ngslib::VC
     // 3. Get AF from FORMAT for all samples
     std::vector<float> fmt_af_vec;
     int n_af_per_sample = rec.get_format_float(hdr, "AF", fmt_af_vec);
+// For debug
+// std::cerr << rec.chrom(hdr) << ":" << (rec.pos() + 1) << ", n_af_per_sample=" << n_af_per_sample << ", fmt_af_vec: " << ngslib::join(fmt_af_vec, ",") << "\n";
     if (fmt_af_vec.size() != n_samples * n_af_per_sample) {
         throw std::runtime_error(
             "[Error]: Mismatch in AF FORMAT field size at "
@@ -177,19 +179,13 @@ bool VCFSubsetSamples::recalculate_info(const ngslib::VCFHeader& hdr, ngslib::VC
                   << ". Skipping INFO update.\n";
         return true;  // Keep original INFO
 
-    } else if (n_af_per_sample < n_alt) { // should compare with max_ploidy? No!
-        // AF field does not have enough values per sample
-        throw std::runtime_error(
-            "[Error]: Insufficient AF FORMAT values at " 
-            + rec.chrom(hdr) + ":" + std::to_string(rec.pos() + 1) 
-            + ". Expected at least " + std::to_string(n_alt) + " per sample, got " 
-            + std::to_string(n_af_per_sample) + "."
-        );
-        return true;  // Keep original INFO
+    } else if (n_af_per_sample < n_alt) { 
+        // 记录这个是为了防止自己忘记
+        // 由于 mitoquest 对每个样本的 GT 计算都是动态的，也就是说它的倍体和 n_alt 可以不相等，
+        // 比如 n_alt 可以是 3，但是每个样本的倍体可以都是 1 或 2 或 3 等，也就是 
+        // n_af_per_sample 可以小于 n_alt
     }
 
-// For debug
-// std::cerr << rec.chrom(hdr) << ":" << (rec.pos() + 1) << ", n_af_per_sample=" << n_af_per_sample << ", fmt_af_vec: " << ngslib::join(fmt_af_vec, ",") << "\n";
     // --- Statistics Containers ---
     int ref_ind_count = 0;  // Count of individuals with REF allele
     int hom_ind_count = 0;
