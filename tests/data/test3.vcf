@@ -1,0 +1,33 @@
+##fileformat=VCFv4.2
+##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
+##FORMAT=<ID=GQ,Number=1,Type=Integer,Description="Genotype Quality">
+##FORMAT=<ID=DP,Number=1,Type=Integer,Description="Total read depth on the REF position">
+##FORMAT=<ID=AD,Number=R,Type=Integer,Description="Allelic depth for each allele, in the order listed by GT">
+##FORMAT=<ID=AF,Number=A,Type=Float,Description="Allele fraction for each allele, in the order listed by GT. Fraction of non-reference allele corresponds to the variant allele fraction(VAF)">
+##FORMAT=<ID=CI,Number=1,Type=String,Description="95% confidence interval around the estimated allele fraction for the allele in the order listed by GT. format: ci_low,ci_up;ci_low,ci_up;...">
+##FORMAT=<ID=AQ,Number=A,Type=Integer,Description="Allele quality, phred quality scores of pvalue of one-tail Fisher exact test to determine if the rate of allele is significantly greater than user defined cutoff (-j), in the order listed by GT. [CAUTION] In most cases, the minor allele corresponds to the heteroplasmic allele; therefore, the AQ at the minor allele position reflects the quality value of heterozygous allele mostly.">
+##FORMAT=<ID=LAF,Number=A,Type=Float,Description="Transformed AF: The logit of the allele fraction (AF) is computed as logit(AF) = ln(AF/(1-AF)) for each allele, in the order listed by GT.">
+##FORMAT=<ID=SB,Number=1,Type=String,Description="Allele-specific forward/reverse read counts for strand bias tests for the alleles, in the order listed by GT, separated by ';'. Format: fwd,rev;fwd,rev;...">
+##FORMAT=<ID=FS,Number=A,Type=Float,Description="An ordered, comma delimited list of phred-scaled p-value using Fisher's exact test to detect strand bias">
+##FORMAT=<ID=SOR,Number=A,Type=Float,Description="An ordered, comma delimited list of strand bias estimated by the Symmetric Odds Ratio test">
+##FORMAT=<ID=VT,Number=1,Type=String,Description="An ordered, comma delimited list of variant type: REF, SNV, INS, DEL, or MNV">
+##INFO=<ID=AN,Number=1,Type=Integer,Description="Number of samples with non-missing GT at this site">
+##INFO=<ID=REF_N,Number=1,Type=Integer,Description="Total number of individuals exhibiting the reference state in the population.">
+##INFO=<ID=HOM_N,Number=1,Type=Integer,Description="Total number of individuals exhibiting the homoplasmic state in the population.">
+##INFO=<ID=HET_N,Number=1,Type=Integer,Description="Total number of individuals exhibiting the heteroplasmic state in the population.">
+##INFO=<ID=DP_MEAN,Number=1,Type=Float,Description="Mean mitochondrial sequencing depth across samples contributing to AN">
+##INFO=<ID=DP_MEDIAN,Number=1,Type=Integer,Description="Median mitochondrial sequencing depth across samples contributing to AN">
+##INFO=<ID=VAF_MEAN,Number=A,Type=Float,Description="Mean mitochondrial variant allele fraction(VAF) across all samples contributing to AN, with VAF=0 assigned to samples without detectable variant">
+##INFO=<ID=VAF_MEDIAN,Number=A,Type=Float,Description="Median mitochondrial VAF across all samples contributing to AN">
+##INFO=<ID=VAF_MEAN_HET,Number=A,Type=Float,Description="Mean mitochondrial VAF among heteroplasmic samples only">
+##INFO=<ID=VAF_MEDIAN_HET,Number=A,Type=Float,Description="Median mitochondrial VAF among heteroplasmic samples only">
+##INFO=<ID=PT,Number=1,Type=String,Description="Type of plasmicity observed in population: Ref, Hom, Het, or Mixed(Hom and Het)">
+##contig=<ID=chrM,length=16569,assembly=chrM_rCRS.decoy.fa.gz>
+##contig=<ID=NUMT_JoinedSequences_gaps1000N_decoy,length=64266,assembly=chrM_rCRS.decoy.fa.gz>
+##reference=file:///Users/huangshujia/Projects/mitoquest/tests/data/chrM_rCRS.decoy.fa.gz
+##mitoquest_caller_command=caller -t 4 -f chrM_rCRS.decoy.fa.gz -Q 0 -r chrM -o tt smp1.cram smp2.cram smp3.cram
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	00115121204M17BFF2	15100105TLL4A	21200715BFF2A
+chrM	316	.	G	C	1345	.	AN=3;REF_N=0;HET_N=3;HOM_N=0;DP_MEAN=1359;DP_MEDIAN=1371;VAF_MEAN=0.059927;VAF_MEDIAN=0.054705;VAF_MEAN_HET=0.059927;VAF_MEDIAN_HET=0.054705;PT=Het	GT:GQ:DP:AD:AF:CI:AQ:LAF:SB:FS:SOR:VT	0/1:80:485:442,41:0.91134,0.0845361:0.8825,0.9337;0.0627,0.1129:995,86:2.33011,-2.38225:89,353;41,0:200.247,256.900:0.252,0.000:REF,SNV	0/1:1345:1371:1296,75:0.945295,0.0547046:0.9319,0.9562;0.0438,0.0681:2803,116:2.84955,-2.84955:73,1223;39,36:1542.828,248.174:0.060,0.055:REF,SNV	0/1:387:2220:2110,90:0.95045,0.0405405:0.9406,0.9588;0.0331,0.0496:10000,108:2.95396,-3.16407:437,1673;81,9:890.678,421.403:0.261,0.029:REF,SNV
+chrM	489	.	T	C	.	.	AN=3;REF_N=2;HET_N=0;HOM_N=1;DP_MEAN=749;DP_MEDIAN=451;VAF_MEAN=0.997783;VAF_MEDIAN=0.997783;VAF_MEAN_HET=0;VAF_MEDIAN_HET=0;PT=Hom	GT:GQ:DP:AD:AF:CI:AQ:LAF:SB:FS:SOR:VT	1:10000:451:450:0.997783:0.9862,1.0000:941:6.10925:267,183:22.209:1.459:SNV	0:10000:423:419:0.990544:0.9750,0.9972:877:4.65158:315,104:133.350:3.029:REF	0:10000:1372:1364:0.994169:0.9883,0.9973:2840:5.13874:921,443:197.875:2.079:REF
+chrM	515	.	A	C,G	367	.	AN=3;REF_N=2;HET_N=1;HOM_N=0;DP_MEAN=443;DP_MEDIAN=503;VAF_MEAN=0.230337,0.095506;VAF_MEDIAN=0.230337,0.095506;VAF_MEAN_HET=0.230337,0.095506;VAF_MEDIAN_HET=0.230337,0.095506;PT=Het	GT:GQ:DP:AD:AF:CI:AQ:LAF:SB:FS:SOR:VT	0:10000:503:499:0.992048:0.9790,0.9977:1039:4.82631:327,172:61.093:1.901:REF	0:10000:648:647:0.998457:0.9904,1.0000:1347:6.47235:595,52:660.824:11.442:REF	0/1/2:367:178:119,41,17:0.668539,0.230337,0.0955056:0.5964,0.7336;0.1743,0.2978;0.0597,0.1484:344,131,53:0.701586,-1.20641,-2.24819:66,53;38,3;15,2:3.587,51.480,18.168:1.245,0.098,0.166:REF,SNV,SNV
+chrM	515	.	A	C,G	367	.	AN=3;REF_N=2;HET_N=1;HOM_N=0;DP_MEAN=443;DP_MEDIAN=503;VAF_MEAN=0.230337,0.095506;VAF_MEDIAN=0.230337,0.095506;VAF_MEAN_HET=0.230337,0.095506;VAF_MEDIAN_HET=0.230337,0.095506;PT=Het	GT:GQ:DP:AD:AF:CI:AQ:LAF:SB:FS:SOR:VT	0:10000:503:499:0.992048:0.9790,0.9977:1039:4.82631:327,172:61.093:1.901:REF	0:10000:648:647:0.998457:0.9904,1.0000:1347:6.47235:595,52:660.824:11.442:REF	1/2:367:178:41,17:0.230337,0.0955056:0.1743,0.2978;0.0597,0.1484:131,53:-1.20641,-2.24819:38,3;15,2:51.480,18.168:0.098,0.166:SNV,SNV

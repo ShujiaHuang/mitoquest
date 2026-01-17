@@ -188,6 +188,8 @@ bool VCFSubsetSamples::recalculate_info(const ngslib::VCFHeader& hdr, ngslib::VC
         return true;  // Keep original INFO
     }
 
+// For debug
+// std::cerr << rec.chrom(hdr) << ":" << (rec.pos() + 1) << ", n_af_per_sample=" << n_af_per_sample << ", fmt_af_vec: " << ngslib::join(fmt_af_vec, ",") << "\n";
     // --- Statistics Containers ---
     int ref_ind_count = 0;  // Count of individuals with REF allele
     int hom_ind_count = 0;
@@ -207,19 +209,19 @@ bool VCFSubsetSamples::recalculate_info(const ngslib::VCFHeader& hdr, ngslib::VC
         // Get the genotype for this sample
         const std::vector<int>& gt = genotypes[i];
         std::vector<int> non_missing_al; // Non-missing alleles for this sample
-        std::map<int, int> al_to_idx;
+        std::map<size_t, size_t> al_to_idx;
 
         // Process GT
         for (int j(0); j < gt.size(); ++j) { // Allele code (0=REF, 1=ALT1, ...), may be < 1 if error
-            al_to_idx[gt[j]] = j;
             if (gt[j] >= 0) {  // Check if allele is not missing (-1)
                 non_missing_al.push_back(gt[j]); // Add non-missing allele
+                al_to_idx[gt[j]] = j; // 对于 MitoQuest 的 mtDNA 突变数据，al_to_idx 这个设计非常重要。
             }
         }
 
         // Logic from MtVariantCaller: only count non-missing genotype
         if (non_missing_al.size() > 0) {
-            available_ind_count++;
+            available_ind_count++;  // has non-missing
             // collect DP
             if (n_dp_per_sample > 0) {
                 if (std::isnan(fmt_dp_vec[i])) continue; // DP is missing for this sample, skip
@@ -259,6 +261,11 @@ bool VCFSubsetSamples::recalculate_info(const ngslib::VCFHeader& hdr, ngslib::VC
                 if (al == 0) continue; // Skip REF allele
 
                 // Calculate index in flattened array: sample_idx * n_values + al_to_idx[al]
+                // 使用 al_to_idx[al] 来跟踪坐标是必需的。举例：MitoQuest 的 mtDNA VCF 中，假设有两个样本：
+                // 样本 1 GT:AF = 0:0.992048
+                // 样本 2 GT:AF = 1/2:367:0.230337,0.0955056
+                // 以上计算得到的 fmt_af_vec 是：{0.992048,nan,0.230337,0.0955056}，n_af_per_sample=2
+                // 也就是说依据 GT idx 是不能得到对应样本正确 alt allele 的 AF 的，必需用 al_to_idx 定位.
                 size_t af_idx = i * n_af_per_sample + al_to_idx[al];
                 float val = fmt_af_vec[af_idx];
                 if (std::isnan(val)) continue;
