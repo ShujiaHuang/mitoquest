@@ -1,4 +1,3 @@
-
 """Perform mtDNA variant quality control analysis from VCF file.
 This script parses a VCF file, estimates background noise from normal samples,
 computes KL divergence for variant allele frequencies, and applies a Bayesian filter
@@ -14,7 +13,6 @@ Usage:
 Author: Shujia Huang
 Date: 2025-07-10
 """
-
 import argparse
 import sys
 import os
@@ -332,8 +330,7 @@ def qc(input_vcf_path, output_vcf_path, args):
         background_error_rates = []
         for sample in samples:
             gt = list(variant['samples'][sample].get('GT'))
-            hf = list(variant['samples'][sample].get('HF'))
-
+            hf = list(variant['samples'][sample].get('AF'))
             sample_gts.append(gt)
             vaf_obs.append(hf)
             ploidy = len(gt)
@@ -342,7 +339,7 @@ def qc(input_vcf_path, output_vcf_path, args):
             if variant['samples'][sample].get('DP', 0) / ploidy < args.DP_to_ploidy_threshold:
                 continue
             
-            sample_hq = variant['samples'][sample].get('HQ', (0))
+            sample_hq = variant['samples'][sample].get('AQ', (0))
             if any(hq < args.HQ_threshold for hq in sample_hq):
                 continue
             
@@ -359,8 +356,8 @@ def qc(input_vcf_path, output_vcf_path, args):
                 background_error_rates.append(1.0 - sum(hf))
         
         if len(background_error_rates) == 0:
-            sys.stderr.write(f"[WARNING] All heterozygous samples. No background error "
-                             f"rate calculated for this position: "
+            sys.stderr.write(f"[WARNING] All heterozygous samples. No background "
+                             f"error rate calculated for this position: "
                              f"{variant['chrom']}:{variant['pos']}. Ignore.\n")
             continue
 
@@ -379,12 +376,12 @@ def qc(input_vcf_path, output_vcf_path, args):
             # Calculate KL divergence for each sample for each ALT
             kl_div_singles = []
             dp   = variant['samples'][sample].get('DP')
-            hqs  = variant['samples'][sample].get('HQ')   # A tuple
+            hqs  = variant['samples'][sample].get('AQ')   # A tuple
             ads  = variant['samples'][sample].get('AD')   # A tuple
             fss  = variant['samples'][sample].get('FS')   # A tuple
             sors = variant['samples'][sample].get('SOR')  # A tuple
             
-            # Pre-filtering based on DP and HQ thresholds
+            # Pre-filtering based on DP and AQ thresholds
             is_pre_filtered = False
             ploidy = len(gt)
             if dp / ploidy < args.DP_to_ploidy_threshold:
@@ -689,11 +686,18 @@ def main():
     
     # For per-sample pre-filtering parameters
     parser.add_argument('--DP-to-ploidy-threshold', type=int, default=100, 
-                        help="Minimum depth (DP/ploidy) threshold for considering variants "
+                        help="Minimum depth to ploidy (DP/ploidy) threshold for considering variants "
                              "for each sample. Default is 100")
     parser.add_argument('--HQ-threshold', type=int, default=20, 
                         help="Minimum base quality (HQ) threshold for considering "
                              "variants for each sample. Default is 20")
+    
+    # parser.add_argument('--FS-threshold', type=float, default=60.0, 
+    #                     help="Maximum Fisher Strand (FS) value threshold for considering "
+    #                          "variants for each sample. Default is 60.0")
+    # parser.add_argument('--SOR-threshold', type=float, default=3.0, 
+    #                     help="Maximum Strand Odds Ratio (SOR) value threshold for considering "
+    #                          "variants for each sample. Default is 3.0")
     
     # For Bayesian filter parameters
     parser.add_argument('--bins', type=int, default=100, help="Number of histogram bins. Default is 100")
@@ -718,7 +722,8 @@ def main():
         
         # Plot convergence of beta parameters and mutation calls
         plot_beta_fit_convergence(alpha_hist, beta_hist, diff_hist, 
-                                  save_path=args.output.split('.')[0] + '_beta_fit_convergence.png')
+                                  save_path=args.output.split('.')[0] + 
+                                  '_beta_fit_convergence.png')
         print(f'diff_hist: {diff_hist}\nalpha_hist: {alpha_hist}\nbeta_hist: {beta_hist}')
         
         # plot Beta distribution fit and VAFs
