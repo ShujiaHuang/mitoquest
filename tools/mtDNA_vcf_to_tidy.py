@@ -24,6 +24,7 @@ class VariantRecord:
     sample_id: str
     chrom: str
     pos: int
+    rsid: str
     ref: str
     alt: str
     vaf: float
@@ -36,6 +37,7 @@ class VariantRecord:
             self.sample_id,
             self.chrom,
             str(self.pos),
+            self.rsid,
             self.ref,
             self.alt,
             f"{self.vaf:.6f}",
@@ -46,7 +48,7 @@ class VariantRecord:
 
 class VCFProcessor:
     """Processor for VCF files using pysam."""
-    HEADER_COLUMNS = ["Sample_id", "Chrom", "Pos", "REF", "ALT", "VAF", "Depth", "GT"]
+    HEADER_COLUMNS = ["Sample_id", "Chrom", "Pos", "ID", "REF", "ALT", "VAF", "Depth", "GT"]
     def __init__(self, vcf_path: str):
         """
         Initialize VCF processor.
@@ -118,8 +120,9 @@ class VCFProcessor:
         """
         chrom = record.chrom
         pos   = record.pos
-        ref   = record.ref
-        alts  = record.alts if record.alts else []   
+        ref   = record.ref if record.ref is not None else '.'
+        alts  = record.alts if record.alts else []
+        rsid  = record.id if record.id is not None else '.'
         for sample_id in samples:
             sample = record.samples[sample_id]
             
@@ -139,6 +142,7 @@ class VCFProcessor:
                     sample_id=sample_id,
                     chrom=chrom,
                     pos=pos,
+                    rsid=rsid,
                     ref=ref,
                     alt=alts[gt - 1],
                     vaf=vaf,
@@ -303,9 +307,6 @@ def write_tidy_table(
             
             # Write records
             for record in records:
-                if record.genotype == "0": 
-                    continue
-                
                 f.write(record.to_tsv_line() + "\n")
                 count += 1
         
