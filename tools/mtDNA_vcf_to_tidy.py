@@ -119,8 +119,7 @@ class VCFProcessor:
         chrom = record.chrom
         pos   = record.pos
         ref   = record.ref
-        alts  = record.alts if record.alts else []
-        
+        alts  = record.alts if record.alts else []   
         for sample_id in samples:
             sample = record.samples[sample_id]
             
@@ -128,22 +127,23 @@ class VCFProcessor:
             if self._is_missing_genotype(sample):
                 continue
             
-            genotype = self._extract_genotype(sample)
-            depth = self._extract_depth(sample)
-            vaf_values = self._extract_vaf_values(sample, len(alts))
+            # genotype = self._extract_genotype(sample)
+            # vaf_values = self._extract_vaf_values(sample, len(alts))
             
-            for alt_idx, alt in enumerate(alts):
-                vaf = vaf_values[alt_idx] if alt_idx < len(vaf_values) else 0.0
-                
+            depth = self._extract_depth(sample)
+            gts = sample.get('GT')
+            vaf_values = sample.get('AF')
+            for (gt, vaf) in zip(gts, vaf_values):
+                if (gt is None) or (gt == 0): continue
                 yield VariantRecord(
                     sample_id=sample_id,
                     chrom=chrom,
                     pos=pos,
                     ref=ref,
-                    alt=alt,
+                    alt=alts[gt - 1],
                     vaf=vaf,
                     depth=depth,
-                    genotype=genotype,
+                    genotype="/".join(map(str, gts)),
                 )
     
     @staticmethod
@@ -253,7 +253,6 @@ class VCFProcessor:
         """
         try:
             af = sample.get('AF')
-            
             if af is None:
                 return [0.0] * num_alts
             
