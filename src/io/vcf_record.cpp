@@ -403,49 +403,82 @@ namespace ngslib {
         return n_values_per_sample;
     }
 
+    /**
+     * @brief 
+     * 
+     * @param hdr 
+     * @param tag 
+     * @param values 
+     * @return int 
+     * 
+     * Test code:
+     * 
+        std::vector<std::string> filters;
+        int ret = record.get_format_string(header, "FT", filters);
+
+        if (ret > 0) {
+            std::cout << "Chars per sample: " << ret << std::endl;
+            for (size_t i = 0; i < filters.size(); i++) {
+                std::cout << "Sample " << i << ": [" << filters[i] << "]" << std::endl;
+            }
+        }
+     *
+     */
     int VCFRecord::get_format_string(const VCFHeader& hdr, const std::string& tag, std::vector<std::string>& values) const {
         values.clear();
-        if (!is_valid_unsafe() || !hdr.is_valid() || n_samples() == 0) return BCF_ERR_TAG_INVALID;
+        if (!is_valid_unsafe() || !hdr.is_valid() || n_samples() == 0) {
+            return BCF_ERR_TAG_INVALID;
+        }
 
-        char** buffer = nullptr; // Array of strings
-        int buffer_capacity = 0; // Number of strings per sample (usually 1)
-        int total_values = bcf_get_format_string(hdr.hts_header(), _b.get(), tag.c_str(), &buffer, &buffer_capacity);
+        char** buffer = nullptr;
+        int buffer_capacity = 0;
+        int total_bytes = bcf_get_format_string(hdr.hts_header(), _b.get(), tag.c_str(), &buffer, &buffer_capacity);
 
-        if (total_values < 0) {
-            // Note: bcf_get_format_string allocates buffer[0] contiguously for all strings.
-            // Only need to free buffer[0] and buffer itself.
+        // 错误处理
+        if (total_bytes < 0) {
             if (buffer) {
-                if (buffer[0]) free(buffer[0]);
+                if (*buffer) free(*buffer);  // 释放 buffer[0]
                 free(buffer);
             }
-            return total_values;
+            return total_bytes;
         }
 
+        // 解析字符串数据
         int n_samp = n_samples();
-        values.resize(total_values); // Resize the output vector
-        if (buffer && buffer[0]) {
-             // Data is in buffer[0], laid out contiguously, separated by terminators?
-             // Or is buffer an array of char* pointers? The docs are a bit ambiguous.
-             // Let's assume buffer is char** pointing to individual strings per sample.
-             // This seems more consistent with bcf_update_format_string.
-             for (int i = 0; i < n_samp; ++i) {
-                 // Assuming n_values_per_sample is 1 for strings
-                 if (buffer[i]) {
-                     values[i] = std::string(buffer[i]);
-                 } else {
-                     values[i] = STRING_MISSING; // Or empty string
-                 }
-             }
+        int n_chars_per_sample = 0;
+        
+        if (total_bytes > 0 && buffer && *buffer) {
+            n_chars_per_sample = total_bytes / n_samp;
+            values.reserve(n_samp);  // 预分配空间
+            
+            char* ptr = *buffer;  // 指向实际数据的起始位置
+            for (int i = 0; i < n_samp; i++) {
+                // 找到实际字符串长度（遇到 '\0' 或达到最大长度）
+                int len = 0;
+                while (len < n_chars_per_sample && ptr[len] != '\0') {
+                    len++;
+                }
+                
+                // 处理缺失值
+                if (len == 1 && ptr[0] == '.') {
+                    values.emplace_back(STRING_MISSING); // Or empty string: ""
+                } else {
+                    values.emplace_back(ptr, len);
+                }
+                
+                ptr += n_chars_per_sample;  // 移动到下一个样本
+            }
         }
-
+        
+        // 释放内存
         if (buffer) {
-            // Free according to htslib example for bcf_get_format_string
-             if (buffer[0]) free(buffer[0]);
-             free(buffer);
+            if (*buffer) free(*buffer);  // 先释放实际数据
+            free(buffer);                // 再释放指针
         }
-        int n_values_per_sample = (n_samp > 0) ? (total_values / n_samp) : 0;
-        return n_values_per_sample; // Usually 1 for strings
+        
+        return n_chars_per_sample;
     }
+
 
     int VCFRecord::get_format_idx(const VCFHeader& hdr, const std::string& tag) const {
         if (!is_valid_unsafe() || !hdr.is_valid()) {
