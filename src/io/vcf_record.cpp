@@ -422,6 +422,20 @@ namespace ngslib {
                 std::cout << "Sample " << i << ": [" << filters[i] << "]" << std::endl;
             }
         }
+            
+    // VCF 数据：
+    // Sample0: "PASS" (4 chars + '\0')
+    // Sample1: "FAIL" (4 chars + '\0')  
+    // Sample2: "."    (1 char  + '\0')
+
+    // bcf_get_format_string 返回：
+    total_bytes = 15  // 3 个样本 × 5 个字符
+    n_chars_per_sample = 15 / 3 = 5
+
+    // buffer[0] 指向的数据：
+    // 索引: 0    1   2   3   4   5   6   7   8   9    10  11  12  13  14
+    //      'P' 'A' 'S' 'S' '\0' 'F' 'A' 'I' 'L' '\0' '.' '\0' ?   ?   ?
+    //      └───── 样本0 ─────┘  └───── 样本1 ─────┘  └─ 样本2 ─┘
      *
      */
     int VCFRecord::get_format_string(const VCFHeader& hdr, const std::string& tag, std::vector<std::string>& values) const {
