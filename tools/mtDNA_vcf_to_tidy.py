@@ -52,7 +52,7 @@ class VariantRecord:
 
 class VCFProcessor:
     """Processor for VCF files using pysam."""
-    HEADER_COLUMNS = ["Sample_id", "Chrom", "Pos", "ID", "REF", "ALT", "VAF", "Depth", "GT", "Type", "Status"]
+    HEADER_COLUMNS = ["Sample_id", "Chrom", "Pos", "ID", "REF", "ALT", "VAF", "Depth", "GT", "Variant", "Status"]
     def __init__(self, vcf_path: str):
         """
         Initialize VCF processor.
