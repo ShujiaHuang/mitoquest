@@ -30,6 +30,7 @@ class VariantRecord:
     vaf: float
     depth: int
     genotype: str
+    status: str
 
     def to_tsv_line(self) -> str:
         """Convert record to TSV line."""
@@ -43,12 +44,13 @@ class VariantRecord:
             f"{self.vaf:.6f}",
             str(self.depth),
             self.genotype,
+            self.status
         ])
 
 
 class VCFProcessor:
     """Processor for VCF files using pysam."""
-    HEADER_COLUMNS = ["Sample_id", "Chrom", "Pos", "ID", "REF", "ALT", "VAF", "Depth", "GT"]
+    HEADER_COLUMNS = ["Sample_id", "Chrom", "Pos", "ID", "REF", "ALT", "VAF", "Depth", "GT", "Status"]
     def __init__(self, vcf_path: str):
         """
         Initialize VCF processor.
@@ -148,6 +150,8 @@ class VCFProcessor:
                     vaf=vaf,
                     depth=depth,
                     genotype="/".join(map(str, gts)),
+                    status="Het" if len(gts) > 1 else "Hom"
+                    
                 )
     
     @staticmethod
