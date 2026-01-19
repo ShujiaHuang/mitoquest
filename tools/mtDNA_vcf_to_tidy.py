@@ -30,7 +30,8 @@ class VariantRecord:
     vaf: float
     depth: int
     genotype: str
-    status: str
+    var_type: str # The type of variant: SNV, DEL, INS
+    status: str   # HET or HOM
 
     def to_tsv_line(self) -> str:
         """Convert record to TSV line."""
@@ -44,13 +45,14 @@ class VariantRecord:
             f"{self.vaf:.6f}",
             str(self.depth),
             self.genotype,
+            self.var_type,
             self.status
         ])
 
 
 class VCFProcessor:
     """Processor for VCF files using pysam."""
-    HEADER_COLUMNS = ["Sample_id", "Chrom", "Pos", "ID", "REF", "ALT", "VAF", "Depth", "GT", "Status"]
+    HEADER_COLUMNS = ["Sample_id", "Chrom", "Pos", "ID", "REF", "ALT", "VAF", "Depth", "GT", "Type", "Status"]
     def __init__(self, vcf_path: str):
         """
         Initialize VCF processor.
@@ -140,18 +142,27 @@ class VCFProcessor:
             vaf_values = sample.get('AF')
             for (gt, vaf) in zip(gts, vaf_values):
                 if (gt is None) or (gt == 0): continue
+                alt_seq  = alts[gt - 1]
+                
+                if len(ref) == len(alt_seq):
+                    var_type = "SNV"
+                elif len(ref) > len(alt_seq):
+                    var_type = "DEL"
+                else:
+                    var_type = "INS"
+                    
                 yield VariantRecord(
                     sample_id=sample_id,
                     chrom=chrom,
                     pos=pos,
                     rsid=rsid,
                     ref=ref,
-                    alt=alts[gt - 1],
+                    alt=alt_seq,
                     vaf=vaf,
                     depth=depth,
                     genotype="/".join(map(str, gts)),
-                    status="Het" if len(gts) > 1 else "Hom"
-                    
+                    var_type=var_type,
+                    status="Het" if len(gts) > 1 else "Hom",
                 )
     
     @staticmethod
