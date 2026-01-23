@@ -3,11 +3,10 @@
 Convert mtDNA VCF into tidy (long-format) table.
 
 Each row corresponds to:
-    one sample × one mtDNA position × one ALT allele
+    one sample x one mtDNA position x one ALT allele
 
 Output columns:
     sample_id, pos, ref, alt, vaf, depth, GT
-
 """
 import argparse
 import sys
