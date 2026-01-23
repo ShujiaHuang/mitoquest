@@ -24,7 +24,7 @@ bcftools mpileup -a 'FORMAT/DP' -Ov -f chrM_rCRS.decoy.fa.gz -T t.ann.vcf smp4.c
 
 python ../../tools/mtDNA_variant_quality_control.py --vcf t.ann.vcf.gz --output test.csv --output-vcf test.vcf
 
-python ../../tools/vcf_validator.py tt
+python ../../tools/vcf_format_validator.py tt
 
 python ../../tools/rewrite_vcf.py tt.vcf tt_oo
-python ../../tools/mtDNA_vcf_to_tidy.py -i tt.subsam -o t1
+python ../../tools/mtDNA_vcf_to_table.py -i tt.subsam -o t1
