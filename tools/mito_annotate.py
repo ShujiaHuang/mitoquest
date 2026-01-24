@@ -445,7 +445,6 @@ def clinvar(anno_file_path):
             alt = row["Canonical SPDI"].split(':')[-1]
             ref = row["Canonical SPDI"].split(':')[2]
             interp = row["Clinical significance (Last reviewed)"].split('(')[0]
-            
             if (len(ref) == 1) and (len(alt) == 1) and (ref != alt):  # if SNVs    
                 # if "no assertion criteria" not in row["Review status"]:
                 # exclude those only listed for cancer, some are cancer and mito diseases keep those
@@ -457,7 +456,7 @@ def clinvar(anno_file_path):
                         row["Condition(s)"] != "Acute megakaryoblastic leukemia|Mediastinal germ cell tumor" and
                         row["Condition(s)"] != "Neoplasm of ovary"):
                         
-                        dict[(ref, pos, alt)] = interp
+                        dict[(ref, pos, alt)] = interp.strip().replace(" ", "_")
     return dict
 
 
