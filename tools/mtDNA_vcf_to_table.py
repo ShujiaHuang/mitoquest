@@ -72,6 +72,26 @@ class VCFProcessor:
         if not self.vcf_path.is_file():
             raise ValueError(f"Not a file: {self.vcf_path}")
     
+    def remove_common_suffix(self, s1, s2):
+        """
+        Remove the common suffix of two strings.
+        """
+        i = 0
+        while i < min(len(s1), len(s2)) and s1[-1 - i] == s2[-1 - i]:
+            i += 1
+
+        if i > 0:
+            if s1[:-i] and s2[:-i]:
+                new_s1 = s1[:-i]
+                new_s2 = s2[:-i]
+            else:
+                new_s1 = s1[:-i+1]
+                new_s2 = s2[:-i+1]
+        else:
+            new_s1 = s1
+            new_s2 = s2
+        return (new_s1, new_s2)
+    
     def process(self) -> Iterator[VariantRecord]:
         """
         Process VCF file and yield variant records.
@@ -135,7 +155,6 @@ class VCFProcessor:
             
             # genotype = self._extract_genotype(sample)
             # vaf_values = self._extract_vaf_values(sample, len(alts))
-            
             depth = self._extract_depth(sample)
             gts = sample.get('GT')
             vaf_values = sample.get('AF')
@@ -149,13 +168,14 @@ class VCFProcessor:
                     var_type = "DEL"
                 else:
                     var_type = "INS"
-                    
+                
+                new_ref, alt_seq = self.remove_common_suffix(ref, alt_seq)
                 yield VariantRecord(
                     sample_id=sample_id,
                     chrom=chrom,
                     pos=pos,
                     rsid=rsid,
-                    ref=ref,
+                    ref=new_ref,
                     alt=alt_seq,
                     vaf=vaf,
                     depth=depth,
