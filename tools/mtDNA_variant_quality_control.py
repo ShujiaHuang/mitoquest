@@ -33,20 +33,21 @@ import matplotlib.pyplot as plt
 
 GLOBAL_BLACKLIST_SITES_SET = set()
 _GLOBAL_BLACKLISTED_REGIONS = [
-    # blacklisted regions (chr, start, end)
-    ('chrM', 299, 317),
-    ('chrM', 511, 525),
-    ('chrM', 564, 571),
-    ('chrM', 952, 955),
-    ('chrM', 3106, 3108),
-    ('chrM', 5895, 5899),
-    ('chrM', 8268, 8279),
-    ('chrM', 13645, 13650),
-    ('chrM', 16180, 16187),
+    # blacklisted regions (start, end)
+    # 都是 chrM 所以保留 start end 即可
+    (299, 317),
+    (511, 525),
+    (564, 571),
+    (952, 955),
+    (3106, 3108),
+    (5895, 5899),
+    (8268, 8279),
+    (13645, 13650),
+    (16180, 16187),
 ]
-for chrom, start, end in _GLOBAL_BLACKLISTED_REGIONS:
+for start, end in _GLOBAL_BLACKLISTED_REGIONS:
     for pos in range(start, end + 1):
-        GLOBAL_BLACKLIST_SITES_SET.add((chrom, pos))
+        GLOBAL_BLACKLIST_SITES_SET.add(pos)
 
 def plot_beta_fit_convergence(alpha_hist, beta_hist, diff_hist, save_path='beta_fit_convergence.png'):
     plt.figure(figsize=(8, 5))
@@ -286,7 +287,7 @@ def write_vcf(input_vcf_path, output_vcf_path, results, pos_kl_div):
                 chrom_pos = (record.chrom, record.pos)
                 if qc_status.get(chrom_pos, False):
                     record.filter.add('PASS')
-                elif chrom_pos in GLOBAL_BLACKLIST_SITES_SET:
+                elif record.pos in GLOBAL_BLACKLIST_SITES_SET:
                     record.filter.add('BLACKLISTED_SITE')
                 else:
                     record.filter.add('LOW_QUALITY')
@@ -311,8 +312,7 @@ def qc(input_vcf_path, output_vcf_path, args):
     sor_threshold = 1000
     pos_kl_div = {} # Store multi-sample KL divergence for each position
     for variant in variant_generator(input_vcf_path):
-        chrom_pos = (variant['chrom'], variant['pos'])
-        if chrom_pos in GLOBAL_BLACKLIST_SITES_SET:
+        if variant['pos'] in GLOBAL_BLACKLIST_SITES_SET:
             sys.stderr.write(f"[INFO] Variant at {variant['chrom']}:{variant['pos']} "
                              f"is located in blacklisted regions. Skipping.\n")
             continue
