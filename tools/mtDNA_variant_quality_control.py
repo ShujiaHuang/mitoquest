@@ -507,7 +507,9 @@ def iterative_beta_fit_and_call(results, lambda_kl=0.1, pi=5e-8 * 16569, thresho
                 else:
                     hom_var_list.extend([v for v in r['vaf'] if v is not None and 0 < v < 1])
                 
-        by_step = len(hom_var_list) // len(het_var_list) if len(hom_var_list) > len(het_var_list) else 1
+        by_step = len(hom_var_list) // len(het_var_list) if (
+            (len(hom_var_list) > len(het_var_list)) and (len(het_var_list) > 0)
+        ) else 1
         vaf_list = het_var_list + hom_var_list[::by_step]  # Use same number of het and hom variants, by downsampling hom variants by step
         print(f"- Iteration {i+1}: {len(vaf_list)} VAFs collected for Beta fitting.")
 
