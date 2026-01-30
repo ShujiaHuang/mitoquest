@@ -1,13 +1,13 @@
 """Perform mtDNA variant quality control analysis from VCF file.
-This script parses a VCF file, estimates background noise from normal samples,
-computes KL divergence for variant allele frequencies, and applies a Bayesian filter
-to determine the posterior probability of true mutations.
+This script parses mtDNA VCF file, estimates background noise from normal (non-mutated) samples, 
+computes KL divergence for variant allele frequencies, and applies a Bayesian filter to determine 
+the posterior probability of good calls.
 
 Returns:
     It generates a filtered VCF file and a CSV report of the results.
 
 Usage:
-    python mtDNA_variant_quality_control.py --vcf input.vcf --output output.csv --output_vcf filtered_output.vcf
+    python mtDNA_variant_QC.py --vcf input.vcf --output output.csv --output_vcf filtered_output.vcf
     [--bins 100] [--lambda_kl 0.1] [--pi 5e-8] [--threshold 0.9] 
     
 Author: Shujia Huang
@@ -33,8 +33,7 @@ import matplotlib.pyplot as plt
 
 GLOBAL_BLACKLIST_SITES_SET = set()
 _GLOBAL_BLACKLISTED_REGIONS = [
-    # blacklisted regions (start, end)
-    # 都是 chrM 所以保留 start end 即可
+    # 都是 chrM 所以简化为 (start, end) 即可
     (299, 317),
     (511, 525),
     (564, 571),
