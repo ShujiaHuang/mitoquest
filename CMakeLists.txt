@@ -56,6 +56,11 @@ if(NOT APPLE)
     list(APPEND COMMON_SYS_LIB ssl crypto)
 endif()
 
+# On Linux, if building a static executable, we need to link against additional libraries
+if(BUILD_STATIC AND UNIX AND NOT APPLE)
+    list(APPEND COMMON_SYS_LIB nghttp2 gssapi_krb5 krb5 k5crypto resolv)
+endif()
+
 # Define htslib library
 set(HTSLIB ${CMAKE_CURRENT_SOURCE_DIR}/htslib/libhts.a)
 
