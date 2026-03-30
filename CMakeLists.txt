@@ -13,9 +13,6 @@ set(PROJECT_AUTHOR "Shujia Huang")
 set(PROJECT_EMAIL "hshujia@qq.com")
 set(PROJECT_DESCRIPTION "mitoquest: Human Mitochondrial sequencing data Analysis Toolkit")
 
-# Static build option
-option(BUILD_STATIC "Build a static executable (Linux only)" OFF)
-
 # Configure version header
 configure_file(
     ${CMAKE_CURRENT_SOURCE_DIR}/src/version.h.in
@@ -29,14 +26,6 @@ configure_file(
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3 -fPIC")
 if (APPLE)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wl,-no_compact_unwind")
-endif()
-
-if(BUILD_STATIC AND UNIX AND NOT APPLE)
-    message(STATUS "Building static executable for Linux")
-    set(CMAKE_FIND_LIBRARY_SUFFIXES ".a" "${CMAKE_FIND_LIBRARY_SUFFIXES}")
-    set(BUILD_SHARED_LIBS OFF)
-    set(CMAKE_EXE_LINKER_FLAGS
-        "${CMAKE_EXE_LINKER_FLAGS} -static -static-libgcc -static-libstdc++ -s")
 endif()
 
 # Ensure htslib is built before the main executable
@@ -54,11 +43,6 @@ include_directories(${CMAKE_CURRENT_SOURCE_DIR}/src)     # include the header of
 set(COMMON_SYS_LIB pthread z bz2 m lzma curl)
 if(NOT APPLE)
     list(APPEND COMMON_SYS_LIB ssl crypto)
-endif()
-
-# On Linux, if building a static executable, we need to link against additional libraries
-if(BUILD_STATIC AND UNIX AND NOT APPLE)
-    list(APPEND COMMON_SYS_LIB nghttp2 gssapi_krb5 krb5 k5crypto resolv)
 endif()
 
 # Define htslib library

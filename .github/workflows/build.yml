@@ -31,8 +31,7 @@ jobs:
       run: |
         sudo apt-get update
         sudo apt-get install -y build-essential cmake autoconf automake libgtest-dev \
-        zlib1g-dev libbz2-dev liblzma-dev libcurl4-openssl-dev libssl-dev \
-        libnghttp2-dev libkrb5-dev krb5-multidev
+        zlib1g-dev libbz2-dev liblzma-dev libcurl4-openssl-dev libssl-dev
 
     - name: Install Dependencies (macOS)
       if: runner.os == 'macOS'
@@ -41,16 +40,9 @@ jobs:
 
     - name: Configure CMake
       run: |
-        if [ "${{ runner.os }}" = "Linux" ]; then
-          cmake -B ${{github.workspace}}/build \
-                -DCMAKE_BUILD_TYPE=Release \
-                -DBUILD_TESTING=ON \
-                -DBUILD_STATIC=ON
-        else
-          cmake -B ${{github.workspace}}/build \
-                -DCMAKE_BUILD_TYPE=Release \
-                -DBUILD_TESTING=ON
-        fi
+        cmake -B ${{github.workspace}}/build \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DBUILD_TESTING=ON
 
     - name: Build
       run: cmake --build ${{github.workspace}}/build --config Release
@@ -64,12 +56,6 @@ jobs:
         mkdir -p dist
         cp bin/mitoquest dist/${{matrix.artifact_name}}
     
-    - name: Check Linux binary
-      if: runner.os == 'Linux'
-      run: |
-        file bin/mitoquest
-        ldd bin/mitoquest || true
-
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
       with:
