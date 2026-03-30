@@ -32,7 +32,7 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y build-essential cmake autoconf automake libgtest-dev \
         zlib1g-dev libbz2-dev liblzma-dev libcurl4-openssl-dev libssl-dev \
-        libnghttp2-dev libkrb5-dev
+        libnghttp2-dev libkrb5-dev libgssapi-krb5-dev
 
     - name: Install Dependencies (macOS)
       if: runner.os == 'macOS'
