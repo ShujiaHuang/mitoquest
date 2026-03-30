@@ -6,12 +6,15 @@ set(CMAKE_CXX_STANDARD 17)  # C++ 17
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Set the project name
-project (MITOQUEST VERSION 1.6.0 LANGUAGES CXX)
+project (MITOQUEST VERSION 1.6.1 LANGUAGES CXX)
 
 # Add project metadata
 set(PROJECT_AUTHOR "Shujia Huang")
 set(PROJECT_EMAIL "hshujia@qq.com")
 set(PROJECT_DESCRIPTION "mitoquest: Human Mitochondrial sequencing data Analysis Toolkit")
+
+# Static build option
+option(BUILD_STATIC "Build a static executable (Linux only)" OFF)
 
 # Configure version header
 configure_file(
@@ -26,6 +29,14 @@ configure_file(
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3 -fPIC")
 if (APPLE)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wl,-no_compact_unwind")
+endif()
+
+if(BUILD_STATIC AND UNIX AND NOT APPLE)
+    message(STATUS "Building static executable for Linux")
+    set(CMAKE_FIND_LIBRARY_SUFFIXES ".a" "${CMAKE_FIND_LIBRARY_SUFFIXES}")
+    set(BUILD_SHARED_LIBS OFF)
+    set(CMAKE_EXE_LINKER_FLAGS
+        "${CMAKE_EXE_LINKER_FLAGS} -static -static-libgcc -static-libstdc++ -s")
 endif()
 
 # Ensure htslib is built before the main executable
