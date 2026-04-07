@@ -626,7 +626,7 @@ def annotate(input_file, annotated_txt, annotated_vcf, anno_file_path):
                 # check if the variant is in dbSNP
                 if (CHROM, POS, REF, ALT) in dbsnp:
                     IDs.append(dbsnp[(CHROM, POS, REF, ALT)])
-            ID = ','.join(IDs) if IDs else '.'
+            ID = ';'.join(IDs) if IDs else '.'  # rsID separated by ';' if multiple, else '.'
                 
             # POS in mitomap_genome_loci or not
             mitomap_locus_id = ''
