@@ -765,32 +765,30 @@ VCFRecord MtVariantCaller::_joint_variant_in_pos(std::vector<VariantInfo> vvi) {
         throw std::runtime_error("[ERROR] No available individuals in this position: " +
                                  vcf_record.chrom + ":" + std::to_string(vcf_record.pos));
     }
+    int available_ind_count = all_available_dp.size(); // count of individuals with non-missing genotype
 
     // Set INFO field
     std::vector<std::string> vaf_means;   // collect mean VAF of each alt allele
-    std::vector<std::string> vaf_medians; // collect median VAF of each alt allele
     std::vector<std::string> vaf_means_het;   // collect mean VAF of each alt allele in heteroplasmic samples
-    std::vector<std::string> vaf_medians_het; // collect median VAF of each alt allele in heteroplasmic samples
     int float_precision = 6;  // floating number precision
     for (const auto& alt : vcf_record.alt) { 
         // Calculate mean and median VAF for each alt allele
         const auto& vafs = ai.alt_all_freqs[alt];
         if (vafs.empty()) {
             vaf_means.push_back("0");
-            vaf_medians.push_back("0");
         } else {
-            vaf_means.push_back(format_double(mean(vafs), float_precision));
-            vaf_medians.push_back(format_double(median(vafs), float_precision));
+            // Note: the denominator is the count of available individuals
+            vaf_means.push_back(format_double(sum(vafs)/available_ind_count, float_precision));
         }
 
         // Calculate mean and median VAF for each alt allele in heteroplasmic samples only
         const auto& vafs_het = ai.alt_het_freqs[alt];
         if (vafs_het.empty()) {
             vaf_means_het.push_back("0");
-            vaf_medians_het.push_back("0");
         } else {
+            // Note: the denominator is the count of heteroplasmic individuals, not the count of available individuals, 
+            // because we only consider heteroplasmic samples for this calculation.
             vaf_means_het.push_back(format_double(mean(vafs_het), float_precision));
-            vaf_medians_het.push_back(format_double(median(vafs_het), float_precision));
         }
     }
 
@@ -814,9 +812,7 @@ VCFRecord MtVariantCaller::_joint_variant_in_pos(std::vector<VariantInfo> vvi) {
                       "DP_MEAN=" + format_double(mean(all_available_dp), 0) + ";"      // Interger
                       "DP_MEDIAN=" + format_double(median(all_available_dp), 0) + ";"  // Interger
                       "VAF_MEAN=" + ngslib::join(vaf_means, ",") + ";"
-                      "VAF_MEDIAN=" + ngslib::join(vaf_medians, ",") + ";"
                       "VAF_MEAN_HET=" + ngslib::join(vaf_means_het, ",") + ";"
-                      "VAF_MEDIAN_HET=" + ngslib::join(vaf_medians_het, ",") + ";"
                       "PT=" + pt;
 
     return vcf_record;

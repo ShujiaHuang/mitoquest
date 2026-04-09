@@ -180,10 +180,10 @@ bool VCFSubsetSamples::recalculate_info(const ngslib::VCFHeader& hdr, ngslib::VC
         return true;  // Keep original INFO
 
     } else if (n_af_per_sample < n_alt) { 
-        // 记录这个是为了防止自己忘记
+        // 无需操作，记录这个是为了防止自己忘记
         // 由于 mitoquest 对每个样本的 GT 计算都是动态的，也就是说它的倍体和 n_alt 可以不相等，
-        // 比如 n_alt 可以是 3，但是每个样本的倍体可以都是 1 或 2 或 3 等，也就是 
-        // n_af_per_sample 可以小于 n_alt
+        // 比如 n_alt 可以是 3，但是每个样本的倍体可以都是 1 或 2 或 3 等，所以 n_af_per_sample < n_alt 
+        // 是完全合理的，不需要报错。
     }
 
     // --- Statistics Containers ---
@@ -316,17 +316,13 @@ bool VCFSubsetSamples::recalculate_info(const ngslib::VCFHeader& hdr, ngslib::VC
     rec.update_info_int(hdr, "DP_MEDIAN", &dp_median, 1);
 
     // Update VAF_*
-    std::vector<float> v_mean(n_alt), v_median(n_alt), v_mean_het(n_alt), v_median_het(n_alt);
+    std::vector<float> v_mean(n_alt), v_mean_het(n_alt);
     for (int i = 0; i < n_alt; ++i) {
-        v_mean[i] = (!alt_all_freqs[i].empty()) ? static_cast<float>(mean(alt_all_freqs[i])) : 0;
-        v_median[i] = (!alt_all_freqs[i].empty()) ? static_cast<float>(median(alt_all_freqs[i])) : 0;
+        v_mean[i] = (!alt_all_freqs[i].empty()) ? static_cast<float>(sum(alt_all_freqs[i])/available_ind_count) : 0;
         v_mean_het[i] = (!alt_het_freqs[i].empty()) ? static_cast<float>(mean(alt_het_freqs[i])) : 0;
-        v_median_het[i] = (!alt_het_freqs[i].empty()) ? static_cast<float>(median(alt_het_freqs[i])) : 0;
     }
     rec.update_info_float(hdr, "VAF_MEAN", v_mean.data(), n_alt);
-    rec.update_info_float(hdr, "VAF_MEDIAN", v_median.data(), n_alt);
     rec.update_info_float(hdr, "VAF_MEAN_HET", v_mean_het.data(), n_alt);
-    rec.update_info_float(hdr, "VAF_MEDIAN_HET", v_median_het.data(), n_alt);
 
     return true;
 }

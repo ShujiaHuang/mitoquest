@@ -219,8 +219,7 @@ std::string vcf_header_define(const std::string &ref_file_path, const std::vecto
         "##FORMAT=<ID=GQ,Number=1,Type=Integer,Description=\"Genotype Quality\">",
         "##FORMAT=<ID=DP,Number=1,Type=Integer,Description=\"Total read depth on the REF position\">",
         "##FORMAT=<ID=AD,Number=A,Type=Integer,Description=\"Allelic depth for each allele, in the order listed by GT\">",
-        "##FORMAT=<ID=AF,Number=A,Type=Float,Description=\"Allele fraction for each allele, in the order listed by GT. Fraction "
-            "of non-reference allele corresponds to the variant allele fraction(VAF)\">",
+        "##FORMAT=<ID=AF,Number=A,Type=Float,Description=\"Allele fraction for ref- and alt-alleles, in the order listed by GT\">",
         "##FORMAT=<ID=CI,Number=1,Type=String,Description=\"95\% confidence interval around the estimated allele fraction for "
             "the allele in the order listed by GT. format: ci_low,ci_up;ci_low,ci_up;...\">",
         "##FORMAT=<ID=AQ,Number=A,Type=Integer,Description=\"Allele quality, phred quality scores of pvalue of one-tail Fisher exact test "
@@ -240,11 +239,9 @@ std::string vcf_header_define(const std::string &ref_file_path, const std::vecto
         "##INFO=<ID=HOM_N,Number=1,Type=Integer,Description=\"Total number of individuals exhibiting the homoplasmic state in the population\">",
         "##INFO=<ID=DP_MEAN,Number=1,Type=Integer,Description=\"Mean mitochondrial sequencing depth across samples contributing to AN\">",
         "##INFO=<ID=DP_MEDIAN,Number=1,Type=Integer,Description=\"Median mitochondrial sequencing depth across samples contributing to AN\">",
-        "##INFO=<ID=VAF_MEAN,Number=A,Type=Float,Description=\"Mean mitochondrial variant allele fraction(VAF) across all samples contributing to AN, "
-            "with VAF=0 assigned to samples without detectable variant\">",
-        "##INFO=<ID=VAF_MEDIAN,Number=A,Type=Float,Description=\"Median mitochondrial VAF across all samples contributing to AN\">",
-        "##INFO=<ID=VAF_MEAN_HET,Number=A,Type=Float,Description=\"Mean mitochondrial VAF among heteroplasmic samples only\">",
-        "##INFO=<ID=VAF_MEDIAN_HET,Number=A,Type=Float,Description=\"Median mitochondrial VAF among heteroplasmic samples only\">",
+        "##INFO=<ID=VAF_MEAN,Number=A,Type=Float,Description=\"Mean mitochondrial variant allele (non-reference alleles) fraction(VAF) across all samples "
+            "contributing to AN, with VAF=0 assigned to samples without detectable variant, denominator is the count of individuals with non-missing genotype\">",
+        "##INFO=<ID=VAF_MEAN_HET,Number=A,Type=Float,Description=\"Mean mitochondrial VAF among heteroplasmic samples only, denominator is the count of heteroplasmic individuals\">",
         "##INFO=<ID=PT,Number=1,Type=String,Description=\"Type of plasmicity observed in population: Ref, Hom, Het, or Mixed(Hom and Het)\">"
     };  // initial by common information of header
 
