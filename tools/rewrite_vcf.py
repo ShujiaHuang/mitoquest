@@ -27,10 +27,8 @@ def rewrite_vcf(
         "##INFO=<ID=HET_N,Number=1,Type=Integer,Description=\"Total number of individuals exhibiting the heteroplasmic state in the population.\">",
         "##INFO=<ID=DP_MEAN,Number=1,Type=Float,Description=\"Mean mitochondrial sequencing depth across samples contributing to AN\">",
         "##INFO=<ID=DP_MEDIAN,Number=1,Type=Integer,Description=\"Median mitochondrial sequencing depth across samples contributing to AN\">",
-        "##INFO=<ID=VAF_MEAN,Number=A,Type=Float,Description=\"Mean mitochondrial variant allele fraction(VAF) across all samples contributing to AN, with VAF=0 assigned to samples without detectable variant\">",
-        "##INFO=<ID=VAF_MEDIAN,Number=A,Type=Float,Description=\"Median mitochondrial VAF across all samples contributing to AN\">",
-        "##INFO=<ID=VAF_MEAN_HET,Number=A,Type=Float,Description=\"Mean mitochondrial VAF among heteroplasmic samples only\">",
-        "##INFO=<ID=VAF_MEDIAN_HET,Number=A,Type=Float,Description=\"Median mitochondrial VAF among heteroplasmic samples only\">",
+        "##INFO=<ID=VAF_MEAN,Number=A,Type=Float,Description=\"Mean mitochondrial variant allele fraction(VAF) across all samples contributing to AN, with VAF=0 assigned to samples without detectable variant, denominator is the count of individuals with non-missing genotype\">",
+        "##INFO=<ID=VAF_MEAN_HET,Number=A,Type=Float,Description=\"Mean mitochondrial VAF among heteroplasmic samples only, denominator is the count of heteroplasmic individuals\">",
         "##INFO=<ID=PT,Number=1,Type=String,Description=\"Type of plasmicity observed in population: Ref, Hom, Het, or Mixed(Hom and Het)\">",
         "##contig=<ID=chrM,length=16569,assembly=chrM_rCRS.decoy.fa.gz>",
         "##contig=<ID=NUMT_JoinedSequences_gaps1000N_decoy,length=64266,assembly=chrM_rCRS.decoy.fa.gz>",
@@ -45,9 +43,7 @@ def rewrite_vcf(
         "DP_MEAN=0;"
         "DP_MEDIAN=0;"
         "VAF_MEAN=0;"
-        "VAF_MEDIAN=0;"
         "VAF_MEAN_HET=0;"
-        "VAF_MEDIAN_HET=0;"
         "PT=Ref"
     )
 
