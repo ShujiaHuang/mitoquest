@@ -420,7 +420,7 @@ def qc(input_vcf_path, output_vcf_path, args):
                     if (v_obs is None) or (a_obs is None):
                         pp = 0.0
                         sys.stderr.write(f"[WARNING] Missing VAF or AD for sample {sample} at "
-                                         f"{variant['chrom']}:{variant['pos']}. Skipping allele.\n")
+                                         f"{variant['chrom']}:{variant['pos']}. Skipping.\n")
                         break
                     
                     kl_div = calculate_kl_divergence_single(v_obs, q_alpha, q_beta)
@@ -448,7 +448,10 @@ def qc(input_vcf_path, output_vcf_path, args):
                 'pos': variant['pos'],
                 'ref': variant['ref'],
                 'alt': [ref_alts[g_idx] if (g_idx is not None) else '.' for g_idx in gt] if gt else ['.'],
-                'gt': gt if gt and (not is_pre_filtered and pp > args.threshold) else [None],  # A GT tuple
+                
+                # Keep original GT for reference, but the final mutation call will be determined by 'is_mutation' field.
+                # 'gt': gt if gt and (not is_pre_filtered and pp > args.threshold) else [None],  # A GT tuple
+                'gt': gt,
                 
                 'vaf': vaf,
                 'A': ads,
@@ -499,7 +502,14 @@ def qc(input_vcf_path, output_vcf_path, args):
     return results, sample_variant_count, vaf_true_list, vaf_false_list, alpha_hist, beta_hist, diff_hist
 
 
-def iterative_beta_fit_and_call(results, lambda_kl=0.1, pi=5e-8 * 16569, threshold=0.9, max_iter=50, tol=1e-5):
+def iterative_beta_fit_and_call(
+    results, 
+    lambda_kl=0.1, 
+    pi=5e-8 * 16569, 
+    threshold=0.9, 
+    max_iter=50, 
+    tol=1e-5
+):
     """
     Iteratively estimate beta distribution parameters from called mutations and update mutation calls
     until convergence. For multi-allelic sites, treat each ALT as an independent event and use the
@@ -556,7 +566,8 @@ def iterative_beta_fit_and_call(results, lambda_kl=0.1, pi=5e-8 * 16569, thresho
 
             r['posterior'] = np.prod(new_pps)  # Update posterior as product of individual posteriors
             r['is_mutation'] = r['posterior'] > threshold  # Update mutation call based on new posterior
-            r['gt'] = r['gt'] if r['is_mutation'] else [None]
+            # 不修改原来的 GT 了，因为 GT 是原始的基因型信息，修改后可能会丢失原始数据的参考价值。如果需要，可以在结果中添加一个新的字段来表示最终的 GT（例如 'final_gt'），或者直接使用 'is_mutation' 来判断是否为突变，而保留原始 GT 以供参考。
+            # r['gt'] = r['gt'] if r['is_mutation'] else [None]  # Update GT to None if not called as mutation (optional, can keep original GT for reference)
             
         # 4. Check for convergence
         curr_is_mut = [r['is_mutation'] for r in results]
