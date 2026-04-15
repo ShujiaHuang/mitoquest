@@ -7,6 +7,9 @@ Each row corresponds to:
 
 Output columns:
     sample_id, pos, ref, alt, vaf, depth, GT
+
+Authors: Shujia Huang
+Date: 2026-01-24
 """
 import argparse
 import sys
@@ -15,7 +18,6 @@ from pathlib import Path
 from typing import Iterator, List, Optional
 
 import pysam
-
 
 @dataclass
 class VariantRecord:
@@ -153,21 +155,26 @@ class VCFProcessor:
             if self._is_missing_genotype(sample):
                 continue
             
-            # genotype = self._extract_genotype(sample)
-            # vaf_values = self._extract_vaf_values(sample, len(alts))
             depth = self._extract_depth(sample)
             gts = sample.get('GT')
             vaf_values = sample.get('AF')
             for (gt, vaf) in zip(gts, vaf_values):
-                if (gt is None) or (gt == 0): continue
-                alt_seq  = alts[gt - 1]
+                # if (gt is None) or (gt == 0): 
+                #     continue  # Skip reference alleles and missing genotypes
+                if gt is None: 
+                    continue  # Skip missing genotypes only
                 
-                if len(ref) == len(alt_seq):
+                alt_seq  = alts[gt - 1]
+                if gt == 0:
+                    var_type = "REF"
+                elif len(ref) == len(alt_seq):
                     var_type = "SNV"
                 elif len(ref) > len(alt_seq):
                     var_type = "DEL"
-                else:
+                elif len(ref) < len(alt_seq):
                     var_type = "INS"
+                else:
+                    var_type = "UNK"
                 
                 new_ref, alt_seq = self.remove_common_suffix(ref, alt_seq)
                 yield VariantRecord(
@@ -181,7 +188,7 @@ class VCFProcessor:
                     depth=depth,
                     genotype="/".join(map(str, gts)),
                     var_type=var_type,
-                    status="Het" if len(gts) > 1 else "Hom",
+                    status="HET" if len(gts) > 1 else "HOM",
                 )
     
     @staticmethod
