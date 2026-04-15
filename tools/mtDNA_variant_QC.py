@@ -389,7 +389,7 @@ def qc(input_vcf_path, output_vcf_path, args):
                                  f"threshold ({dp}/{ploidy} < {args.DP_to_ploidy_threshold}). Skipping.\n")
                 pp = 0.0
                 is_pre_filtered = True
-            elif any(hq < args.HQ_threshold for hq in hqs):
+            elif all(hq < args.HQ_threshold for hq in hqs):
                 sys.stderr.write(f"[WARNING] Sample {sample} at {variant['chrom']}:{variant['pos']} "
                                  f"failed HQ threshold ({hqs} < {args.HQ_threshold}). Skipping.\n")
                 pp = 0.0
@@ -743,7 +743,9 @@ def bayesian_filter(
     else:
         posterior_h1 = 1.0 if log_odds > 0 else 0.0
 
-    sys.stderr.write(f" - Bayesian filter: A={A}, D={D}, p_error={p_error:.2e}, kl_div={kl_div:.4f}, log_L0={log_L0:.4f}, log_L1={log_L1:.4f}, log_odds={log_odds:.4f}, posterior_h1={posterior_h1:.4f}\n")
+    sys.stderr.write(f" - Bayesian filter: A={A}, D={D}, p_error={p_error:.2e}, "
+                     f"kl_div={kl_div:.4f}, log_L0={log_L0:.4f}, log_L1={log_L1:.4f}, "
+                     f"log_odds={log_odds:.4f}, posterior_h1={posterior_h1:.4f}\n")
     return float(np.clip(posterior_h1, 0.0, 1.0))
 
 
