@@ -284,10 +284,11 @@ def write_vcf(input_vcf_path, output_vcf_path, results, pos_kl_div):
                 # Use record.filter.clear() and record.filter.add() to update FILTER.
                 record.filter.clear()
                 chrom_pos = (record.chrom, record.pos)
-                if qc_status.get(chrom_pos, False):
-                    record.filter.add('PASS')
-                elif record.pos in GLOBAL_BLACKLIST_SITES_SET:
+                if record.pos in GLOBAL_BLACKLIST_SITES_SET:
                     record.filter.add('BLACKLISTED_SITE')
+                elif qc_status.get(chrom_pos, False):  
+                    # If any sample at this position is called as mutation, mark the site as PASS
+                    record.filter.add('PASS')
                 else:
                     record.filter.add('LOW_QUALITY')
                 
@@ -367,8 +368,8 @@ def qc(input_vcf_path, output_vcf_path, args):
         p_error = np.mean(background_error_rates)
 
         # QC for each sample
-        sys.stderr.write(f"Processing variant at {variant['chrom']}:{variant['pos']}. "
-                         f"Background Error Rate: {p_error}. \n")
+        sys.stderr.write(f"Processing variant at {variant['chrom']}:{variant['pos']} "
+                         f"Background Error Rate: {p_error} \n")
         for sample, gt, vaf in zip(samples, sample_gts, vaf_obs):
             sys.stderr.write(f" - {sample}, VAF: {vaf}\n")
             
@@ -403,15 +404,24 @@ def qc(input_vcf_path, output_vcf_path, args):
                                  f"failed SOR threshold ({sors} > {sor_threshold}). Skipping.\n")
                 pp = 0.0
                 is_pre_filtered = True
+            elif (vaf is None) or (ads is None) or (dp is None):
+                sys.stderr.write(
+                    f"[WARNING] Missing VAF, AD or DP for sample {sample} at "
+                    f"{variant['chrom']}:{variant['pos']}. Skipping.\n"
+                )
+                pp = 0.0
+                is_pre_filtered = True
             else :
                 # Calculate posterior probability for each sample
                 pp = 1.0 # Initialize posterior probability
+                allele_count = 0
                 for v_obs, a_obs in zip(vaf, ads):
-                    if (v_obs is None) or (a_obs is None) or (dp is None):
-                        pp = 0
-                        sys.stderr.write(f"[WARNING] Missing VAF, AD, or DP for sample {sample} "
-                                         f"at {variant['chrom']}:{variant['pos']}. Skipping.\n")
-                        continue
+                    allele_count += 1
+                    if (v_obs is None) or (a_obs is None):
+                        pp = 0.0
+                        sys.stderr.write(f"[WARNING] Missing VAF or AD for sample {sample} at "
+                                         f"{variant['chrom']}:{variant['pos']}. Skipping allele.\n")
+                        break
                     
                     kl_div = calculate_kl_divergence_single(v_obs, q_alpha, q_beta)
                     kl_div_singles.append(kl_div)
@@ -428,6 +438,9 @@ def qc(input_vcf_path, output_vcf_path, args):
                         pi=args.pi
                     )
                     pp *= posterior
+                    
+                if allele_count == 0:
+                    pp = 0.0  # If no valid alleles, set posterior to 0
 
             results.append({
                 'sample': sample,
@@ -632,47 +645,95 @@ def calculate_kl_divergence_multi(vafs, q_alpha, q_beta, bin_edges):
 
     return kl_div if kl_div > 0 else 0
 
-# Alternative implementation using histogram for KL divergence calculation (Not be used for final version)
-# def calculate_kl_divergence_multi(vafs, noise_alpha, noise_beta, bins=100):
-#     """Calculate KL divergence for multi-sample VAF distribution."""
-#     if len(vafs) == 0:
-#         return 0
+# def bayesian_filter_old(A, D, p_error, alpha_h1=1, beta_h1=1, lambda_kl=0.1, 
+#                     kl_div=None, pi=5e-8 * 16569):
+#     """Bayesian filter to compute posterior probability of a true mutation using log-likelihoods.
+#     """
+#     if kl_div == np.inf or p_error == 0.0:
+#         return 1  # If KL divergence is infinite, return 1 (indicating mutation)
     
-#     hist_p, bin_edges_p = np.histogram(vafs, bins=bins, density=True, range=(0, 1))
-#     kl_div = 0
-#     for i in range(len(hist_p)):
-#         p_x = hist_p[i] if hist_p[i] > 0 else 1e-10
-#         bin_center = (bin_edges_p[i] + bin_edges_p[i+1]) / 2
-#         q_x = beta.pdf(bin_center, noise_alpha, noise_beta) if beta.pdf(bin_center, noise_alpha, noise_beta) > 0 else 1e-10
-#         kl_div += p_x * np.log(p_x / q_x + 1e-16)
+#     # Log-likelihood under H0 (without binomial coefficient)
+#     log_L0 = A * np.log(p_error) + (D - A) * np.log(1 - p_error)
     
-#     return kl_div if kl_div > 0 else 0
+#     # Log-likelihood under H1 (without binomial coefficient)
+#     log_L1 = betaln(A + alpha_h1, D - A + beta_h1) - betaln(alpha_h1, beta_h1)
+     
+#     # Adjust log_L1 with KL divergence (which is a measure of how much the observed distribution diverges from the expected background noise)
+#     kl_div = kl_div if kl_div is not None else 0
+#     log_L1_adjusted = log_L1 + lambda_kl * kl_div
+
+#     # Log-posterior odds
+#     log_odds = log_L1_adjusted - log_L0 + np.log(pi) - np.log(1.0 - pi)
+    
+#     # Posterior probability: 该样本/该等位基因在当前深度和背景错误率下，属于真实突变（H1）的概率
+#     posterior_h1 = 1 / (1 + np.exp(-log_odds))
+    
+#     return posterior_h1
 
 
-def bayesian_filter(A, D, p_error, alpha_h1=1, beta_h1=1, lambda_kl=0.1, 
-                    kl_div=None, pi=5e-8 * 16569):
-    """Bayesian filter to compute posterior probability of a true mutation using log-likelihoods.
+# Bayesian filter to compute posterior probability of a true mutation using log-likelihoods, 
+# with improved handling of edge cases and numerical stability.
+# 2026-04-15: Updated Bayesian filter with improved handling of edge cases and numerical stability
+def bayesian_filter(
+    A,
+    D,
+    p_error,
+    alpha_h1=1.0,
+    beta_h1=1.0,
+    lambda_kl=0.1,
+    kl_div=None,
+    pi=5e-8 * 16569
+):
+    """Compute posterior probability for H1 (true mutation) vs H0 (background error).
+    
+    H0: observed alternate counts come from background error rate p_error.
+    H1: observed alternate counts come from a Beta-Binomial model with Beta(alpha_h1, beta_h1).
+    The term lambda_kl * kl_div is treated as an extra evidence weight in favor of H1.
     """
-    if kl_div == np.inf or p_error == 0.0:
-        return 1 # If KL divergence is infinite, return 1 (indicating mutation)
-    
+    if A is None or D is None or p_error is None:
+        return 0.0
+
+    try:
+        A = int(A)
+        D = int(D)
+    except (TypeError, ValueError):
+        return 0.0
+
+    if D <= 0 or A < 0 or A > D:
+        return 0.0
+
+    p_error = np.clip(p_error, 1e-12, 1.0 - 1e-12)
+    pi = np.clip(pi, 1e-12, 1.0 - 1e-12)
+
+    if kl_div is None or np.isnan(kl_div):
+        kl_div = 0.0
+    elif np.isposinf(kl_div):
+        kl_div = 100.0
+    elif np.isneginf(kl_div):
+        kl_div = 0.0
+
+    alpha_h1 = max(alpha_h1, 1e-6)
+    beta_h1 = max(beta_h1, 1e-6)
+
     # Log-likelihood under H0 (without binomial coefficient)
-    log_L0 = A * np.log(p_error) + (D - A) * np.log(1 - p_error)
+    log_L0 = A * np.log(p_error) + (D - A) * np.log1p(-p_error)
     
     # Log-likelihood under H1 (without binomial coefficient)
     log_L1 = betaln(A + alpha_h1, D - A + beta_h1) - betaln(alpha_h1, beta_h1)
-     
-    # Adjust log_L1 with KL divergence (which is a measure of how much the observed distribution diverges from the expected background noise)
-    kl_div = kl_div if kl_div is not None else 0
-    log_L1_adjusted = log_L1 + lambda_kl * kl_div
+    # lambda_kl 的作用是对 H1 的 KL 证据加权，使得 KL 证据在计算后验概率时能够有更大的影响力，从而更有效地区分真实突变和背景错误。
+    log_L1 += lambda_kl * kl_div  
 
     # Log-posterior odds
-    log_odds = log_L1_adjusted - log_L0 + np.log(pi) - np.log(1.0 - pi)
-    
-    # Posterior probability
-    posterior_h1 = 1 / (1 + np.exp(-log_odds))
-    
-    return posterior_h1
+    log_odds = log_L1 - log_L0 + np.log(pi) - np.log1p(-pi)
+
+    # Posterior probability: 该样本/该等位基因在当前深度和背景错误率下，属于真实突变（H1）的概率
+    if np.isfinite(log_odds):
+        posterior_h1 = 1.0 / (1.0 + np.exp(-log_odds))
+    else:
+        posterior_h1 = 1.0 if log_odds > 0 else 0.0
+
+    sys.stderr.write(f" - Bayesian filter: A={A}, D={D}, p_error={p_error:.2e}, kl_div={kl_div:.4f}, log_L0={log_L0:.4f}, log_L1={log_L1:.4f}, log_odds={log_odds:.4f}, posterior_h1={posterior_h1:.4f}\n")
+    return float(np.clip(posterior_h1, 0.0, 1.0))
 
 
 def main():
@@ -705,8 +766,8 @@ def main():
     parser.add_argument('--lambda-kl', type=float, default=0.1, help="Weight for KL divergence. Default is 0.1")
     parser.add_argument('--pi', type=float, default=5e-8 * 16569, help="Prior probability of mutation. Default is 5e-8 * 16569")
     parser.add_argument('--threshold', type=float, default=0.9, help="Posterior probability threshold for calling mutations. Default is 0.9")
-    
     args = parser.parse_args()
+    
     try:
         # Parse VCF file
         (variants, sample_variant_count, vaf_true_list, vaf_false_list, 
