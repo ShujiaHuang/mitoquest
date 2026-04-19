@@ -154,6 +154,10 @@ class VCFProcessor:
             # Skip missing genotypes
             if self._is_missing_genotype(sample):
                 continue
+
+            is_good_call = sample.get('GOOD_CALL', 'False') == 'True'  # Coverts string to boolean, default to False if not present 
+            if not is_good_call:
+                continue
             
             depth = self._extract_depth(sample)
             gts = sample.get('GT')

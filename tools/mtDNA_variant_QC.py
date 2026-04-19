@@ -775,10 +775,6 @@ def iterative_beta_fit_and_call(
             if r['pre_filtered']:
                 continue  # Skip pre-filtered samples
             
-            # sys.stderr.write(f">> Updating sample {r['sample']} at {r['chrom']}:{r['pos']} with new Beta parameters: "
-            #                  f"alpha={alpha_h1:.4f}, beta={beta_h1:.4f}, pre-loop posterior={r['posterior']} "
-            #                  f"is_mutation(raw)={r['is_mutation']}\n")
-            
             # For multi-allelic sites, calculate posterior for each ALT and take the product
             new_pps = []
             r['new_gt'] = r['gt']  # Initialize new GT to original GT, will update based on new mutation calls if needed
@@ -823,6 +819,9 @@ def iterative_beta_fit_and_call(
 
     # After convergence, update the final GT calls based on 
     for r in results:
+        if r['pre_filtered']:
+            continue  # Skip pre-filtered samples
+            
         r['gt'] = r['new_gt']  # Update GT to the new GT based on final mutation calls
         r.pop('new_gt', None)  # Remove the temporary 'new_gt' field from the final results to clean up the output.
 
