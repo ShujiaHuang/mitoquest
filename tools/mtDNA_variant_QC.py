@@ -723,7 +723,6 @@ def qc(input_vcf_path, output_vcf_path, args):
 def iterative_beta_fit_and_call(
     results, vafs, k_obs, n_obs,
     hq_threshold=20,
-    # kl_weight=0.1,  # 这个参数没有用了，因为我们现在不使用 KL divergence 来调整后验概率了
     pi=5e-8 * 16569,
     threshold=0.9,
     max_iter=50,
@@ -792,14 +791,11 @@ def iterative_beta_fit_and_call(
                     hq=hq,
                     hq_threshold=hq_threshold,
                     
-                    p_error=r['p_error'],
                     q_alpha=r['q_alpha'],
                     q_beta=r['q_beta'],
                     
                     alpha_h1=alpha_h1,  # Use updated Beta parameters
                     beta_h1=beta_h1,    # Use updated Beta parameters
-                    # kl_weight=kl_weight, 
-                    # kl_div=kl_div,
                     
                     # Use the same prior probability for true mutation as before, 
                     # which can be adjusted based on the expected mutation rate and 
@@ -868,58 +864,44 @@ def bayesian_filter(
     srf,
     hq,
     hq_threshold,
-    
-    p_error,
-    q_alpha,  # 背景噪音Beta分布的alpha参数
-    q_beta,   # 背景噪音Beta分布的beta参数
-    
+    q_alpha=1.0,  # 背景噪音Beta分布的alpha参数
+    q_beta=1.0,   # 背景噪音Beta分布的beta参数
     alpha_h1=1.0,
     beta_h1=1.0,
-    
-    # kl_weight=0.1,  # KL证据的权重，用于调整KL证据在计算后验概率时的影响力。
-    #                 # 较高的kl_weight会使KL证据在区分真实突变和背景错误时
-    #                 # 更有影响力，而较低的kl_weight则会减少KL证据的影响。
-    # kl_div=None,
-    
     pi=5e-8 * 16569
 ):
     """Compute posterior probability for H1 (true mutation) vs H0 (background error).
-    
-    H0: observed alternate counts come from background error rate p_error.
-    H1: observed alternate counts come from a Beta-Binomial model with Beta(alpha_h1, beta_h1).
-    The term lambda_kl * kl_div is treated as an extra evidence weight in favor of H1.
 
-    `kl_div` is the KL divergence of the observed VAF distribution from the background noise distribution, 
-    which serves as an additional piece of evidence to distinguish true mutations from background errors. 
-    A higher KL divergence indicates that the observed VAF distribution is more different from the expected 
-    background noise distribution, which can increase the likelihood of H1 (true mutation) being the correct 
-    model. The `kl_weight` parameter allows us to adjust how much influence this KL divergence evidence has on 
-    the final posterior probability calculation. By incorporating KL divergence into the Bayesian filter, we 
-    can leverage the information about how well the observed data fits the expected background noise model to 
-    make more informed decisions about whether a variant is likely to be a true mutation or just a result of 
-    sequencing errors.
+    H0: observed alternate counts come from a Beta-Binomial distribution with
+        Beta(q_alpha, q_beta).
+    H1: observed alternate counts come from a Beta-Binomial distribution with
+        Beta(alpha_h1, beta_h1).
+
+# 这段注释可以删掉了，因为我们现在不使用 KL divergence 来调整后验概率了。
+# `kl_div` is the KL divergence of the observed VAF distribution from the background noise distribution, 
+# which serves as an additional piece of evidence to distinguish true mutations from background errors. 
+# A higher KL divergence indicates that the observed VAF distribution is more different from the expected 
+# background noise distribution, which can increase the likelihood of H1 (true mutation) being the correct 
+# model. The `kl_weight` parameter allows us to adjust how much influence this KL divergence evidence has on 
+# the final posterior probability calculation. By incorporating KL divergence into the Bayesian filter, we 
+# can leverage the information about how well the observed data fits the expected background noise model to 
+# make more informed decisions about whether a variant is likely to be a true mutation or just a result of 
+# sequencing errors.
     
     Args:
-    - A: int, observed alternate allele count
-    - D: int, total depth
-    - p_error: float, background error rate
-    - q_alpha: float, alpha parameter for background Beta distribution under H0
-    - q_beta: float, beta parameter for background Beta distribution under H0
-    - alpha_h1: float, alpha parameter for Beta distribution under H1
-    - beta_h1: float, beta parameter for Beta distribution under H1
-    
-    # - kl_weight: float, weight for KL divergence evidence, used to adjust 
-    #              the influence of KL divergence in the posterior probability 
-    #              calculation. A higher kl_weight will give more influence to 
-    #              the KL divergence evidence in distinguishing true mutations 
-    #              from background errors, while a lower kl_weight will reduce 
-    #              its influence.
-    # - kl_div: float, KL divergence of observed VAF distribution from background noise distribution
-    
-    - pi: float, prior probability of mutation (H1)
+        A: int, observed alternate allele count
+        D: int, total depth
+        srf: float, strand ratio factor
+        hq: float, allele quality
+        hq_threshold: float, HQ threshold
+        q_alpha: float, alpha parameter for background Beta distribution under H0
+        q_beta: float, beta parameter for background Beta distribution under H0
+        alpha_h1: float, alpha parameter for true-mutation Beta distribution under H1
+        beta_h1: float, beta parameter for true-mutation Beta distribution under H1
+        pi: float, prior probability of mutation (H1)
     
     """
-    if A is None or D is None or p_error is None:
+    if A is None or D is None:
         return 0.0
 
     try:
@@ -1024,10 +1006,14 @@ def bayesian_filter(
     else:
         posterior_h1 = 1.0 if log_posterior_odds > 0 else 0.0
 
-    sys.stderr.write(f">> Bayesian filter: A={A}, D={D}, srf={srf:.6f}, hq={hq}, alpha_h1={alpha_h1:.6f}, "
-                     f"beta_h1={beta_h1:.6f}, p_error={p_error:.6f}, pi={pi:.6f}, log_prior_odds={log_prior_odds:.6f}, "
-                     f"log_fused_penalty={log_fused_penalty:.6f}, log_posterior_odds={log_posterior_odds:.6f}, "
-                     f"posterior_h1={posterior_h1:.6f}\n")
+    sys.stderr.write(
+        f">> Bayesian filter: A={A}, D={D}, srf={srf:.6f}, hq={hq}, "
+        f"q_alpha={q_alpha:.6f}, q_beta={q_beta:.6f}, "
+        f"alpha_h1={alpha_h1:.6f}, beta_h1={beta_h1:.6f}, "
+        f"pi={pi:.6f}, log_prior_odds={log_prior_odds:.6f}, "
+        f"log_posterior_odds={log_posterior_odds:.6f}, "
+        f"posterior_h1={posterior_h1:.6f}\n"
+    )
     
     return float(np.clip(posterior_h1, 0.0, 1.0))
 
