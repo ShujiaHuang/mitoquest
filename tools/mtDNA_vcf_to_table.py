@@ -159,24 +159,27 @@ class VCFProcessor:
             gts = sample.get('GT')
             vaf_values = sample.get('AF')
             for (gt, vaf) in zip(gts, vaf_values):
-                # if (gt is None) or (gt == 0): 
-                #     continue  # Skip reference alleles and missing genotypes
-                if gt is None: 
-                    continue  # Skip missing genotypes only
-                
-                alt_seq  = alts[gt - 1]
-                if gt == 0:
+                if gt is None:
+                    var_type = "MISSING"
+                    new_ref = ref
+                    alt_seq = '.'
+                elif gt == 0:
                     var_type = "REF"
-                elif len(ref) == len(alt_seq):
-                    var_type = "SNV"
-                elif len(ref) > len(alt_seq):
-                    var_type = "DEL"
-                elif len(ref) < len(alt_seq):
-                    var_type = "INS"
+                    new_ref = ref
+                    alt_seq = ref
                 else:
-                    var_type = "UNK"
-                
-                new_ref, alt_seq = self.remove_common_suffix(ref, alt_seq)
+                    alt_seq  = alts[gt - 1]
+                    if len(ref) == len(alt_seq):
+                        var_type = "SNV"
+                    elif len(ref) > len(alt_seq):
+                        var_type = "DEL"
+                    elif len(ref) < len(alt_seq):
+                        var_type = "INS"
+                    else:
+                        var_type = "UNK"
+                        
+                    new_ref, alt_seq = self.remove_common_suffix(ref, alt_seq)
+                    
                 yield VariantRecord(
                     sample_id=sample_id,
                     chrom=chrom,
