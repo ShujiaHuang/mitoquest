@@ -921,7 +921,7 @@ def bayesian_filter(
     
     # HQ高于阈值，免除惩罚；低于阈值，增加惩罚.
     penalty_hq = 1.0 / (1.0 + np.exp(-hq_k * (hq - hq_threshold))) if hq < hq_threshold else 1.0  
-    log_fused_penalty = np.log(penalty_srf * penalty_hq + 1e-12)
+    log_penalty = np.log(penalty_srf * penalty_hq + 1e-12)
 
     # Log-likelihood under H0
     # The log_L0 is calculated using the binomial distribution PMF, which directly models the probability 
@@ -973,7 +973,7 @@ def bayesian_filter(
     # Incorporate the fused penalty into the H1 to further penalize low-quality evidence 
     # for mutations, which helps to reduce false positives by down-weighting the posterior 
     # odds in favor of H1 when quality metrics are poor.
-    log_L1 += log_fused_penalty
+    log_L1 += log_penalty
     
     # 因为我现在 H0 和 H1 都是用 Beta-Binomial 来建模了，所以 KL divergence 的计算方式也需要改成基于
     # Beta-Binomial 的 KL divergence，之前那个基于 Beta 分布的 KL divergence 已经不再适用了。
