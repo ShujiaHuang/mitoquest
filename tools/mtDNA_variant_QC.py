@@ -315,11 +315,11 @@ def collect_samples_info(variant, samples):
         hf   = list(variant['samples'][sample].get('AF'))
         
         if any(g is None for g in gt) if gt else True:
-            sys.stderr.write(f"[INFO] GT is missing for sample {sample} at {variant['chrom']}:{variant['pos']}. "
+            sys.stderr.write(f"[WARNING] GT is missing for sample {sample} at {variant['chrom']}:{variant['pos']}. "
                              f"Setting GT to empty list.\n")
             gt = []
         if any(h is None for h in hf) if hf else True:
-            sys.stderr.write(f"[INFO] AF is missing for sample {sample} at {variant['chrom']}:{variant['pos']}. "
+            sys.stderr.write(f"[WARNING] AF is missing for sample {sample} at {variant['chrom']}:{variant['pos']}. "
                              f"Setting AF to empty list.\n")
             hf = []
 
@@ -409,20 +409,6 @@ def estimate_background_noise(background_error_rates, bins=100):
     a, b, loc, scale = beta.fit(vaf_arr, floc=0, fscale=1)
 
     return a, b, bin_edges  # return alpha and beta parameters for Beta distribution
-
-
-# def estimate_beta_params_mle(vaf_list):
-#     """Fit Beta distribution parameters using Maximum Likelihood Estimation (MLE)."""
-#     # Remove None and extreme values to avoid fitting errors
-#     vaf_arr = np.array([v for v in vaf_list if v is not None and 0 < v < 1])
-#     if len(vaf_arr) < 2:
-#         return 1, 1  # Return default if not enough data
-        
-#     # The value of vaf_arr must be in the range (0, 1) for beta.fit, so we set the `floc=0` 
-#     # and `fscale=1` respectively to ensure the fitting is done within the valid range of 
-#     # the Beta distribution. 
-#     a, b, loc, scale = beta.fit(vaf_arr, floc=0, fscale=1)
-#     return a, b
 
 
 def ff(samples_info, p_error, args, ep17_alpha=0.01):
@@ -596,9 +582,11 @@ def qc(input_vcf_path, output_vcf_path, args):
         # from the parameters of the true mutation distribution (Beta) in the Bayesian filter, which will be 
         # updated iteratively later.
         q_alpha, q_beta, bin_edges = estimate_background_noise(background_error_rates)
-        sys.stderr.write(f"Processing variant at {variant['chrom']}:{variant['pos']} background "
-                         f"error rate: {p_error} - Parameters of Beta Distribution for background "
-                         f"noise of this position: alpha={q_alpha:.6f} beta={q_beta:.6f}\n")
+        sys.stderr.write(
+            f"Processing variant at {variant['chrom']}:{variant['pos']} background error "
+            f"rate: {p_error} - Parameters of Beta Distribution for background noise of "
+            f"this position: alpha={q_alpha:.6f} beta={q_beta:.6f}\n"
+        )
         
         # The prefix "h1_" is used to denote the parameters of the true mutation distribution (Beta) in the Bayesian filter,
         # which will be updated iteratively later based on the observed data and the current mutation calls. 
@@ -607,6 +595,7 @@ def qc(input_vcf_path, output_vcf_path, args):
         # h1_alpha, h1_beta = estimate_true_mutation_params_betabinom(samples_info, p_error, args)
         # sys.stderr.write(f"Estimated Beta distribution parameters for true mutations at "
         #                  f"{variant['chrom']}:{variant['pos']} : alpha={h1_alpha} beta={h1_beta}\n")
+        
         vaf, k, n = ff(samples_info, p_error, args)
         vafs.extend(vaf)
         k_obs.extend(k)
@@ -625,7 +614,7 @@ def qc(input_vcf_path, output_vcf_path, args):
             srf = sample['SRF']
             
             # Calculate KL divergence for each sample for each ALT
-            kl_div_singles = []
+            # kl_div_singles = []
             
             # Pre-filtering based on DP and AQ thresholds
             is_pre_filtered = False
@@ -639,8 +628,8 @@ def qc(input_vcf_path, output_vcf_path, args):
                   or any(h is None for h in hqs)
                   ):
                 sys.stderr.write(
-                    f"[WARNING] Missing DP, AF, AD or HQ for sample {sample_name} at "
-                    f"{variant['chrom']}:{variant['pos']}. Skipping.\n"
+                    f"[WARNING] Missing DP, AF, AD or HQ for sample {sample_name} "
+                    f"at {variant['chrom']}:{variant['pos']}. Skipping.\n"
                 )
                 is_pre_filtered = True
             else :
@@ -650,13 +639,13 @@ def qc(input_vcf_path, output_vcf_path, args):
                 # to compute the posterior probability of true mutation.
                 for v_obs, a_obs, hq in zip(vaf, ads, hqs):
                     if (v_obs is None) or (a_obs is None):
-                        sys.stderr.write(f"[WARNING] Missing VAF or AD for sample {sample_name} at "
-                                         f"{variant['chrom']}:{variant['pos']}. Skipping.\n")
+                        sys.stderr.write(f"[WARNING] Missing VAF or AD for sample {sample_name} "
+                                         f"at {variant['chrom']}:{variant['pos']}. Skipping.\n")
                         break
                     
                     all_available_vaf_obs.append(v_obs)
-                    kl_div = calculate_kl_divergence_single(v_obs, q_alpha, q_beta)
-                    kl_div_singles.append(kl_div)
+                    # kl_div = calculate_kl_divergence_single(v_obs, q_alpha, q_beta)
+                    # kl_div_singles.append(kl_div)
 
             results.append({
                 'sample': sample_name,
@@ -675,28 +664,33 @@ def qc(input_vcf_path, output_vcf_path, args):
                 'A': ads,
                 'D': dp,
                 'srf': srf,
-                'p_error': p_error,
                 
-                'kl_divergence_single': kl_div_singles,
+                'q_alpha': q_alpha,  # Store the background noise distribution parameters for this position, which will be used in the Bayesian filter to compute the posterior probability of true mutation for each sample at this position. These parameters will be updated iteratively later based on the observed data and the current mutation calls.
+                'q_beta': q_beta,    # Store the background noise distribution parameters for this position, which will be used in the Bayesian filter to compute the posterior probability of true mutation for each sample at this position. These parameters will be updated iteratively later based on the observed data and the current mutation calls.
+                'p_error': p_error,
+
+                # 'kl_divergence_single': kl_div_singles,
                 'posterior': 0.0,      # update pp in each iteration of the iterative_beta_fit_and_call function, which will be used to update mutation calls and re-estimate the true mutation distribution parameters until convergence.
                 'is_mutation': False,  # Initial mutation call based on threshold, updated iteratively later in the iterative_beta_fit_and_call function. This is to avoid making hard mutation calls before we have a stable estimate of the true mutation distribution parameters.
-                                       # 'is_mutation': pp > args.threshold,  # Initial mutation call based on threshold
+                
                 'pre_filtered': is_pre_filtered
             })
         
         # Calculate multi-sample KL divergence for the position
         kl_div_multi = calculate_kl_divergence_multi(all_available_vaf_obs, q_alpha, q_beta, bin_edges)
-        pos_kl_div[(variant['chrom'], variant['pos'])] = kl_div_multi if np.isfinite(kl_div_multi) else 10000
+        pos_kl_div[(variant['chrom'], variant['pos'])] = kl_div_multi if np.isfinite(kl_div_multi) else 1000
 
     # Iteratively estimate beta distribution parameters from called mutations and update mutation calls until convergence. 
     # For multi-allelic sites, treat each ALT as an independent event and use the product of posteriors as the final posterior for the site.
     results, alpha_hist, beta_hist, diff_hist = iterative_beta_fit_and_call(
         results, np.array(vafs), np.array(k_obs), np.array(n_obs),
         hq_threshold=args.HQ_threshold,
-        kl_weight=args.lambda_kl, 
+        # kl_weight=args.lambda_kl, 
         pi=args.pi, 
         threshold=args.threshold
     )
+    sys.stderr.write(f"\nTotal variants processed: {len(results)}, Global Beta distribution for "
+                     f"true variants: alpha={alpha_hist[-1]:.6f} beta={beta_hist[-1]:.6f}\n")
     
     sample_variant_count = {
         'all': [0 for _ in samples], 
@@ -717,13 +711,11 @@ def qc(input_vcf_path, output_vcf_path, args):
         else:
             vaf_false_list.extend([v for v in r['vaf'] if v is not None and 0 < v < 1])
 
-        r['kl_divergence_single'] = np.mean(r['kl_divergence_single']) if r['kl_divergence_single'] else 0
+        # r['kl_divergence_single'] = np.mean(r['kl_divergence_single']) if r['kl_divergence_single'] else 0
         r.pop('vaf', None)  # Remove VAF from final results
         r.pop('A', None)    # Remove A from final results
         r.pop('D', None)    # Remove D from final results
-
-    print(f"\nTotal variants processed: {len(results)}, Global Beta distribution for true variants: "
-          f"alpha={alpha_hist[-1]:.6f}, beta={beta_hist[-1]:.6f}\n")
+          
     write_vcf(input_vcf_path, output_vcf_path, results, pos_kl_div)
     return results, sample_variant_count, vaf_true_list, vaf_false_list, alpha_hist, beta_hist, diff_hist
 
@@ -731,7 +723,7 @@ def qc(input_vcf_path, output_vcf_path, args):
 def iterative_beta_fit_and_call(
     results, vafs, k_obs, n_obs,
     hq_threshold=20,
-    kl_weight=0.1,
+    # kl_weight=0.1,  # 这个参数没有用了，因为我们现在不使用 KL divergence 来调整后验概率了，而是直接使用原始的后验概率来更新 mutation calls 和 re-estimate Beta 分布参数.
     pi=5e-8 * 16569,
     threshold=0.9,
     max_iter=50,
@@ -784,25 +776,34 @@ def iterative_beta_fit_and_call(
             if r['pre_filtered']:
                 continue  # Skip pre-filtered samples
             
-            sys.stderr.write(f">> Updating sample {r['sample']} at {r['chrom']}:{r['pos']} with new Beta parameters: "
-                             f"alpha={alpha_h1:.4f}, beta={beta_h1:.4f}, KL divergence={r['kl_divergence_single']}, "
-                             f"pre-loop posterior={r['posterior']} is_mutation(raw)={r['is_mutation']}\n")
+            # sys.stderr.write(f">> Updating sample {r['sample']} at {r['chrom']}:{r['pos']} with new Beta parameters: "
+            #                  f"alpha={alpha_h1:.4f}, beta={beta_h1:.4f}, pre-loop posterior={r['posterior']} "
+            #                  f"is_mutation(raw)={r['is_mutation']}\n")
             
             # For multi-allelic sites, calculate posterior for each ALT and take the product
             new_pps = []
-            for a_obs, kl_div, srf, hq in zip(r['A'], r['kl_divergence_single'], r['srf'], r['HQ']):
+            # for a_obs, kl_div, srf, hq in zip(r['A'], r['kl_divergence_single'], r['srf'], r['HQ']):
+            for a_obs, srf, hq in zip(r['A'], r['srf'], r['HQ']):
                 new_pp = bayesian_filter(
                     A=a_obs,
                     D=r['D'],
                     srf=srf,
                     hq=hq,
                     hq_threshold=hq_threshold,
+                    
                     p_error=r['p_error'],
+                    q_alpha=r['q_alpha'],
+                    q_beta=r['q_beta'],
+                    
                     alpha_h1=alpha_h1,  # Use updated Beta parameters
                     beta_h1=beta_h1,    # Use updated Beta parameters
-                    kl_weight=kl_weight,
-                    kl_div=kl_div,
-                    pi=pi,
+                    # kl_weight=kl_weight, 
+                    # kl_div=kl_div,
+                    
+                    # Use the same prior probability for true mutation as before, 
+                    # which can be adjusted based on the expected mutation rate and 
+                    # the size of the genomic region being analyzed.
+                    pi=pi
                 )
                 new_pps.append(new_pp)
                 
@@ -858,11 +859,19 @@ def bayesian_filter(
     srf,
     hq,
     hq_threshold,
+    
     p_error,
+    q_alpha,  # 背景噪音Beta分布的alpha参数
+    q_beta,   # 背景噪音Beta分布的beta参数
+    
     alpha_h1=1.0,
     beta_h1=1.0,
-    kl_weight=0.1,  # KL证据的权重，用于调整KL证据在计算后验概率时的影响力。较高的kl_weight会使KL证据在区分真实突变和背景错误时更有影响力，而较低的kl_weight则会减少KL证据的影响。
-    kl_div=None,
+    
+    # kl_weight=0.1,  # KL证据的权重，用于调整KL证据在计算后验概率时的影响力。
+    #                 # 较高的kl_weight会使KL证据在区分真实突变和背景错误时
+    #                 # 更有影响力，而较低的kl_weight则会减少KL证据的影响。
+    # kl_div=None,
+    
     pi=5e-8 * 16569
 ):
     """Compute posterior probability for H1 (true mutation) vs H0 (background error).
@@ -885,19 +894,22 @@ def bayesian_filter(
     - A: int, observed alternate allele count
     - D: int, total depth
     - p_error: float, background error rate
+    - q_alpha: float, alpha parameter for background Beta distribution under H0
+    - q_beta: float, beta parameter for background Beta distribution under H0
     - alpha_h1: float, alpha parameter for Beta distribution under H1
     - beta_h1: float, beta parameter for Beta distribution under H1
-    - kl_weight: float, weight for KL divergence evidence, used to adjust 
-                 the influence of KL divergence in the posterior probability 
-                 calculation. A higher kl_weight will give more influence to 
-                 the KL divergence evidence in distinguishing true mutations 
-                 from background errors, while a lower kl_weight will reduce 
-                 its influence.
-    - kl_div: float, KL divergence of observed VAF distribution from background noise distribution
+    
+    # - kl_weight: float, weight for KL divergence evidence, used to adjust 
+    #              the influence of KL divergence in the posterior probability 
+    #              calculation. A higher kl_weight will give more influence to 
+    #              the KL divergence evidence in distinguishing true mutations 
+    #              from background errors, while a lower kl_weight will reduce 
+    #              its influence.
+    # - kl_div: float, KL divergence of observed VAF distribution from background noise distribution
+    
     - pi: float, prior probability of mutation (H1)
     
     """
-    # srf_threshold=0.1; srf_k=20; hq_threshold=20.0; hq_k=0.5
     if A is None or D is None or p_error is None:
         return 0.0
 
@@ -910,25 +922,16 @@ def bayesian_filter(
     if D <= 0 or A < 0 or A > D:
         return 0.0
 
+    srf_threshold=0.1; srf_k=20; hq_k=0.5
+
     # Sigmoid penalty functions for SRF and HQ to smoothly penalize low-quality evidence for mutations, 
     # which helps to reduce false positives by down-weighting the likelihood of H1 when quality metrics 
     # are poor.
-    penalty_srf = 1.0 / (1.0 + np.exp(-20 * (srf - 0.1)))  # Sigmoid penalty for SRF
+    penalty_srf = 1.0 / (1.0 + np.exp(-srf_k * (srf - srf_threshold)))
     
-    # 高于阈值，免除惩罚；低于阈值，逐渐增加惩罚，最大惩罚接近0.5（当srf=0时）。
-    # 这个函数的形状可以根据实际数据进行调整，以更好地反映SRF对突变真实性的影响。
-    penalty_hq = 1.0 / (1.0 + np.exp(-0.5 * (hq - hq_threshold))) if hq < hq_threshold else 1.0
-    log_fused_penalty = np.log(penalty_srf * penalty_hq + 1e-12)  # Logarithmic fusion of penalties to prevent underflow
-
-    p_error = np.clip(p_error, 1e-12, 1.0 - 1e-12)
-    pi = np.clip(pi, 1e-12, 1.0 - 1e-12)
-
-    if kl_div is None or np.isnan(kl_div):
-        kl_div = 0.0
-    elif np.isposinf(kl_div):
-        kl_div = 1000.0
-    elif np.isneginf(kl_div):
-        kl_div = 0.0
+    # HQ高于阈值，免除惩罚；低于阈值，增加惩罚.
+    penalty_hq = 1.0 / (1.0 + np.exp(-hq_k * (hq - hq_threshold))) if hq < hq_threshold else 1.0  
+    log_fused_penalty = np.log(penalty_srf * penalty_hq + 1e-12)
 
     # Log-likelihood under H0
     # The log_L0 is calculated using the binomial distribution PMF, which directly models the probability 
@@ -941,7 +944,26 @@ def bayesian_filter(
     # log_L0 = log(P(X=A | D, p_error)) 
     #        = log(binom.pmf(A, D, p_error)) 
     #        = log(D choose A) + A*log(p_error) + (D - A)*log(1 - p_error)
-    log_L0 = binom.logpmf(A, D, p_error)  
+    
+    # 这是按照之前的版本计算的log_L0，在H0下直接建模了一个binomial分布来描述背景错误率。
+    # 后面我要改成 beta-binomial 来更好地建模背景噪音分布，所以这个版本的log_L0就不再适用了。
+    # p_error = np.clip(p_error, 1e-12, 1.0 - 1e-12)
+    # log_L0 = binom.logpmf(A, D, p_error)
+
+    # Log-likelihood under H0 (now using Beta-Binomial with background Beta parameters)
+    # The log_L0 is calculated using the Beta-Binomial distribution PMF, which models the probability of 
+    # observing A successes in D trials given a success probability that follows a Beta distribution with 
+    # parameters q_alpha and q_beta. This is appropriate for H0 because we are modeling the background noise 
+    # distribution as a Beta-Binomial, which accounts for overdispersion in the data that can arise from 
+    # biological variability and technical noise. The math formula for log_L0 using the Beta-Binomial PMF is:
+    # log_L0 = log(P(X=A | D, q_alpha, q_beta)) 
+    #        = log(betabinom.pmf(A, D, q_alpha, q_beta)) 
+    #        = log(Gamma(D+1)) - log(Gamma(A+1)) - log(Gamma(D-A+1)) + 
+    #          log(Beta(A + q_alpha, D - A + q_beta)) - log(Beta(q_alpha, q_beta))
+    
+    # log_L0 = betabinom.logpmf(A, D, q_alpha, q_beta)  # 这是完整调用，但我不需要完整调用，因为我只需要后面两项来计算对数似然比，前面那三项在计算对数似然比时会相互抵消掉。
+    # without the constant term log(Gamma(D+1)) - log(Gamma(A+1)) - log(Gamma(D-A+1)) which will cancel out in the posterior odds ratio anyway.
+    log_L0 = betaln(A + q_alpha, D - A + q_beta) - betaln(q_alpha, q_beta)  
     
     # Log-likelihood under H1
     # The log_L1 is calculated using the Beta-Binomial distribution PMF, which models the probability of 
@@ -953,27 +975,39 @@ def bayesian_filter(
     #        = log(betabinom.pmf(A, D, alpha_h1, beta_h1)) 
     #        = log(Gamma(D+1)) - log(Gamma(A+1)) - log(Gamma(D-A+1)) + 
     #          log(Beta(A + alpha_h1, D - A + beta_h1)) - log(Beta(alpha_h1, beta_h1))
-    log_L1 = betabinom.logpmf(A, D, alpha_h1, beta_h1) 
+    
+    # log_L1 = betabinom.logpmf(A, D, alpha_h1, beta_h1)  # 这是完整调用，但我不需要完整调用，因为我只需要后面两项来计算对数似然比，前面那三项在计算对数似然比时会相互抵消掉。
+    # without the constant term log(Gamma(D+1)) - log(Gamma(A+1)) - log(Gamma(D-A+1)) which will cancel out in the posterior odds ratio anyway.
+    log_L1 = betaln(A + alpha_h1, D - A + beta_h1) - betaln(alpha_h1, beta_h1)  
     
     # Incorporate the fused penalty into the H1 to further penalize low-quality evidence 
     # for mutations, which helps to reduce false positives by down-weighting the posterior 
     # odds in favor of H1 when quality metrics are poor.
-    log_L1 += log_fused_penalty 
-     
-    # Incorporate the KL divergence into the H1 to further penalize low-quality evidence 
-    # for mutations, which helps to reduce false positives by down-weighting the posterior 
-    # odds in favor of H1 when quality metrics are poor.
-    log_L1 += kl_weight * kl_div
+    log_L1 += log_fused_penalty
+    
+    # 因为我现在 H0 和 H1 都是用 Beta-Binomial 来建模了，所以 KL divergence 的计算方式也需要改成基于
+    # Beta-Binomial 的 KL divergence，之前那个基于 Beta 分布的 KL divergence 已经不再适用了。
+    ## Incorporate the KL divergence into the H1 to further penalize low-quality evidence 
+    ## for mutations, which helps to reduce false positives by down-weighting the posterior 
+    ## odds in favor of H1 when quality metrics are poor.
+    # if kl_div is None or np.isnan(kl_div):
+    #     kl_div = 0.0
+    # elif np.isposinf(kl_div):
+    #     kl_div = 1000.0
+    # elif np.isneginf(kl_div):
+    #     kl_div = 0.0
+    # log_L1 += kl_weight * kl_div
     
     # Log prior odds of H1 vs H0, calculated from the prior probability pi of mutation (H1). 
     # The log prior odds is the logarithm of the ratio of the prior probabilities of H1 and H0, 
     # which is log(pi / (1 - pi)). This term represents our prior belief about how likely a true 
     # mutation is compared to a background error before observing the data. A higher pi will 
     # increase the log prior odds in favor of H1, while a lower pi will decrease it. 
+    pi = np.clip(pi, 1e-12, 1.0 - 1e-12)
     log_prior_odds = np.log(pi) - np.log1p(-pi)
 
     # Log-posterior odds
-    log_posterior_odds = log_L1 - log_L0 + log_prior_odds  
+    log_posterior_odds = log_prior_odds + log_L1 - log_L0
 
     # Posterior probability: 该样本/该等位基因在当前深度和背景错误率下，属于真实突变（H1）的概率
     if np.isfinite(log_posterior_odds):
@@ -981,11 +1015,10 @@ def bayesian_filter(
     else:
         posterior_h1 = 1.0 if log_posterior_odds > 0 else 0.0
 
-    sys.stderr.write(f">> Bayesian filter: A={A}, D={D}, srf={srf:.6f}, hq={hq}, kl_weight={kl_weight}, "
-                     f"kl_div={kl_div:.6f}, alpha_h1={alpha_h1:.6f}, beta_h1={beta_h1:.6f}, p_error={p_error:.6f}, "
-                     f"pi={pi:.6f}, log_L0={log_L0:.6f}, log_L1={log_L1:.6f}, log_prior_odds={log_prior_odds:.6f}, "
-                     f"log_fused_penalty={log_fused_penalty:.6f}, log_posterior_odds={log_posterior_odds:.6f}, "
-                     f"posterior_h1={posterior_h1:.6f}\n")
+    sys.stderr.write(f">> Bayesian filter: A={A}, D={D}, srf={srf:.6f}, hq={hq}, alpha_h1={alpha_h1:.6f}, "
+                     f"beta_h1={beta_h1:.6f}, p_error={p_error:.6f}, pi={pi:.6f}, log_L0={log_L0:.6f}, "
+                     f"log_L1={log_L1:.6f}, log_prior_odds={log_prior_odds:.6f}, log_fused_penalty={log_fused_penalty:.6f}, "
+                     f"log_posterior_odds={log_posterior_odds:.6f}, posterior_h1={posterior_h1:.6f}\n")
     
     return float(np.clip(posterior_h1, 0.0, 1.0))
 
