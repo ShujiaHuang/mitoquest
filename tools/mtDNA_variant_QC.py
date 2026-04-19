@@ -294,7 +294,7 @@ def write_vcf(input_vcf_path, output_vcf_path, results, pos_kl_div):
                 else:
                     record.filter.add('LOW_QUALITY')
                 
-                record.qual = pos_kl_div.get(chrom_pos, 0)
+                record.qual = round(pos_kl_div.get(chrom_pos, 0))
                 vcf_out.write(record)
         
         # If output VCF is compressed, index it
@@ -685,7 +685,7 @@ def qc(input_vcf_path, output_vcf_path, args):
     results, alpha_hist, beta_hist, diff_hist = iterative_beta_fit_and_call(
         results, np.array(vafs), np.array(k_obs), np.array(n_obs),
         hq_threshold=args.HQ_threshold,
-        # kl_weight=args.lambda_kl, 
+        # kl_weight=args.lambda_kl,
         pi=args.pi, 
         threshold=args.threshold
     )
@@ -723,7 +723,7 @@ def qc(input_vcf_path, output_vcf_path, args):
 def iterative_beta_fit_and_call(
     results, vafs, k_obs, n_obs,
     hq_threshold=20,
-    # kl_weight=0.1,  # 这个参数没有用了，因为我们现在不使用 KL divergence 来调整后验概率了，而是直接使用原始的后验概率来更新 mutation calls 和 re-estimate Beta 分布参数.
+    # kl_weight=0.1,  # 这个参数没有用了，因为我们现在不使用 KL divergence 来调整后验概率了
     pi=5e-8 * 16569,
     threshold=0.9,
     max_iter=50,
@@ -782,6 +782,7 @@ def iterative_beta_fit_and_call(
             
             # For multi-allelic sites, calculate posterior for each ALT and take the product
             new_pps = []
+            r['new_gt'] = r['gt']  # Initialize new GT to original GT, will update based on new mutation calls if needed
             # for a_obs, kl_div, srf, hq in zip(r['A'], r['kl_divergence_single'], r['srf'], r['HQ']):
             for a_obs, srf, hq in zip(r['A'], r['srf'], r['HQ']):
                 new_pp = bayesian_filter(
@@ -806,9 +807,12 @@ def iterative_beta_fit_and_call(
                     pi=pi
                 )
                 new_pps.append(new_pp)
-                
-            r['posterior'] = np.prod(new_pps)  # Update posterior as product of individual posteriors
+
+            # r['posterior'] = np.prod(new_pps)  # For multi-allelic sites, take the product of posteriors for all ALTs as the final posterior for the site. This is a simple way to combine evidence from multiple ALTs, but it assumes that the evidence from each ALT is independent, which may not always be the case. More sophisticated methods could be used to combine evidence from multiple ALTs if needed.
+            # r['posterior'] = np.mean(new_pps) if new_pps else 0  # For multi-allelic sites, take the average posterior across all ALTs as the final posterior for the site. This is a more balanced approach than taking the product, as it assumes that the evidence from each ALT contributes equally to the mutation call without assuming independence or dominance.
+            r['posterior'] = np.max(new_pps) if new_pps else 0  # For multi-allelic sites, take the maximum posterior across all ALTs as the final posterior for the site. This is a more conservative approach than taking the product, as it assumes that the evidence from each ALT is not independent and that the strongest evidence should dominate the mutation call.
             r['is_mutation'] = r['posterior'] > threshold  # Update mutation call based on new posterior
+            r['new_gt'] = [g if (pp > threshold and g is not None) else None for pp, g in zip(new_pps, r['gt'])]  # Update GT to only include alleles that are called as mutations based on the new posterior (optional, can keep original GT for reference)
             # r['gt'] = r['gt'] if r['is_mutation'] else [None]  # Update GT to None if not called as mutation (optional, can keep original GT for reference)
             
         # 4. Check for convergence
@@ -820,6 +824,11 @@ def iterative_beta_fit_and_call(
                 break
             
         prev_is_mut = curr_is_mut.copy()
+
+    # After convergence, update the final GT calls based on 
+    for r in results:
+        r['gt'] = r['new_gt']  # Update GT to the new GT based on final mutation calls
+        r.pop('new_gt', None)  # Remove the temporary 'new_gt' field from the final results to clean up the output.
 
     return results, alpha_hist, beta_hist, diff_hist
 
@@ -1016,9 +1025,9 @@ def bayesian_filter(
         posterior_h1 = 1.0 if log_posterior_odds > 0 else 0.0
 
     sys.stderr.write(f">> Bayesian filter: A={A}, D={D}, srf={srf:.6f}, hq={hq}, alpha_h1={alpha_h1:.6f}, "
-                     f"beta_h1={beta_h1:.6f}, p_error={p_error:.6f}, pi={pi:.6f}, log_L0={log_L0:.6f}, "
-                     f"log_L1={log_L1:.6f}, log_prior_odds={log_prior_odds:.6f}, log_fused_penalty={log_fused_penalty:.6f}, "
-                     f"log_posterior_odds={log_posterior_odds:.6f}, posterior_h1={posterior_h1:.6f}\n")
+                     f"beta_h1={beta_h1:.6f}, p_error={p_error:.6f}, pi={pi:.6f}, log_prior_odds={log_prior_odds:.6f}, "
+                     f"log_fused_penalty={log_fused_penalty:.6f}, log_posterior_odds={log_posterior_odds:.6f}, "
+                     f"posterior_h1={posterior_h1:.6f}\n")
     
     return float(np.clip(posterior_h1, 0.0, 1.0))
 
