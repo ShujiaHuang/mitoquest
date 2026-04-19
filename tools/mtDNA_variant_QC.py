@@ -669,7 +669,6 @@ def qc(input_vcf_path, output_vcf_path, args):
                 'q_beta': q_beta,    # Store the background noise distribution parameters for this position, which will be used in the Bayesian filter to compute the posterior probability of true mutation for each sample at this position. These parameters will be updated iteratively later based on the observed data and the current mutation calls.
                 'p_error': p_error,
 
-                # 'kl_divergence_single': kl_div_singles,
                 'posterior': 0.0,      # update pp in each iteration of the iterative_beta_fit_and_call function, which will be used to update mutation calls and re-estimate the true mutation distribution parameters until convergence.
                 'is_mutation': False,  # Initial mutation call based on threshold, updated iteratively later in the iterative_beta_fit_and_call function. This is to avoid making hard mutation calls before we have a stable estimate of the true mutation distribution parameters.
                 
@@ -684,9 +683,7 @@ def qc(input_vcf_path, output_vcf_path, args):
     # For multi-allelic sites, treat each ALT as an independent event and use the product of posteriors as the final posterior for the site.
     results, alpha_hist, beta_hist, diff_hist = iterative_beta_fit_and_call(
         results, np.array(vafs), np.array(k_obs), np.array(n_obs),
-        hq_threshold=args.HQ_threshold,
-        # kl_weight=args.lambda_kl,
-        pi=args.pi, 
+        hq_threshold=args.HQ_threshold, pi=args.pi, 
         threshold=args.threshold
     )
     sys.stderr.write(f"\nTotal variants processed: {len(results)}, Global Beta distribution for "
@@ -752,11 +749,11 @@ def iterative_beta_fit_and_call(
             h_indices_sampled = np.random.choice(high_VAF_indices, size=sampling_num, replace=False)
             l_indices_sampled = np.random.choice(low_VAF_indices, size=sampling_num, replace=False)
             
-            vafs_sampled = list(vafs[h_indices_sampled]) + list(vafs[l_indices_sampled])
+            vafs_sampled  = list(vafs[h_indices_sampled]) + list(vafs[l_indices_sampled])
             k_obs_sampled = list(k_obs[h_indices_sampled]) + list(k_obs[l_indices_sampled])
             n_obs_sampled = list(n_obs[h_indices_sampled]) + list(n_obs[l_indices_sampled])
         else:
-            vafs_sampled = list(vafs)
+            vafs_sampled  = list(vafs)
             k_obs_sampled = list(k_obs)
             n_obs_sampled = list(n_obs)
 
@@ -793,7 +790,7 @@ def iterative_beta_fit_and_call(
                     alpha_h1=alpha_h1,  # Use updated Beta parameters
                     beta_h1=beta_h1,    # Use updated Beta parameters
                     
-                    # Use the same prior probability for true mutation as before, 
+                    # Use the same prior probability for true mutationas before, 
                     # which can be adjusted based on the expected mutation rate and 
                     # the size of the genomic region being analyzed.
                     pi=pi
@@ -912,16 +909,16 @@ def bayesian_filter(
     if D <= 0 or A < 0 or A > D:
         return 0.0
 
-    srf_threshold=0.1; srf_k=20; hq_k=0.5
+    hq_k=0.5
 
     # Sigmoid penalty functions for SRF and HQ to smoothly penalize low-quality evidence for mutations, 
     # which helps to reduce false positives by down-weighting the likelihood of H1 when quality metrics 
     # are poor.
-    penalty_srf = 1.0 / (1.0 + np.exp(-srf_k * (srf - srf_threshold)))
+    # penalty_srf = 1 - srf
     
     # HQ高于阈值，免除惩罚；低于阈值，增加惩罚.
-    penalty_hq = 1.0 / (1.0 + np.exp(-hq_k * (hq - hq_threshold))) if hq < hq_threshold else 1.0  
-    log_penalty = np.log(penalty_srf * penalty_hq + 1e-12)
+    penalty_hq = 1.0 / (1.0 + np.exp(hq_k * (hq_threshold - hq))) if hq < hq_threshold else 1.0
+    log_penalty = np.log(srf * penalty_hq + 1e-12)
 
     # Log-likelihood under H0
     # The log_L0 is calculated using the binomial distribution PMF, which directly models the probability 
@@ -1009,9 +1006,8 @@ def bayesian_filter(
         f">> Bayesian filter: A={A}, D={D}, srf={srf:.6f}, hq={hq}, "
         f"q_alpha={q_alpha:.6f}, q_beta={q_beta:.6f}, "
         f"alpha_h1={alpha_h1:.6f}, beta_h1={beta_h1:.6f}, "
-        f"pi={pi:.6f}, log_prior_odds={log_prior_odds:.6f}, "
-        f"log_posterior_odds={log_posterior_odds:.6f}, "
-        f"posterior_h1={posterior_h1:.6f}\n"
+        f"pi={pi:.6f}, log_prior_odds={log_prior_odds:.6f}, log_penalty={log_penalty:.6f}, "
+        f"log_posterior_odds={log_posterior_odds:.6f}, posterior_h1={posterior_h1:.6f}\n"
     )
     
     return float(np.clip(posterior_h1, 0.0, 1.0))
