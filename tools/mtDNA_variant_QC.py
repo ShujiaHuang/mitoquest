@@ -909,16 +909,16 @@ def bayesian_filter(
     if D <= 0 or A < 0 or A > D:
         return 0.0
 
-    hq_k=0.5
+    hq_k=10
 
     # Sigmoid penalty functions for SRF and HQ to smoothly penalize low-quality evidence for mutations, 
     # which helps to reduce false positives by down-weighting the likelihood of H1 when quality metrics 
     # are poor.
-    # penalty_srf = 1 - srf
+    penalty_srf = 1 - srf
     
     # HQ高于阈值，免除惩罚；低于阈值，增加惩罚.
     penalty_hq = 1.0 / (1.0 + np.exp(hq_k * (hq_threshold - hq))) if hq < hq_threshold else 1.0
-    log_penalty = np.log(srf * penalty_hq + 1e-12)
+    log_penalty = np.log(penalty_hq * penalty_srf + 1e-12)  # Add small value to avoid log(0)
 
     # Log-likelihood under H0
     # The log_L0 is calculated using the binomial distribution PMF, which directly models the probability 
@@ -1005,8 +1005,8 @@ def bayesian_filter(
     sys.stderr.write(
         f">> Bayesian filter: A={A}, D={D}, srf={srf:.6f}, hq={hq}, "
         f"q_alpha={q_alpha:.6f}, q_beta={q_beta:.6f}, "
-        f"alpha_h1={alpha_h1:.6f}, beta_h1={beta_h1:.6f}, "
-        f"pi={pi:.6f}, log_prior_odds={log_prior_odds:.6f}, log_penalty={log_penalty:.6f}, "
+        f"alpha_h1={alpha_h1:.6f}, beta_h1={beta_h1:.6f}, pi={pi:.6f}, "
+        f"log_prior_odds={log_prior_odds:.6f}, log_penalty={log_penalty:.6f}, "
         f"log_posterior_odds={log_posterior_odds:.6f}, posterior_h1={posterior_h1:.6f}\n"
     )
     
