@@ -161,6 +161,7 @@ class VCFProcessor:
             
             depth = self._extract_depth(sample)
             gts = sample.get('GT')
+            gts_non_missing = [gt for gt in gts if gt is not None] if gts is not None else []
             vaf_values = sample.get('AF')
             for (gt, vaf) in zip(gts, vaf_values):
                 if gt is None:
@@ -195,7 +196,7 @@ class VCFProcessor:
                     depth=depth,
                     genotype="/".join(map(str, gts)),
                     var_type=var_type,
-                    status="HET" if len(gts) > 1 else "HOM",
+                    status="HET" if len(gts_non_missing) > 1 else "HOM",
                 )
     
     @staticmethod
