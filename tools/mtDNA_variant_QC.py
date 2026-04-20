@@ -702,8 +702,13 @@ def qc(input_vcf_path, output_vcf_path, args):
             sample_variant_count['all'][sample_index[r['sample']]] += 1
             
         if r['is_mutation']:
-            vaf_true_list.extend([v for v in r['vaf'] if v is not None and 0 < v < 1])
-            if any(gt for gt in r['gt']):
+            for g, v in zip(r['gt'], r['vaf']):
+                if g is not None and g > 0 and v is not None and 0 < v < 1:
+                    vaf_true_list.append(v)
+                
+            # if any ALT allele is observed in the original GT, count this sample as having 
+            # a mutation at this position
+            if any(gt for gt in r['gt'] if gt is not None and gt > 0):  
                 sample_variant_count['mutations'][sample_index[r['sample']]] += 1
         else:
             vaf_false_list.extend([v for v in r['vaf'] if v is not None and 0 < v < 1])
@@ -744,6 +749,10 @@ def iterative_beta_fit_and_call(
                 low_VAF_indices.append(i)
             
     sampling_num = min(len(high_VAF_indices), len(low_VAF_indices))
+    # by_step = np.max(len(high_VAF_indices), len(low_VAF_indices)) // sampling_num if (
+    #     sampling_num > 0
+    # ) else 1
+    
     for i in range(max_iter):
         if sampling_num > 0:
             h_indices_sampled = np.random.choice(high_VAF_indices, size=sampling_num, replace=False)
@@ -860,8 +869,8 @@ def bayesian_filter(
     srf,
     hq,
     hq_threshold,
-    q_alpha=1.0,  # 背景噪音Beta分布的alpha参数
-    q_beta=1.0,   # 背景噪音Beta分布的beta参数
+    q_alpha=1.0,  
+    q_beta=1.0,  
     alpha_h1=1.0,
     beta_h1=1.0,
     pi=5e-8 * 16569
