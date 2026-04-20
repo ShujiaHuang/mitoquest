@@ -765,8 +765,8 @@ def iterative_beta_fit_and_call(
         # 2. Fit Beta distribution parameters using MLE
         alpha_h1, beta_h1 = estimate_params_betabinom(vafs_sampled, k_obs_sampled, n_obs_sampled)
         sys.stderr.write(f"- Iteration {i+1}: {len(vafs_sampled)} VAFs (first-5: {vafs_sampled[:5]}) "
-                         f"collected for Beta fitting. Estimated Beta distribution parameters for true "
-                         f"mutations: alpha={alpha_h1:.6f}, beta={beta_h1:.6f}\n")
+                         f"collected for Beta fitting. Estimated Beta distribution parameters for "
+                         f"true mutations: alpha={alpha_h1:.6f}, beta={beta_h1:.6f}\n")
 
         # Ensure alpha_h1 and beta_h1 are valid
         alpha_hist.append(alpha_h1)
