@@ -207,8 +207,8 @@ class VCFProcessor:
                 
                 # 如果这个样本不含有 missing GT, 则仅保留非 REF 的记录，跳过 REF 记录以避免冗余；
                 # 如果含有 missing GT，则保留所有记录（包括 REF），以便后续分析中可以区分 REF 和 
-                # missing GT。
-                if is_non_missing and gt == 0:
+                # missing GT。只对多倍体样本进行这个过滤，因为单倍体样本中不存在 heterozygous 的情况。
+                if (is_non_missing and gt == 0) and len(gts_non_missing) > 1:
                     continue 
                 
                 yield VariantRecord(
