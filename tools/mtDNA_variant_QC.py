@@ -8,7 +8,7 @@ Returns:
 
 Usage:
     python mtDNA_variant_QC.py --vcf input.vcf --output output.csv --output_vcf filtered_output.vcf
-    [--bins 100] [--lambda_kl 0.1] [--pi 5e-8] [--threshold 0.9] 
+    [--bins 100] [--pi 5e-8] [--threshold 0.9] 
     
 Author: Shujia Huang
 Date: 2025-07-10
@@ -411,6 +411,8 @@ def estimate_background_noise(background_error_rates, bins=100):
     return a, b, bin_edges  # return alpha and beta parameters for Beta distribution
 
 
+# Fetch the high-quality VAFs for samples that are likely to have true mutations 
+# (e.g., those with high VAFs and good quality metrics)
 def ff(samples_info, p_error, args, ep17_alpha=0.01):
     vafs  = []  # The observed VAFs for samples that are likely to have true mutations
     k_obs = []  # The read counts supporting the ALT allele(s) for samples that are likely to have true mutations
@@ -429,7 +431,6 @@ def ff(samples_info, p_error, args, ep17_alpha=0.01):
         if all(g == 0 for g in gt):
             continue
 
-        # Pre-filtering based on DP and HQ thresholds
         if dp < args.DP_to_ploidy_threshold:
             continue
         
@@ -448,6 +449,7 @@ def ff(samples_info, p_error, args, ep17_alpha=0.01):
                 vafs.append(vaf)
                 
     return vafs, k_obs, n_obs
+
 
 # Estimate the paramters of the true mutation distribution (Beta) using the background error rates 
 # and method of MLE. The samples used for MLE should be those that are likely to have true mutations 
@@ -613,20 +615,16 @@ def qc(input_vcf_path, output_vcf_path, args):
             ads = sample['AD']
             srf = sample['SRF']
             
-            # Calculate KL divergence for each sample for each ALT
-            # kl_div_singles = []
-            
             # Pre-filtering based on DP and AQ thresholds
             is_pre_filtered = False
-            if (dp is None) or dp < ploidy * args.DP_to_ploidy_threshold:
-                sys.stderr.write(f"[WARNING] Sample {sample_name} at {variant['chrom']}:{variant['pos']} failed "
-                                 f"DP/Ploidy threshold ({dp}/{ploidy} < {args.DP_to_ploidy_threshold}). Skipping.\n")
-                is_pre_filtered = True
-            elif ((dp is None) 
-                  or any(f is None for f in vaf) 
-                  or any(a is None for a in ads) 
-                  or any(h is None for h in hqs)
-                  ):
+            # if (dp is None) or dp < ploidy * args.DP_to_ploidy_threshold:
+            #     sys.stderr.write(f"[WARNING] Sample {sample_name} at {variant['chrom']}:{variant['pos']} failed "
+            #                      f"DP/Ploidy threshold ({dp}/{ploidy} < {args.DP_to_ploidy_threshold}). Skipping.\n")
+            #     is_pre_filtered = True
+            if ((dp is None) 
+                or any(f is None for f in vaf) 
+                or any(a is None for a in ads) 
+                or any(h is None for h in hqs)):
                 sys.stderr.write(
                     f"[WARNING] Missing DP, AF, AD or HQ for sample {sample_name} "
                     f"at {variant['chrom']}:{variant['pos']}. Skipping.\n"
@@ -637,15 +635,13 @@ def qc(input_vcf_path, output_vcf_path, args):
                 # use the average KL divergence across all ALTs as the final KL divergence 
                 # for this sample at this position, which will be used in the Bayesian filter 
                 # to compute the posterior probability of true mutation.
-                for v_obs, a_obs, hq in zip(vaf, ads, hqs):
+                for v_obs, a_obs in zip(vaf, ads):
                     if (v_obs is None) or (a_obs is None):
                         sys.stderr.write(f"[WARNING] Missing VAF or AD for sample {sample_name} "
                                          f"at {variant['chrom']}:{variant['pos']}. Skipping.\n")
                         break
                     
                     all_available_vaf_obs.append(v_obs)
-                    # kl_div = calculate_kl_divergence_single(v_obs, q_alpha, q_beta)
-                    # kl_div_singles.append(kl_div)
 
             results.append({
                 'sample': sample_name,
@@ -882,7 +878,7 @@ def bayesian_filter(
     H1: observed alternate counts come from a Beta-Binomial distribution with
         Beta(alpha_h1, beta_h1).
 
-# 这段注释可以删掉了，因为我们现在不使用 KL divergence 来调整后验概率了。
+# 这段注释可以删掉了，因为我现在不使用 KL divergence 来调整后验概率了。
 # `kl_div` is the KL divergence of the observed VAF distribution from the background noise distribution, 
 # which serves as an additional piece of evidence to distinguish true mutations from background errors. 
 # A higher KL divergence indicates that the observed VAF distribution is more different from the expected 
@@ -940,7 +936,6 @@ def bayesian_filter(
     # log_L0 = log(P(X=A | D, p_error)) 
     #        = log(binom.pmf(A, D, p_error)) 
     #        = log(D choose A) + A*log(p_error) + (D - A)*log(1 - p_error)
-    
     # 这是按照之前的版本计算的log_L0，在H0下直接建模了一个binomial分布来描述背景错误率。
     # 后面我要改成 beta-binomial 来更好地建模背景噪音分布，所以这个版本的log_L0就不再适用了。
     # p_error = np.clip(p_error, 1e-12, 1.0 - 1e-12)
@@ -981,19 +976,6 @@ def bayesian_filter(
     # odds in favor of H1 when quality metrics are poor.
     log_L1 += log_penalty
     
-    # 因为我现在 H0 和 H1 都是用 Beta-Binomial 来建模了，所以 KL divergence 的计算方式也需要改成基于
-    # Beta-Binomial 的 KL divergence，之前那个基于 Beta 分布的 KL divergence 已经不再适用了。
-    ## Incorporate the KL divergence into the H1 to further penalize low-quality evidence 
-    ## for mutations, which helps to reduce false positives by down-weighting the posterior 
-    ## odds in favor of H1 when quality metrics are poor.
-    # if kl_div is None or np.isnan(kl_div):
-    #     kl_div = 0.0
-    # elif np.isposinf(kl_div):
-    #     kl_div = 1000.0
-    # elif np.isneginf(kl_div):
-    #     kl_div = 0.0
-    # log_L1 += kl_weight * kl_div
-    
     # Log prior odds of H1 vs H0, calculated from the prior probability pi of mutation (H1). 
     # The log prior odds is the logarithm of the ratio of the prior probabilities of H1 and H0, 
     # which is log(pi / (1 - pi)). This term represents our prior belief about how likely a true 
@@ -1016,7 +998,8 @@ def bayesian_filter(
         f"q_alpha={q_alpha:.6f}, q_beta={q_beta:.6f}, "
         f"alpha_h1={alpha_h1:.6f}, beta_h1={beta_h1:.6f}, pi={pi:.6f}, "
         f"log_prior_odds={log_prior_odds:.6f}, log_penalty={log_penalty:.6f}, "
-        f"log_posterior_odds={log_posterior_odds:.6f}, posterior_h1={posterior_h1:.6f}\n"
+        f"log_posterior_odds={log_posterior_odds:.6f}, "
+        f"posterior_h1={posterior_h1:.6f}\n"
     )
     
     return float(np.clip(posterior_h1, 0.0, 1.0))
@@ -1034,10 +1017,10 @@ def main():
     
     # For per-sample pre-filtering parameters
     parser.add_argument('--DP-to-ploidy-threshold', type=int, default=100, 
-                        help="Minimum depth to ploidy (DP/ploidy) threshold for considering variants "
+                        help="Parameter for training. Minimum depth to ploidy (DP/ploidy) threshold for considering variants "
                              "for each sample. Default is 100")
     parser.add_argument('--HQ-threshold', type=int, default=20, 
-                        help="Minimum variant quality (HQ) threshold for considering "
+                        help="Parameter for training. Minimum variant quality (HQ) threshold for considering "
                              "variants for each sample. Default is 20")
     
     # parser.add_argument('--FS-threshold', type=float, default=100.0, 
@@ -1049,7 +1032,6 @@ def main():
     
     # For Bayesian filter parameters
     parser.add_argument('--bins', type=int, default=100, help="Number of histogram bins. Default is 100")
-    parser.add_argument('--lambda-kl', type=float, default=0.1, help="Weight for KL divergence. Default is 0.1")
     parser.add_argument('--pi', type=float, default=5e-8 * 16569, help="Prior probability of mutation. Default is 5e-8 * 16569")
     parser.add_argument('--threshold', type=float, default=0.9, help="Posterior probability threshold for calling mutations. Default is 0.9")
     args = parser.parse_args()
