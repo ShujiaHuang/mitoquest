@@ -180,6 +180,7 @@ class VCFProcessor:
             
             gts = sample.get('GT')
             gts_non_missing = [gt for gt in gts if gt is not None] if gts is not None else []
+            is_non_missing = all(gt is not None for gt in gts) if gts is not None else False
             vaf_values = sample.get('AF')
             depth = self._extract_depth(sample)
             for i, (gt, vaf) in enumerate(zip(gts, vaf_values)):
@@ -203,6 +204,13 @@ class VCFProcessor:
                         var_type = "UNK"
                         
                     new_ref, alt_seq = self.remove_common_suffix(ref, alt_seq)
+                
+                # 如果这个样本不含有 missing GT, 则仅保留非 REF 的记录，跳过 REF 记录以避免冗余；
+                # 如果含有 missing GT，则保留所有记录（包括 REF），以便后续分析中可以区分 REF 和 
+                # missing GT。
+                if is_non_missing and gt == 0:
+                    continue 
+                
                 yield VariantRecord(
                     sample_id=sample_id,
                     chrom=chrom,
