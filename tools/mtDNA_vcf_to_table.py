@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator, List, Optional
 
+import numpy as np
 import pysam
 
 @dataclass
@@ -29,6 +30,7 @@ class VariantRecord:
     ref: str
     alt: str
     vaf: float
+    srf: float
     depth: int
     genotype: str
     var_type: str # The type of variant: SNV, DEL, INS
@@ -44,6 +46,7 @@ class VariantRecord:
             self.ref,
             self.alt,
             f"{self.vaf:.6f}",
+            f"{self.srf:.6f}",
             str(self.depth),
             self.genotype,
             self.var_type,
@@ -53,7 +56,8 @@ class VariantRecord:
 
 class VCFProcessor:
     """Processor for VCF files using pysam."""
-    HEADER_COLUMNS = ["Sample_id", "Chrom", "Pos", "ID", "REF", "ALT", "VAF", "Depth", "GT", "Variant", "Status"]
+    HEADER_COLUMNS = ["Sample_id", "Chrom", "Pos", "ID", "REF", "ALT", "VAF", "SRF", 
+                      "Depth", "GT", "Variant", "Status"]
     def __init__(self, vcf_path: str):
         """
         Initialize VCF processor.
@@ -155,15 +159,30 @@ class VCFProcessor:
             if self._is_missing_genotype(sample):
                 continue
 
-            is_good_call = sample.get('GOOD_CALL', 'False') == 'True'  # Coverts string to boolean, default to False if not present 
+            # Coverts string to boolean, default to False if not present 
+            is_good_call = sample.get('GOOD_CALL', 'False') == 'True'
             if not is_good_call:
                 continue
             
-            depth = self._extract_depth(sample)
+            # pysam doesn't support directly getting a tuple of tuples for the specific label of SB (format problem), 
+            # so we need to parse it from the string format. Set back to be a string of format in 'a1_fwd,a1_reverse;a2_forward,a2_reverse;...' 
+            # for each sample, where a1, a2, ... are ref and alt alleles in order.
+            sb_s = ','.join(sample.get('SB')) if sample.get('SB') else '.'
+            sb_split = sb_s.split(';') if sb_s != '.' else []
+            
+            # A list of tuples [(a1_forward, a1_reverse), (a2_forward, a2_reverse), ...]
+            sbs = [tuple(map(int, sb.split(','))) for sb in sb_split] # could be empthy if SB is missing
+            
+            # Strand ratio factor can be calculated as np.min([fwd, rev])/np.max([fwd, rev]) for each allele.
+            # The range of SRF is [0, 1], where values close to 0 indicate strong strand bias and values 
+            # close to 1 indicate balanced strand representation.
+            srfs = [(np.min([fwd, rev]) + 1e-10)/(np.max([fwd, rev]) + 1e-10) for fwd, rev in sbs]
+            
             gts = sample.get('GT')
             gts_non_missing = [gt for gt in gts if gt is not None] if gts is not None else []
             vaf_values = sample.get('AF')
-            for (gt, vaf) in zip(gts, vaf_values):
+            depth = self._extract_depth(sample)
+            for i, (gt, vaf) in enumerate(zip(gts, vaf_values)):
                 if gt is None:
                     var_type = "MISSING"
                     new_ref = ref
@@ -184,7 +203,6 @@ class VCFProcessor:
                         var_type = "UNK"
                         
                     new_ref, alt_seq = self.remove_common_suffix(ref, alt_seq)
-                    
                 yield VariantRecord(
                     sample_id=sample_id,
                     chrom=chrom,
@@ -193,6 +211,7 @@ class VCFProcessor:
                     ref=new_ref,
                     alt=alt_seq,
                     vaf=vaf,
+                    srf=srfs[i] if i < len(srfs) else 1.0,  # Default to 1.0 (no bias) if SB info is missing
                     depth=depth,
                     genotype="/".join(map(str, gts)),
                     var_type=var_type,
