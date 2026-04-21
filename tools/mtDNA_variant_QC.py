@@ -269,7 +269,6 @@ def write_vcf(input_vcf_path, output_vcf_path, results, pos_kl_div):
         vcf_in.header.add_line('##FILTER=<ID=BLACKLISTED_SITE,Description="Site is in the blacklisted regions">')
         vcf_in.header.add_line('##FILTER=<ID=LOW_QUALITY,Description="Low quality site based on KL divergence from background noise distribution">')
         vcf_in.header.add_line(f'##QC_command=python {" ".join(sys.argv)}')
-        # vcf_in.header.info['KL_DIV'] = ('1', 'Float', 'Kullback-Leibler divergence of multi-sample VAF distribution from background noise distribution')
         with pysam.VariantFile(output_vcf_path, 'w', header=vcf_in.header) as vcf_out:
             for record in vcf_in:
                 for sample in record.samples:
@@ -650,8 +649,8 @@ def qc(input_vcf_path, output_vcf_path, args):
                 'ref': variant['ref'],
                 'alt': [ref_alts[g_idx] if (g_idx is not None) else '.' for g_idx in gt] if gt else ['.'],
                 
-                # Keep original GT for reference, but the final mutation call will be determined by 'is_mutation' field.
-                # 'gt': gt if gt and (not is_pre_filtered and pp > args.threshold) else [None],  # A GT tuple
+                # Keep original GT for reference, but the final mutation 
+                # call will be determined by 'is_mutation' field.
                 'gt': gt,
                 'ploidy': len(gt),
                 
@@ -745,10 +744,6 @@ def iterative_beta_fit_and_call(
                 low_VAF_indices.append(i)
             
     sampling_num = min(len(high_VAF_indices), len(low_VAF_indices))
-    # by_step = np.max(len(high_VAF_indices), len(low_VAF_indices)) // sampling_num if (
-    #     sampling_num > 0
-    # ) else 1
-    
     for i in range(max_iter):
         if sampling_num > 0:
             h_indices_sampled = np.random.choice(high_VAF_indices, size=sampling_num, replace=False)
@@ -805,9 +800,8 @@ def iterative_beta_fit_and_call(
             # r['posterior'] = np.prod(new_pps)  # For multi-allelic sites, take the product of posteriors for all ALTs as the final posterior for the site. This is a simple way to combine evidence from multiple ALTs, but it assumes that the evidence from each ALT is independent, which may not always be the case. More sophisticated methods could be used to combine evidence from multiple ALTs if needed.
             # r['posterior'] = np.mean(new_pps) if new_pps else 0  # For multi-allelic sites, take the average posterior across all ALTs as the final posterior for the site. This is a more balanced approach than taking the product, as it assumes that the evidence from each ALT contributes equally to the mutation call without assuming independence or dominance.
             r['posterior'] = np.max(new_pps) if new_pps else 0  # For multi-allelic sites, take the maximum posterior across all ALTs as the final posterior for the site. This is a more conservative approach than taking the product, as it assumes that the evidence from each ALT is not independent and that the strongest evidence should dominate the mutation call.
-            r['is_mutation'] = r['posterior'] > threshold  # Update mutation call based on new posterior
+            r['is_mutation'] = r['posterior'] > threshold       # Update mutation call based on new posterior
             r['new_gt'] = [g if (pp > threshold and g is not None) else None for pp, g in zip(new_pps, r['gt'])]  # Update GT to only include alleles that are called as mutations based on the new posterior (optional, can keep original GT for reference)
-            # r['gt'] = r['gt'] if r['is_mutation'] else [None]  # Update GT to None if not called as mutation (optional, can keep original GT for reference)
             
         # 4. Check for convergence
         curr_is_mut = [r['is_mutation'] for r in results]
