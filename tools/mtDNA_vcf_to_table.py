@@ -31,6 +31,7 @@ class VariantRecord:
     alt: str
     vaf: float
     srf: float
+    is_high_conf_vaf: bool
     depth: int
     genotype: str
     var_type: str # The type of variant: SNV, DEL, INS
@@ -47,6 +48,7 @@ class VariantRecord:
             self.alt,
             f"{self.vaf:.6f}",
             f"{self.srf:.6f}",
+            "True" if self.is_high_conf_vaf else "False",
             str(self.depth),
             self.genotype,
             self.var_type,
@@ -56,9 +58,9 @@ class VariantRecord:
 
 class VCFProcessor:
     """Processor for VCF files using pysam."""
-    HEADER_COLUMNS = ["Sample_id", "Chrom", "Pos", "ID", "REF", "ALT", "VAF", "SRF", 
+    HEADER_COLUMNS = ["Sample_id", "Chrom", "Pos", "ID", "REF", "ALT", "VAF", "SRF", "HighConfVAF", 
                       "Depth", "GT", "Variant", "Status"]
-    def __init__(self, vcf_path: str):
+    def __init__(self, vcf_path: str, min_depth: int, hq_threshold: int):
         """
         Initialize VCF processor.
         
@@ -66,8 +68,14 @@ class VCFProcessor:
         ----------
         vcf_path : str
             Path to input VCF file
+        min_depth : int
+            Minimum depth threshold for considering high-confidence VAF
+        hq_threshold : int
+            Minimum variant quality (HQ) threshold for considering high-confidence VAF
         """
         self.vcf_path = Path(vcf_path)
+        self.min_depth = min_depth
+        self.hq_threshold = hq_threshold
         self._validate_file()
     
     def _validate_file(self) -> None:
@@ -183,7 +191,9 @@ class VCFProcessor:
             is_non_missing = all(gt is not None for gt in gts) if gts is not None else False
             vaf_values = sample.get('AF')
             depth = self._extract_depth(sample)
-            for i, (gt, vaf) in enumerate(zip(gts, vaf_values)):
+            hqs = sample.get('AQ') if sample.get('AQ') is not None else [None] * len(alts)  # A list of allele qualities for ref and alts, if AQ is missing, set to None
+            
+            for i, (gt, vaf, hq) in enumerate(zip(gts, vaf_values, hqs)):
                 if gt is None:
                     var_type = "MISSING"
                     new_ref = ref
@@ -211,6 +221,7 @@ class VCFProcessor:
                 if (is_non_missing and gt == 0) and len(gts_non_missing) > 1:
                     continue 
                 
+                is_high_conf_vaf = (hq is not None and depth >= self.min_depth and hq >= self.hq_threshold)
                 yield VariantRecord(
                     sample_id=sample_id,
                     chrom=chrom,
@@ -220,6 +231,7 @@ class VCFProcessor:
                     alt=alt_seq,
                     vaf=vaf,
                     srf=srfs[i] if i < len(srfs) else 1.0,  # Default to 1.0 (no bias) if SB info is missing
+                    is_high_conf_vaf=is_high_conf_vaf,
                     depth=depth,
                     genotype="/".join(map(str, gts)),
                     var_type=var_type,
@@ -413,6 +425,13 @@ def parse_args() -> argparse.Namespace:
         help="Output tidy TSV file",
     )
     parser.add_argument(
+        '-D', '--DP', type=int, default=100, 
+        help="Minimum depth to consider high-confidence VAF for each sample. Default is 100")
+    parser.add_argument(
+        '-Q', '--HQ', type=int, default=20, 
+        help="Minimum variant quality (HQ) threshold for considering high-confidence "
+             "VAF for each sample. Default is 20")
+    parser.add_argument(
         "-v",
         "--verbose",
         action="store_true",
@@ -428,7 +447,7 @@ def main() -> None:
         if args.verbose:
             print(f"Processing VCF file: {args.input_vcf}", file=sys.stderr)
         
-        processor = VCFProcessor(args.input_vcf)
+        processor = VCFProcessor(args.input_vcf, args.DP, args.HQ)
         records = processor.process()
         count = write_tidy_table(records, args.output_tsv)
         
