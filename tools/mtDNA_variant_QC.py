@@ -717,7 +717,7 @@ def qc(input_vcf_path, output_vcf_path, args):
     return results, sample_variant_count, vaf_true_list, vaf_false_list, alpha_hist, beta_hist, diff_hist
 
 
-def iterative_beta_fit_and_call(
+def __old_iterative_beta_fit_and_call(
     results, vafs, k_obs, n_obs,
     hq_threshold=20,
     pi=5e-8 * 16569,
@@ -738,12 +738,12 @@ def iterative_beta_fit_and_call(
     low_VAF_indices = []
     for i, vaf in enumerate(vafs):
         if vaf is not None and 0 < vaf < 1:
-            if vaf > 0.5:
+            if vaf > 0.9:
                 high_VAF_indices.append(i)
             else:
                 low_VAF_indices.append(i)
-            
-    sampling_num = min(len(high_VAF_indices), len(low_VAF_indices))
+    
+    sampling_num = min(len(high_VAF_indices), len(low_VAF_indices))      
     for i in range(max_iter):
         if sampling_num > 0:
             h_indices_sampled = np.random.choice(high_VAF_indices, size=sampling_num, replace=False)
@@ -797,8 +797,6 @@ def iterative_beta_fit_and_call(
                 )
                 new_pps.append(new_pp)
 
-            # r['posterior'] = np.prod(new_pps)  # For multi-allelic sites, take the product of posteriors for all ALTs as the final posterior for the site. This is a simple way to combine evidence from multiple ALTs, but it assumes that the evidence from each ALT is independent, which may not always be the case. More sophisticated methods could be used to combine evidence from multiple ALTs if needed.
-            # r['posterior'] = np.mean(new_pps) if new_pps else 0  # For multi-allelic sites, take the average posterior across all ALTs as the final posterior for the site. This is a more balanced approach than taking the product, as it assumes that the evidence from each ALT contributes equally to the mutation call without assuming independence or dominance.
             r['posterior'] = np.max(new_pps) if new_pps else 0  # For multi-allelic sites, take the maximum posterior across all ALTs as the final posterior for the site. This is a more conservative approach than taking the product, as it assumes that the evidence from each ALT is not independent and that the strongest evidence should dominate the mutation call.
             r['is_mutation'] = r['posterior'] > threshold       # Update mutation call based on new posterior
             r['new_gt'] = [g if (pp > threshold and g is not None) else None for pp, g in zip(new_pps, r['gt'])]  # Update GT to only include alleles that are called as mutations based on the new posterior (optional, can keep original GT for reference)
@@ -812,6 +810,104 @@ def iterative_beta_fit_and_call(
                 break
             
         prev_is_mut = curr_is_mut.copy()
+
+    # After convergence, update the final GT calls based on 
+    for r in results:
+        if r['pre_filtered']:
+            continue  # Skip pre-filtered samples
+            
+        r['gt'] = r['new_gt']  # Update GT to the new GT based on final mutation calls
+        r.pop('new_gt', None)  # Remove the temporary 'new_gt' field from the final results to clean up the output.
+
+    return results, alpha_hist, beta_hist, diff_hist
+
+
+def iterative_beta_fit_and_call(
+    results, vafs, k_obs, n_obs,
+    hq_threshold=20,
+    pi=5e-8 * 16569,
+    threshold=0.9
+):
+    """
+    Estimate beta distribution parameters from called mutations and update mutation calls
+    until convergence. For multi-allelic sites, treat each ALT as an independent event and 
+    use the maximum of posteriors as the final posterior for the site.
+    """
+    alpha_hist, beta_hist, diff_hist = [1.0], [1.0], []
+    
+    # 1. Collect VAFs from currently called mutations
+    high_VAF_indices = []
+    low_VAF_indices = []
+    for i, vaf in enumerate(vafs):
+        if vaf is not None and 0 < vaf < 1:
+            if vaf > 0.95:
+                high_VAF_indices.append(i)
+            else:
+                low_VAF_indices.append(i)
+    
+    sampling_num = min(len(high_VAF_indices), len(low_VAF_indices))
+    by_step = max(len(high_VAF_indices), len(low_VAF_indices)) // sampling_num if (
+        sampling_num > 0
+    ) else 1
+    if len(high_VAF_indices) > len(low_VAF_indices):
+        high_VAF_indices = high_VAF_indices[::by_step]
+    else:
+        low_VAF_indices = low_VAF_indices[::by_step]
+    
+    if sampling_num > 0:
+        vafs_sampled  = list(vafs[low_VAF_indices]) + list(vafs[high_VAF_indices])
+        k_obs_sampled = list(k_obs[low_VAF_indices]) + list(k_obs[high_VAF_indices])
+        n_obs_sampled = list(n_obs[low_VAF_indices]) + list(n_obs[high_VAF_indices])
+    else:
+        vafs_sampled  = list(vafs)
+        k_obs_sampled = list(k_obs)
+        n_obs_sampled = list(n_obs)
+    
+    # 2. Fit Beta distribution parameters using MLE
+    alpha_h1, beta_h1 = estimate_params_betabinom(vafs_sampled, k_obs_sampled, n_obs_sampled)
+    sys.stderr.write(f"Training dataset: {len(vafs_sampled)} VAFs (first-5: {vafs_sampled[:5]}) "
+                     f"collected for Beta fitting. Estimated Beta distribution parameters for "
+                     f"true mutations: alpha={alpha_h1:.6f}, beta={beta_h1:.6f}\n")
+
+    # Ensure alpha_h1 and beta_h1 are valid
+    alpha_hist.append(alpha_h1)
+    beta_hist.append(beta_h1)
+    
+    # 3. Recalculate posterior and is_mutation for each record
+    for r in results:
+        if r['pre_filtered']:
+            continue  # Skip pre-filtered samples
+        
+        # For multi-allelic sites, calculate posterior for each ALT and take the product
+        new_pps = []
+        r['new_gt'] = r['gt']  # Initialize new GT to original GT, will update based on new mutation calls if needed
+        # for a_obs, kl_div, srf, hq in zip(r['A'], r['kl_divergence_single'], r['srf'], r['HQ']):
+        for a_obs, srf, hq in zip(r['A'], r['srf'], r['HQ']):
+            new_pp = bayesian_filter(
+                A=a_obs,
+                D=r['D'],
+                srf=srf,
+                hq=hq,
+                hq_threshold=hq_threshold,
+                
+                q_alpha=r['q_alpha'],
+                q_beta=r['q_beta'],
+                
+                alpha_h1=alpha_h1,  # Use updated Beta parameters
+                beta_h1=beta_h1,    # Use updated Beta parameters
+                
+                # Use the same prior probability for true mutationas before, 
+                # which can be adjusted based on the expected mutation rate and 
+                # the size of the genomic region being analyzed.
+                pi=pi
+            )
+            new_pps.append(new_pp)
+
+        # r['posterior'] = np.prod(new_pps)  # For multi-allelic sites, take the product of posteriors for all ALTs as the final posterior for the site. This is a simple way to combine evidence from multiple ALTs, but it assumes that the evidence from each ALT is independent, which may not always be the case. More sophisticated methods could be used to combine evidence from multiple ALTs if needed.
+        # r['posterior'] = np.mean(new_pps) if new_pps else 0  # For multi-allelic sites, take the average posterior across all ALTs as the final posterior for the site. This is a more balanced approach than taking the product, as it assumes that the evidence from each ALT contributes equally to the mutation call without assuming independence or dominance.
+        r['posterior'] = np.max(new_pps) if new_pps else 0  # For multi-allelic sites, take the maximum posterior across all ALTs as the final posterior for the site. This is a more conservative approach than taking the product, as it assumes that the evidence from each ALT is not independent and that the strongest evidence should dominate the mutation call.
+        r['is_mutation'] = r['posterior'] > threshold       # Update mutation call based on new posterior
+        r['new_gt'] = [g if (g is not None and pp > threshold) else None for pp, g in zip(new_pps, r['gt'])]  # Update GT to only include alleles that are called as mutations based on the new posterior (optional, can keep original GT for reference)
 
     # After convergence, update the final GT calls based on 
     for r in results:
