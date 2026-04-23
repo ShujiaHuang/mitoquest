@@ -40,7 +40,7 @@ _GLOBAL_BLACKLISTED_REGIONS = [
     (511, 525),
     (564, 571),
     (952, 955),
-    (3106, 3108),
+    (3105, 3108),
     (5895, 5899),
     (8268, 8279),
     (13645, 13650),
@@ -549,15 +549,17 @@ def qc(input_vcf_path, output_vcf_path, args):
     results = []
     pos_kl_div = {} # Store multi-sample KL divergence for each position
     for variant in variant_generator(input_vcf_path):
-        if variant['pos'] in GLOBAL_BLACKLIST_SITES_SET:
-            sys.stderr.write(f"[INFO] Variant at {variant['chrom']}:{variant['pos']} "
+        # print(f"{variant['chrom']}:{variant['pos']} {variant['ref']}->{variant['alts']} - QUAL: {variant['qual']} FILTER: {variant['filter']} INFO: {variant['info']}")
+        ref_len = len(variant['ref'])
+        if any(pos in GLOBAL_BLACKLIST_SITES_SET for pos in range(variant['pos'], variant['pos'] + ref_len)):
+            sys.stderr.write(f"[INFO] Variant at {variant['chrom']}:{variant['pos']} {variant['ref']}>{variant['alts']} "
                              f"is located in blacklisted regions. Skipping.\n")
             continue
         
         # Maximum ALT alleles per site
         if len(variant['alts']) > args.max_alt_alleles:
-            sys.stderr.write(f"[INFO] Variant at {variant['chrom']}:{variant['pos']} has "
-                             f"more than {args.max_alt_alleles} ALT alleles. Skipping.\n")
+            sys.stderr.write(f"[INFO] Variant at {variant['chrom']}:{variant['pos']} {variant['ref']}>{variant['alts']} "
+                             f"has more than {args.max_alt_alleles} ALT alleles. Skipping.\n")
             continue
 
         ref_alts = [variant.get('ref', '')] + list(variant.get('alts', []))
@@ -606,7 +608,6 @@ def qc(input_vcf_path, output_vcf_path, args):
         all_available_vaf_obs = []
         for sample in samples_info:
             sample_name = sample['sample']
-            ploidy = sample['ploidy']
             gt  = sample['GT']
             dp  = sample['DP']
             vaf = sample['AF']
