@@ -59,31 +59,31 @@ def detect_numt_artifacts_by_copynumber(df,
                                         corr_threshold=-0.4):
     """
     通过 VAF 与真实线粒体拷贝数 (Copy Number) 的负相关性，标记 NUMT bias。
-    兼容队列中存在多种常染色体测序深度 (如 7X, 15X, 30X 混合) 的复杂场景。
+    兼容队列数据中存在混合测序深度 (如 7X, 15X, 30X 混合) 的场景。
     
     参数:
-    df: 输入的数据框，必须包含 'Pos', 'ALT', 'copynumber' (线粒体拷贝数)
-    min_samples: 执行统计检验的最少样本数阈值。
+    df: 
+    min_samples: 最少样本数。
     pval_threshold: Spearman 负相关的显著性 P 值阈值。
-    corr_threshold: 负相关系数阈值，越接近 -1 越代表是典型的 NUMT。
+    corr_threshold: 负相关阈值，越接近 -1 越代表是典型的 NUMT。
     
     返回:
-    带有 'is_NUMT' 判读结果和统计量标记的 DataFrame。
+    带有 'is_NUMT' 的 df 结果
     """
-    # 0. 数据完整性校验
     required_cols = {pos_col, ref_col, alt_col, vaf_col, copynum_col}
     if not required_cols.issubset(df.columns):
         missing = required_cols - set(df.columns)
         raise ValueError(f"Missing required columns: {missing}")
     
-    # 过滤掉零支持度的无意义数据，避免错误
+    # 过滤掉零数据
     working_df = df[df[copynum_col] > 0].copy()
     
-    # 将 CN 转换到对数空间，这能使 VAF = 1/(CN+1) 的非线性关系趋于线性，大幅提升 Spearman 的灵敏度
+    # 将 CN 转换到对数空间，使 NUMT ~ 1/(CN+1) 的非线性关系趋于线性，提升灵敏度
+    # 该关系的数学推导在 PPT 中记录
     working_df['log_CN'] = np.log10((working_df[copynum_col]+1))
     numt_results = []
     
-    # 2. 按位点和突变类型逐一进行群体扫描
+    # 2. 按位点和突变类型逐一进行分组
     grouped = working_df.groupby(['Pos', 'ALT'])
     for (locus, allele), group in grouped:
         n_samples = len(group)
@@ -97,13 +97,12 @@ def detect_numt_artifacts_by_copynumber(df,
             })
             continue
             
-        # 3. VAF 与 log_CN 的 Spearman 秩相关
-        # 使用 Spearman 而不是 Pearson 更适合处理离群样本
+        # 3. 使用 Spearman 而不是 Pearson，更适合处理离群样本
         result = stats.spearmanr(group['log_CN'], group['VAF'])
         corr = float(result.correlation)
         pval = float(result.pvalue)
         
-        # 4. 判定逻辑：显著且足够强烈的负相关
+        # 4. 是否显著且足够负相关
         is_numt = False
         if (corr < corr_threshold) and (pval < pval_threshold):
             is_numt = True
