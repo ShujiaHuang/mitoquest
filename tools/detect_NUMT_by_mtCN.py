@@ -48,7 +48,15 @@ def numt_match(df1, df2):
     return df1
 
 
-def detect_numt_artifacts_by_copynumber(df, required_cols=None, min_samples=15, pval_threshold=0.05, corr_threshold=-0.4):
+def detect_numt_artifacts_by_copynumber(df, 
+                                        pos_col='Pos',
+                                        ref_col='REF',
+                                        alt_col='ALT',
+                                        vaf_col='VAF',
+                                        copynum_col='copynum', 
+                                        min_samples=15, 
+                                        pval_threshold=0.05, 
+                                        corr_threshold=-0.4):
     """
     通过 VAF 与真实线粒体拷贝数 (Copy Number) 的负相关性，精准拦截 NUMT 伪影。
     兼容队列中存在多种常染色体测序深度 (如 7X, 15X, 30X 混合) 的复杂场景。
@@ -63,18 +71,16 @@ def detect_numt_artifacts_by_copynumber(df, required_cols=None, min_samples=15, 
     带有 'is_NUMT' 判读结果和统计量标记的 DataFrame。
     """
     # 0. 数据完整性校验
-    if required_cols is None:
-        required_cols = {'Pos', 'REF', 'ALT', 'VAF', 'copynum'}
-        
+    required_cols = {pos_col, ref_col, alt_col, vaf_col, copynum_col}
     if not required_cols.issubset(df.columns):
         missing = required_cols - set(df.columns)
         raise ValueError(f"Missing required columns: {missing}")
     
     # 过滤掉零支持度的无意义数据，避免数学错误
-    working_df = df[df['copy_number'] > 0].copy()
+    working_df = df[df[copynum_col] > 0].copy()
     
     # 将 CN 转换到对数空间，这能使 VAF = 1/(CN+1) 的非线性关系趋于线性，大幅提升 Spearman 的灵敏度
-    working_df['log_CN'] = np.log10((working_df['copy_number']+1))
+    working_df['log_CN'] = np.log10((working_df[copynum_col]+1))
     numt_results = []
     
     # 2. 按位点和突变类型逐一进行群体扫描
@@ -179,11 +185,16 @@ def main() -> None:
     """Main entry point."""
     args = parse_args()
     required_cols = {args.pos, args.ref, args.alt, args.vaf, args.copynum}
+    print(f"required_cols = {args.pos, args.ref, args.alt, args.vaf, args.copynum}")
     
     df = pd.read_csv(args.input, sep='\t')
     final_df, numt_df = detect_numt_artifacts_by_copynumber(
         df, 
-        required_cols=required_cols, 
+        pos_col=args.pos,
+        ref_col=args.ref,
+        alt_col=args.alt,
+        vaf_col=args.vaf,
+        copynum_col=args.copynum,
         min_samples=args.min_samples, 
         pval_threshold=args.pvalue_threshold, 
         corr_threshold=args.corr_threshold
