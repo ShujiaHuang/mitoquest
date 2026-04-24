@@ -1,18 +1,8 @@
 #!/usr/bin/env python3
 """Detect NUMT bias by using VAF of mtDNA variants and copy number of mtDNA (mtCN).
 
-
-
-Convert mtDNA VCF into tidy (long-format) table.
-
-Each row corresponds to:
-    one sample x one mtDNA position x one ALT allele
-
-Output columns:
-    sample_id, pos, ref, alt, vaf, depth, GT
-
 Authors: Shujia Huang
-Date: 2026-01-24
+Date: 2026-04-24
 """
 import argparse
 import sys
@@ -191,15 +181,15 @@ def main() -> None:
     required_cols = {args.pos, args.ref, args.alt, args.vaf, args.copynum}
     
     df = pd.read_csv(args.input, sep='\t')
-    detect_numt_artifacts_by_copynumber(
+    final_df, numt_df = detect_numt_artifacts_by_copynumber(
         df, 
         required_cols=required_cols, 
         min_samples=args.min_samples, 
         pval_threshold=args.pvalue_threshold, 
         corr_threshold=args.corr_threshold
     )
+    final_df.to_csv(args.output, sep='\t', index=False)
     
-
 
 if __name__ == "__main__":
     main()
