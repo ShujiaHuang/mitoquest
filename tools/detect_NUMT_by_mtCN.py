@@ -179,11 +179,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
-    """Main entry point."""
     args = parse_args()
-    required_cols = {args.pos, args.ref, args.alt, args.vaf, args.copynum}
-    print(f"required_cols = {args.pos, args.ref, args.alt, args.vaf, args.copynum}")
-    
     df = pd.read_csv(args.input, sep='\t')
     final_df, numt_df = detect_numt_artifacts_by_copynumber(
         df, 
