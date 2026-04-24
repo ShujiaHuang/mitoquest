@@ -58,11 +58,11 @@ def detect_numt_artifacts_by_copynumber(df,
                                         pval_threshold=0.05, 
                                         corr_threshold=-0.4):
     """
-    通过 VAF 与真实线粒体拷贝数 (Copy Number) 的负相关性，精准拦截 NUMT 伪影。
+    通过 VAF 与真实线粒体拷贝数 (Copy Number) 的负相关性，标记 NUMT bias。
     兼容队列中存在多种常染色体测序深度 (如 7X, 15X, 30X 混合) 的复杂场景。
     
     参数:
-    df: 输入的数据框，必须包含 'Pos', 'ALT', 'copy_number' (线粒体拷贝数)
+    df: 输入的数据框，必须包含 'Pos', 'ALT', 'copynumber' (线粒体拷贝数)
     min_samples: 执行统计检验的最少样本数阈值。
     pval_threshold: Spearman 负相关的显著性 P 值阈值。
     corr_threshold: 负相关系数阈值，越接近 -1 越代表是典型的 NUMT。
@@ -76,7 +76,7 @@ def detect_numt_artifacts_by_copynumber(df,
         missing = required_cols - set(df.columns)
         raise ValueError(f"Missing required columns: {missing}")
     
-    # 过滤掉零支持度的无意义数据，避免数学错误
+    # 过滤掉零支持度的无意义数据，避免错误
     working_df = df[df[copynum_col] > 0].copy()
     
     # 将 CN 转换到对数空间，这能使 VAF = 1/(CN+1) 的非线性关系趋于线性，大幅提升 Spearman 的灵敏度
@@ -118,11 +118,9 @@ def detect_numt_artifacts_by_copynumber(df,
         
     numt_df = pd.DataFrame(numt_results)
     final_df = numt_match(working_df, numt_df[numt_df['is_NUMT']])
-    
     detected_numts = final_df[final_df['is_NUMT']][['Pos', 'ALT']].drop_duplicates()
     if not detected_numts.empty:
         print(f"Successfully detected {len(detected_numts)} NUMT artifacts driven by Copy Number.")
-        print(detected_numts.head().to_string(index=False))
         
     return final_df, numt_df
 
@@ -141,7 +139,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "-o",
-        "--output-tsv",
+        "--output",
         required=True,
         help="Output tidy TSV file",
     )
