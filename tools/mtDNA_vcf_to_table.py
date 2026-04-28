@@ -31,7 +31,7 @@ class VariantRecord:
     alt: str
     vaf: float
     srf: float
-    is_high_conf_vaf: bool
+    is_high_conf: bool
     depth: int
     genotype: str
     var_type: str # The type of variant: SNV, DEL, INS
@@ -48,7 +48,7 @@ class VariantRecord:
             self.alt,
             f"{self.vaf:.6f}",
             f"{self.srf:.6f}",
-            "True" if self.is_high_conf_vaf else "False",
+            "True" if self.is_high_conf else "False",
             str(self.depth),
             self.genotype,
             self.var_type,
@@ -58,7 +58,7 @@ class VariantRecord:
 
 class VCFProcessor:
     """Processor for VCF files using pysam."""
-    HEADER_COLUMNS = ["Sample_id", "Chrom", "Pos", "ID", "REF", "ALT", "VAF", "SRF", "HighConfVAF", 
+    HEADER_COLUMNS = ["Sample_id", "Chrom", "Pos", "ID", "REF", "ALT", "VAF", "SRF", "HighConf", 
                       "Depth", "GT", "Variant", "Status"]
     def __init__(self, vcf_path: str, min_depth: int, hq_threshold: int):
         """
@@ -221,7 +221,7 @@ class VCFProcessor:
                 if (is_non_missing and gt == 0) and len(gts_non_missing) > 1:
                     continue 
                 
-                is_high_conf_vaf = (hq is not None and depth >= self.min_depth and hq >= self.hq_threshold)
+                is_high_conf = (hq is not None and depth >= self.min_depth and hq >= self.hq_threshold)
                 yield VariantRecord(
                     sample_id=sample_id,
                     chrom=chrom,
@@ -231,7 +231,7 @@ class VCFProcessor:
                     alt=alt_seq,
                     vaf=vaf,
                     srf=srfs[i] if i < len(srfs) else 1.0,  # Default to 1.0 (no bias) if SB info is missing
-                    is_high_conf_vaf=is_high_conf_vaf,
+                    is_high_conf=is_high_conf,
                     depth=depth,
                     genotype="/".join(map(str, gts)),
                     var_type=var_type,
