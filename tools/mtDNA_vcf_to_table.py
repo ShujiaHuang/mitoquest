@@ -426,11 +426,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         '-D', '--DP', type=int, default=100, 
-        help="Minimum depth to consider high-confidence VAF for each sample. Default is 100")
+        help="Minimum depth to consider high-confidence VAF for each sample.")
     parser.add_argument(
         '-Q', '--HQ', type=int, default=20, 
         help="Minimum variant quality (HQ) threshold for considering high-confidence "
-             "VAF for each sample. Default is 20")
+             "VAF for each sample.")
     parser.add_argument(
         "-v",
         "--verbose",
