@@ -300,9 +300,9 @@ def apogee(anno_file_path):
         for row in reader:
             # note, for variants in two genes this won't distangle which gene has which score
             if (row["Ref"], row["Start"], row["Alt"]) in dict:  # i.e. variant is in two genes
-                dict[(row["Ref"], row["Start"], row["Alt"])].append(row["APOGEE1"])
+                dict[(row["Ref"], row["Start"], row["Alt"])].append(row["APOGEE2"])
             else:
-                dict[(row["Ref"], row["Start"], row["Alt"])] = [row["APOGEE1"]]
+                dict[(row["Ref"], row["Start"], row["Alt"])] = [row["APOGEE2"]]
 
     return dict
 
