@@ -11,21 +11,21 @@ MitoQuest is built on top of [htslib](https://github.com/samtools/htslib)
 (vendored as a submodule) and is designed to scale from a single-sample
 clinical workflow to population-level cohorts with thousands of samples.
 
-```
+```bash
 mitoquest: Human Mitochondrial sequencing data Analysis Toolkit
-Version: 1.6.4
+Version: 1.7.0
 
 Usage: mitoquest <command> [options]
 Commands:
   caller    Mitochondrial variants and heteroplasmy/homoplasmy caller.
   subsam    Extract mitochondrial variants for specified samples from VCF
             files and output a new VCF file.
+  copynum   Estimate per-chromosome (incl. mtDNA) relative copy number
+            from a BAM/CRAM file.
 ```
 
 In addition to the main `mitoquest` binary, the project ships:
 
-- `mtcopynum` — a fast standalone tool for **mtDNA copy-number estimation**
-  from a single BAM/CRAM file.
 - `tools/` — a suite of Python helper scripts for VCF QC, annotation,
   pipeline assembly, and a built-in **VQSR**-style variant recalibrator
   (`tools/vqsr/`).
@@ -145,12 +145,11 @@ cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --parallel
 ```
 
-The executables `bin/mitoquest` and `bin/mtcopynum` will be produced.
-Verify with:
+The executable `bin/mitoquest` will be produced. Verify with:
 
 ```bash
 ./bin/mitoquest --help
-./bin/mtcopynum --help
+./bin/mitoquest copynum --help
 ```
 
 #### Step 3 (Optional) — Run the unit tests
@@ -237,12 +236,8 @@ Commands:
             heteroplasmy / homoplasmy from BAM/CRAM files.
   subsam    Extract a subset of samples from an mtDNA VCF and recompute
             INFO fields.
-```
-
-Plus the auxiliary executable:
-
-```bash
-mtcopynum [options] <input.bam/cram>     # Estimate mtDNA copy number
+  copynum   Estimate per-chromosome (incl. mtDNA) relative copy number
+            from a BAM/CRAM file.
 ```
 
 ---
@@ -430,49 +425,65 @@ mitoquest subsam \
 
 ---
 
-## `mtcopynum` — mtDNA copy-number estimation
+## `mitoquest copynum` — mtDNA copy-number estimation
 
-`mtcopynum` is a small standalone executable (built alongside `mitoquest`)
-that estimates **mtDNA copy number per cell** from a single BAM/CRAM file by
-comparing the median coverage on the mitochondrial contig with that of the
-autosomes.
+`mitoquest copynum` estimates **per-chromosome relative copy number** from a
+sorted/indexed BAM or CRAM file. The autosomal chromosomes serve as the
+diploid baseline (CN = 2); the mitochondrial chromosome is reported on the
+same scale, i.e. the expected number of mtDNA molecules per diploid cell.
+The output is a TSV with fragment counts, GC content, length-normalized
+fragment ratio, and the copy-number mean + 95% confidence interval for
+every contig in the BAM header.
 
 ### Full parameter reference
 
 ```bash
-Usage: mtcopynum [options] <input.bam/cram>
+Usage: mitoquest copynum [options] <input.bam/cram>
 
 Options:
-  -r, --reference FILE   Reference genome file (required for CRAM input).
-  -q, --mapq INT         Minimum mapping quality score [0].
-  -t, --threads INT      Number of threads [auto].
-  -s, --seqtype TYPE     Sequencing type: auto | pe | se [auto].
+  -r, --reference FILE   Reference genome FASTA file (required; needed for
+                         CRAM decoding and GC content calculation).
+  -o, --output    FILE   Output TSV file (default: stdout).
+  -q, --mapq      INT    Minimum mapping quality score [0].
+  -t, --threads   INT    Number of worker threads [hardware_concurrency].
+  -s, --seqtype   STR    Sequencing type: auto | pe | se [auto].
                          pe = paired-end, se = single-end.
   -h, --help             Show this help message and exit.
 ```
 
 ### Usage examples
 
-**Estimate mtDNA copy number from a BAM file (paired-end auto-detected):**
+**Estimate copy numbers from a BAM file (paired-end auto-detected):**
 
 ```bash
-mtcopynum sample.bam
+mitoquest copynum -r reference.fasta sample.bam > sample.cn.tsv
 ```
 
-**Estimate from a CRAM file (reference is required):**
+**Estimate from a CRAM file with a stricter MAPQ filter and 8 threads:**
 
 ```bash
-mtcopynum -r reference.fasta sample.cram
+mitoquest copynum \
+    -r reference.fasta \
+    -q 30 -t 8 \
+    -o sample.cn.tsv \
+    sample.cram
 ```
 
-**Use a higher MAPQ filter and 8 threads:**
+**Force single-end counting (useful for legacy unpaired data):**
 
 ```bash
-mtcopynum -q 30 -t 8 sample.bam
+mitoquest copynum \
+    -r reference.fasta \
+    -s se -q 30 -t 4 \
+    sample.bam > sample.cn.tsv
 ```
 
-The output is a single TSV line per input file, with sample ID, autosomal
-median coverage, mtDNA median coverage, and the estimated copy number ratio.
+The TSV output has one row per contig in the BAM header, with the
+following columns:
+
+```
+#Chromosome  Fragments  Chrom_Length  GC_Content  Fragment_Normalized_Ratio  CopyNum  CopyNum-CI95-Lower  CopyNum-CI95-Upper
+```
 
 ---
 
@@ -525,7 +536,7 @@ python tools/vqsr/vqsr.py \
 
 # 4. mtDNA copy-number estimation per sample
 while IFS= read -r bam; do
-    mtcopynum -q 30 -t 4 "$bam"
+    mitoquest copynum -r reference.fasta -q 30 -t 4 "$bam"
 done < bamfile.list > cohort.mtCN.tsv
 
 # 5. Convert to a long-format table for analysis in R/Python
@@ -575,7 +586,7 @@ Highlights:
 - **Output compression**: Always use `.vcf.gz` as the output filename —
   `mitoquest` automatically writes bgzipped, tabix-ready output when the
   extension matches.
-- **NUMT filtering**: For samples with elevated mtCN ratios (`mtcopynum`
+- **NUMT filtering**: For samples with elevated mtCN ratios (`mitoquest copynum`
   output much higher than expected), consider running with
   `-P/--proper-pairs-only` and inspecting outputs with
   `tools/detect_NUMT_by_mtCN.py`.

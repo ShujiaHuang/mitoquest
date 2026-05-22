@@ -16,6 +16,7 @@
 #include "version.h"
 #include "mt_variant_caller.h"
 #include "vcf_subset_samples.h"
+#include "mt_copynum.h"
 
 static int usage() {
     std::cout << MITOQUEST_DESCRIPTION << "\n"
@@ -24,6 +25,7 @@ static int usage() {
                  "Commands:\n"
                  "  caller    Mitochondrial variants and heteroplasmy/homoplasmy caller.\n"
                  "  subsam    Extract mitochondrial variants for specified samples from VCF files and output a new VCF file.\n"
+                 "  copynum   Estimate per-chromosome (incl. mtDNA) relative copy number from a BAM/CRAM file.\n"
               << "\n" << std::endl;
     return 1;
 }
@@ -65,6 +67,15 @@ int main(int argc, char* argv[]) {
             return 1;
         }
     
+    } else if (cmd == "copynum") {
+        try {
+            MtCopyNumber copynum(argc-1, argv+1);
+            copynum.run();
+        } catch (const std::exception& e) {
+            std::cerr << "Error: " << e.what() << '\n';
+            return 1;
+        }
+
     } else if (cmd == "-h" || cmd == "--help") {
         return usage();
         

@@ -191,6 +191,13 @@ inline bool is_autosomal(const std::string& chrom_name) {
     return std::regex_match(chrom_name, autosomal_regex);
 }
 
+// Function to check if a chromosome is mitochondrial
+inline bool is_mitochondrial(const std::string& chrom_name) {
+    // Accept the most common mtDNA contig names: chrM, chrMT, MT, M
+    return chrom_name == "chrM" || chrom_name == "chrMT" ||
+           chrom_name == "MT"   || chrom_name == "M";
+}
+
 // 最多只保留小数点后 6 位
 std::string format_double(double value, int precision = 6);
 

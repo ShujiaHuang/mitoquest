@@ -1,5 +1,20 @@
 # MitoQuest Changelog
 
+## [1.7.0] - 2026-05-22
+
+- 将原本独立的 `mtcopynum` 工具重写并融合进主程序，作为 `mitoquest copynum` 子命令调用
+- 复用 `ngslib::Bam`/`ngslib::Fasta`/`ThreadPool`/`mean`/`standard_error` 等已有模块，移除重复代码
+- 在 `mt_utils.h` 中新增 `is_mitochondrial()` 工具函数
+- 重构 `MtCopyNumber` 类：拆分出可独立测试的 `compute_gc_content` / `compute_statistics` / `compute_normalized_ratios` 静态方法
+- 改进 PE 配对去重逻辑：read1 + 孤立 mate 通过 qname 去重，避免漏计 orphan reads
+- 在 `tests/mt_copynum_test.cpp` 中新增 20 个 GoogleTest 用例覆盖工具函数、统计计算、归一化、端到端 CRAM 输入
+- 修复 macOS 下 `-Wl,-no_compact_unwind` 全局链接选项导致 gtest `EXPECT_THROW` 在跨翻译单元抛出异常时调用 `std::terminate` 的问题：将该选项收敛到生产可执行文件 target，不再传染到测试二进制
+- 输入 BAM 不存在或 fragment 计数为 0 时改为快速失败并给出清晰错误信息
+
+## [1.6.4] - 2026-05-21
+
+- CMake / GitHub Actions 构建脚本若干修复
+
 ## [1.5.5] - 2025-08-19
 
 - 修复已知问题

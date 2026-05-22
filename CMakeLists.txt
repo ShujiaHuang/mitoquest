@@ -6,7 +6,7 @@ set(CMAKE_CXX_STANDARD 17)  # C++ 17
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Set the project name
-project (MITOQUEST VERSION 1.6.4 LANGUAGES CXX)
+project (MITOQUEST VERSION 1.7.0 LANGUAGES CXX)
 
 # Add project metadata
 set(PROJECT_AUTHOR "Shujia Huang")
@@ -22,12 +22,14 @@ configure_file(
 # Set compiler flags
 # -O3: optimization level 3
 # -fPIC: generate position-independent code
-# -Wl,-no_compact_unwind: disable compact unwind information for MacOS only
-#   (linker flag, applied via add_link_options on Apple)
 add_compile_options(-O3 -fPIC)
-if (APPLE)
-    add_link_options(-Wl,-no_compact_unwind)
-endif()
+
+# -Wl,-no_compact_unwind silences ld warnings about missing compact unwind
+# information in C-only libraries (e.g. htslib) on macOS. We apply it ONLY to
+# the production `mitoquest` executable below (via target_link_options) and
+# NOT directory-wide, because doing so breaks gtest's EXPECT_THROW under
+# Apple's linker (cross-TU C++ exceptions get std::terminate'd instead of
+# being caught by the test framework).
 
 # -------------------------------------------------------
 # Static linking configuration
@@ -138,6 +140,9 @@ file(GLOB_RECURSE SRC_MT CONFIGURE_DEPENDS
 
 set(EXECUTABLE_OUTPUT_PATH ${CMAKE_CURRENT_SOURCE_DIR}/bin)
 add_executable(mitoquest ${SRC_MT})
+if (APPLE)
+    target_link_options(mitoquest PRIVATE -Wl,-no_compact_unwind)
+endif()
 add_dependencies(mitoquest Buildhts)
 # Link libraries
 if(STATIC_BUILD AND APPLE)
@@ -219,46 +224,9 @@ endif()
 ####################################################################################################
 ####### Compile the test and other executables scripts
 ####################################################################################################
-# Compile count_align_fragments.cpp
-# add_executable(count_align_fragments ${CMAKE_CURRENT_SOURCE_DIR}/scripts/count_align_fragments.cpp)
-# add_dependencies(count_align_fragments Buildhts)
-# target_link_libraries(count_align_fragments ${HTSLIB} ${COMMON_SYS_LIB})
-add_executable(mtcopynum ${CMAKE_CURRENT_SOURCE_DIR}/scripts/mt_copynum.cpp 
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/algorithm.cpp 
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/mt_utils.cpp 
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/io/iobgzf.cpp 
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/io/fasta.cpp 
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/io/utils.cpp
-)
-add_dependencies(mtcopynum Buildhts)
-# Honor STATIC_BUILD for mtcopynum exactly as for mitoquest, so the auxiliary
-# tool inherits the same portability guarantees on Linux static builds.
-if(STATIC_BUILD AND APPLE)
-    target_link_libraries(mtcopynum
-        ${HTSLIB}
-        curl
-        ${LZMA_STATIC}
-        ${BZ2_STATIC}
-        ${ZLIB_STATIC}
-        pthread
-        m
-    )
-elseif(STATIC_BUILD AND NOT APPLE)
-    target_link_options(mtcopynum PRIVATE -static-libstdc++ -static-libgcc)
-    target_link_libraries(mtcopynum
-        ${HTSLIB}
-        ${SSL_STATIC}
-        ${CRYPTO_STATIC}
-        ${LZMA_STATIC}
-        ${BZ2_STATIC}
-        ${ZLIB_STATIC}
-        pthread
-        m
-        dl
-    )
-else()
-    target_link_libraries(mtcopynum ${HTSLIB} ${COMMON_SYS_LIB})
-endif()
+# NOTE: The standalone `mtcopynum` executable has been folded into `mitoquest` as the
+# `mitoquest copynum` subcommand (src/mt_copynum.{h,cpp}). The recursive GLOB above
+# picks the new sources up automatically; no extra add_executable target is needed.
 
 ####################################################################################################
 ####### Testing Configuration
