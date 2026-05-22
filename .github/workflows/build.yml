@@ -1,4 +1,4 @@
-name: Build MitoQuest
+name: Build MitoQuestr
 
 on:
   push:
@@ -8,10 +8,17 @@ on:
   release:
     types: [created]
 
+# Required for softprops/action-gh-release to upload release assets
+permissions:
+  contents: write
+
 jobs:
+  # -----------------------------------------------------------
+  # Job 1: Build + Test (dynamic linking, for CI verification)
+  # -----------------------------------------------------------
   build:
-    name: Build on ${{matrix.os}}
-    runs-on: ${{matrix.os}}
+    name: Build & Test on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest]
@@ -22,7 +29,7 @@ jobs:
             artifact_name: mitoquest-macos
 
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
       with:
         submodules: recursive
 
@@ -40,38 +47,136 @@ jobs:
 
     - name: Configure CMake
       run: |
-        cmake -B ${{github.workspace}}/build \
+        cmake -B ${{ github.workspace }}/build \
               -DCMAKE_BUILD_TYPE=Release \
               -DBUILD_TESTING=ON
 
     - name: Build
-      run: cmake --build ${{github.workspace}}/build --config Release
+      run: cmake --build ${{ github.workspace }}/build --config Release
 
     - name: Test
-      working-directory: ${{github.workspace}}/build
+      working-directory: ${{ github.workspace }}/build
       run: ctest -C Release --output-on-failure
 
     - name: Prepare artifacts
       run: |
         mkdir -p dist
-        cp bin/mitoquest dist/${{matrix.artifact_name}}
-    
+        cp bin/mitoquest dist/${{ matrix.artifact_name }}
+
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: ${{matrix.artifact_name}}
-        path: dist/${{matrix.artifact_name}}
+        name: ${{ matrix.artifact_name }}
+        path: dist/${{ matrix.artifact_name }}
 
     - name: Upload Release Assets
       if: github.event_name == 'release'
-      uses: softprops/action-gh-release@v1
+      uses: softprops/action-gh-release@v2
       with:
-        files: dist/${{matrix.artifact_name}}
-    
-    - name: Show artifact location
+        tag_name: ${{ github.ref_name }}
+        files: dist/${{ matrix.artifact_name }}
+
+  # -----------------------------------------------------------
+  # Job 2: Static build (for release distribution)
+  #
+  # Linux : Build natively on ubuntu-22.04 (glibc 2.35) with
+  #         -static-libstdc++ -static-libgcc and statically-linked
+  #         htslib + compression libs.  glibc remains dynamic.
+  #         Result is portable to any glibc >= 2.31 distribution
+  #         (Ubuntu 20.04+, Debian 11+, RHEL/CentOS 8+, Fedora 32+).
+  #         This replaces the previous Alpine/musl fully-static
+  #         approach, which segfaulted under multi-threaded loads on
+  #         glibc hosts (musl/glibc runtime incompatibility).
+  # macOS : Best-effort static; only system frameworks remain dynamic.
+  #
+  # Runs independently (no 'needs') so static binaries are always
+  # uploaded on release events without waiting for the dynamic build.
+  # -----------------------------------------------------------
+  build-static:
+    name: Static Build (${{ matrix.config.os_name }})
+    runs-on: ${{ matrix.config.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        config:
+          - os: ubuntu-22.04
+            os_name: linux-x86_64
+            artifact_name: mitoquest-linux-static
+          - os: macos-latest
+            os_name: macos-arm64
+            artifact_name: mitoquest-macos-static
+
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        submodules: recursive
+
+    # ========== Linux: Ubuntu glibc partial-static build ==========
+    - name: Install Dependencies (Linux)
+      if: runner.os == 'Linux'
       run: |
-        echo "Build artifacts have been uploaded to:"
-        echo "- Actions tab: ${{github.server_url}}/${{github.repository}}/actions/runs/${{github.run_id}}"
-        if [["${{github.event_name}}" == "release"]]; then
-          echo "- Release page: ${{github.server_url}}/${{github.repository}}/releases/latest"
-        fi
+        sudo apt-get update
+        sudo apt-get install -y \
+          build-essential cmake autoconf automake \
+          zlib1g-dev libbz2-dev liblzma-dev libssl-dev
+
+    - name: Build static binary (Linux / Ubuntu-glibc)
+      if: runner.os == 'Linux'
+      run: |
+        echo "=== Cleaning stale htslib artifacts ==="
+        find htslib -type f -name "*.o"   -delete 2>/dev/null || true
+        find htslib -type f -name "libhts.*" -not -name "libhts.map" -delete 2>/dev/null || true
+
+        echo "=== Configuring (STATIC_BUILD=ON) ==="
+        cmake -B build-static \
+          -DSTATIC_BUILD=ON \
+          -DCMAKE_BUILD_TYPE=Release
+
+        echo "=== Building ==="
+        cmake --build build-static --config Release
+
+        echo "=== Verifying binary ==="
+        file bin/mitoquest
+        ldd bin/mitoquest || true
+        ./bin/mitoquest | head -20 || true
+
+    # ========== macOS: best-effort static build ===================
+    - name: Install Dependencies (macOS)
+      if: runner.os == 'macOS'
+      run: brew install autoconf automake zlib bzip2 xz curl openssl@3
+
+    - name: Build static binary (macOS)
+      if: runner.os == 'macOS'
+      run: |
+        find htslib -type f -name "*.o" -delete 2>/dev/null || true
+        find htslib -type f -name "libhts.*" -not -name "libhts.map" -delete 2>/dev/null || true
+        cmake -B build-static \
+          -DSTATIC_BUILD=ON \
+          -DCMAKE_BUILD_TYPE=Release
+        cmake --build build-static --config Release
+
+    - name: Verify binary (macOS)
+      if: runner.os == 'macOS'
+      run: |
+        file bin/mitoquest
+        otool -L bin/mitoquest
+
+    # ========== Common: artifact & release ========================
+    - name: Prepare artifacts
+      run: |
+        mkdir -p dist
+        cp bin/mitoquest dist/${{ matrix.config.artifact_name }}
+        chmod +x dist/${{ matrix.config.artifact_name }}
+
+    - name: Upload artifacts (CI)
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ matrix.config.artifact_name }}
+        path: dist/${{ matrix.config.artifact_name }}
+
+    - name: Upload Release Assets
+      if: github.event_name == 'release'
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: ${{ github.ref_name }}
+        files: dist/${{ matrix.config.artifact_name }}
