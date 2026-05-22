@@ -15,6 +15,11 @@ add_library(mitoquest_lib STATIC
     ${CMAKE_SOURCE_DIR}/src/io/vcf_record.cpp
 )
 
+# Make sure htslib (headers + libhts.a) is built before this library compiles.
+# Without this, parallel builds can start compiling mitoquest_lib's TUs before
+# htslib's ./configure has generated config.h / htslib/version.h.
+add_dependencies(mitoquest_lib Buildhts)
+
 # Set include directories for the library
 target_include_directories(mitoquest_lib PUBLIC
     ${CMAKE_SOURCE_DIR}/src

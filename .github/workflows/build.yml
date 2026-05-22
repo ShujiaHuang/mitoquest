@@ -1,4 +1,4 @@
-name: Build MitoQuestr
+name: Build MitoQuest
 
 on:
   push:
@@ -52,7 +52,7 @@ jobs:
               -DBUILD_TESTING=ON
 
     - name: Build
-      run: cmake --build ${{ github.workspace }}/build --config Release
+      run: cmake --build ${{ github.workspace }}/build --config Release --parallel
 
     - name: Test
       working-directory: ${{ github.workspace }}/build
@@ -124,6 +124,7 @@ jobs:
       if: runner.os == 'Linux'
       run: |
         echo "=== Cleaning stale htslib artifacts ==="
+        (cd htslib && make distclean) 2>/dev/null || true
         find htslib -type f -name "*.o"   -delete 2>/dev/null || true
         find htslib -type f -name "libhts.*" -not -name "libhts.map" -delete 2>/dev/null || true
 
@@ -133,33 +134,42 @@ jobs:
           -DCMAKE_BUILD_TYPE=Release
 
         echo "=== Building ==="
-        cmake --build build-static --config Release
+        cmake --build build-static --config Release --parallel
 
         echo "=== Verifying binary ==="
         file bin/mitoquest
+        readelf -d bin/mitoquest | grep NEEDED || true
         ldd bin/mitoquest || true
-        ./bin/mitoquest | head -20 || true
+        ./bin/mitoquest --help 2>&1 | head -20 || true
 
     # ========== macOS: best-effort static build ===================
+    # Note: openssl is intentionally NOT installed.  htslib is configured with
+    # --disable-libcurl on static builds (no remote-URL support) and macOS
+    # uses Apple's CommonCrypto, so libssl/libcrypto are not needed.  Pulling
+    # in Homebrew openssl can in fact break the link line because htslib's
+    # ./configure may auto-detect it and emit -lssl -lcrypto symbols that we
+    # never add to target_link_libraries.
     - name: Install Dependencies (macOS)
       if: runner.os == 'macOS'
-      run: brew install autoconf automake zlib bzip2 xz curl openssl@3
+      run: brew install autoconf automake zlib bzip2 xz curl
 
     - name: Build static binary (macOS)
       if: runner.os == 'macOS'
       run: |
+        (cd htslib && make distclean) 2>/dev/null || true
         find htslib -type f -name "*.o" -delete 2>/dev/null || true
         find htslib -type f -name "libhts.*" -not -name "libhts.map" -delete 2>/dev/null || true
         cmake -B build-static \
           -DSTATIC_BUILD=ON \
           -DCMAKE_BUILD_TYPE=Release
-        cmake --build build-static --config Release
+        cmake --build build-static --config Release --parallel
 
     - name: Verify binary (macOS)
       if: runner.os == 'macOS'
       run: |
         file bin/mitoquest
         otool -L bin/mitoquest
+        ./bin/mitoquest --help 2>&1 | head -20 || true
 
     # ========== Common: artifact & release ========================
     - name: Prepare artifacts

@@ -6,7 +6,7 @@ set(CMAKE_CXX_STANDARD 17)  # C++ 17
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Set the project name
-project (MITOQUEST VERSION 1.6.3 LANGUAGES CXX)
+project (MITOQUEST VERSION 1.6.4 LANGUAGES CXX)
 
 # Add project metadata
 set(PROJECT_AUTHOR "Shujia Huang")
@@ -23,9 +23,10 @@ configure_file(
 # -O3: optimization level 3
 # -fPIC: generate position-independent code
 # -Wl,-no_compact_unwind: disable compact unwind information for MacOS only
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3 -fPIC")
+#   (linker flag, applied via add_link_options on Apple)
+add_compile_options(-O3 -fPIC)
 if (APPLE)
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wl,-no_compact_unwind")
+    add_link_options(-Wl,-no_compact_unwind)
 endif()
 
 # -------------------------------------------------------
@@ -64,30 +65,54 @@ if(STATIC_BUILD)
 endif()
 
 # Ensure htslib is built before the main executable.
-# For static builds on Linux:
-#   * --disable-libcurl  : we only read local files, no remote URLs.
-#   * --without-libdeflate: htslib's ./configure auto-detects libdeflate
-#                          when it is present on the build host (e.g.
-#                          GitHub-hosted ubuntu-22.04 runners have it
-#                          preinstalled), and then emits libhts.a with
-#                          libdeflate_* references.  Since we do not
-#                          link -ldeflate (and want to keep the binary
-#                          dependency-light), we explicitly disable it.
-#                          htslib falls back to zlib transparently with
-#                          no functional loss.
-if(STATIC_BUILD AND NOT APPLE)
+# For static builds the configure flags below are used:
+# --disable-libcurl  : we only read local files, no remote URLs.
+# --without-libdeflate: htslib's ./configure auto-detects libdeflate when
+#                       present on the host (e.g. ubuntu-22.04 GH runners,
+#                       or developer machines with `brew install libdeflate`),
+#                       and then emits libhts.a with libdeflate_* references.
+#                       Since we do not link -ldeflate (and want to keep the
+#                       binary dependency-light), we explicitly disable it.
+#                       htslib falls back to zlib transparently with no
+#                       functional loss.  Apply on BOTH Linux and macOS
+#                       static builds for consistency.
+if(STATIC_BUILD)
     set(HTSLIB_CONFIGURE_FLAGS --disable-libcurl --without-libdeflate)
 else()
     set(HTSLIB_CONFIGURE_FLAGS "")
 endif()
 
+# Build htslib incrementally and in parallel.
+# - add_custom_command with OUTPUT makes the build incremental (rebuild only
+#   when libhts.a is missing or its dependency stamp changed).
+# - The stamp file encodes HTSLIB_CONFIGURE_FLAGS so a flag change forces a
+#   full reconfigure (avoids stale config.status when toggling STATIC_BUILD).
+# - $(MAKE) -j${NPROC} parallelizes the build.
+include(ProcessorCount)
+ProcessorCount(NPROC)
+if(NPROC EQUAL 0)
+    set(NPROC 2)
+endif()
 
-# Ensure htslib is built before the main executable
-add_custom_target(
-    Buildhts ALL
-    COMMAND autoreconf -i && ./configure ${HTSLIB_CONFIGURE_FLAGS} && make
+set(HTSLIB_A     ${CMAKE_CURRENT_SOURCE_DIR}/htslib/libhts.a)
+set(HTSLIB_STAMP ${CMAKE_CURRENT_BINARY_DIR}/htslib_flags.stamp)
+string(REPLACE ";" " " _HTSLIB_FLAGS_STR "${HTSLIB_CONFIGURE_FLAGS}")
+file(WRITE ${HTSLIB_STAMP}.in "${_HTSLIB_FLAGS_STR}\n")
+configure_file(${HTSLIB_STAMP}.in ${HTSLIB_STAMP} COPYONLY)
+
+add_custom_command(
+    OUTPUT ${HTSLIB_A}
+    COMMAND ${CMAKE_COMMAND} -E echo "Configuring htslib with: ${HTSLIB_CONFIGURE_FLAGS}"
+    COMMAND $(MAKE) distclean || true
+    COMMAND autoreconf -i
+    COMMAND ./configure ${HTSLIB_CONFIGURE_FLAGS}
+    COMMAND $(MAKE) -j${NPROC} libhts.a
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/htslib
+    DEPENDS ${HTSLIB_STAMP}
+    COMMENT "Building htslib (parallel, j=${NPROC})"
+    VERBATIM
 )
+add_custom_target(Buildhts DEPENDS ${HTSLIB_A})
 
 # Include directories
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/htslib)  # include the header of htslib
@@ -100,12 +125,15 @@ if(NOT APPLE)
 endif()
 
 # Define htslib library
-set(HTSLIB ${CMAKE_CURRENT_SOURCE_DIR}/htslib/libhts.a)
+set(HTSLIB ${HTSLIB_A})
 
-# Compile mitoquest - main executable
-file(GLOB_RECURSE SRC_MT 
+# Compile mitoquest - main executable.
+# NOTE: only one GLOB_RECURSE pattern is needed; the previous version listed
+# both "src/*.cpp" and "src/io/*.cpp" which caused every io/*.cpp file to be
+# included twice (recursive glob already traverses subdirectories).
+# CONFIGURE_DEPENDS makes CMake re-glob when files are added/removed.
+file(GLOB_RECURSE SRC_MT CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/io/*.cpp"
 )
 
 set(EXECUTABLE_OUTPUT_PATH ${CMAKE_CURRENT_SOURCE_DIR}/bin)
@@ -164,9 +192,11 @@ elseif(STATIC_BUILD AND NOT APPLE)
     message(STATUS "  zlib=${ZLIB_STATIC} bz2=${BZ2_STATIC} lzma=${LZMA_STATIC}")
     message(STATUS "  ssl=${SSL_STATIC} crypto=${CRYPTO_STATIC}")
 
-    # Bundle the C++ runtime statically; glibc stays dynamic.
-    set(CMAKE_EXE_LINKER_FLAGS
-        "${CMAKE_EXE_LINKER_FLAGS} -static-libstdc++ -static-libgcc")
+    # Bundle the C++ runtime statically for THIS target only; glibc stays
+    # dynamic.  Using target_link_options instead of mutating the global
+    # CMAKE_EXE_LINKER_FLAGS avoids leaking these flags into other targets
+    # (e.g. mtcopynum, gtest binaries).
+    target_link_options(mitoquest PRIVATE -static-libstdc++ -static-libgcc)
 
     target_link_libraries(mitoquest
         ${HTSLIB}
@@ -201,7 +231,34 @@ add_executable(mtcopynum ${CMAKE_CURRENT_SOURCE_DIR}/scripts/mt_copynum.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/io/utils.cpp
 )
 add_dependencies(mtcopynum Buildhts)
-target_link_libraries(mtcopynum ${HTSLIB} ${COMMON_SYS_LIB})
+# Honor STATIC_BUILD for mtcopynum exactly as for mitoquest, so the auxiliary
+# tool inherits the same portability guarantees on Linux static builds.
+if(STATIC_BUILD AND APPLE)
+    target_link_libraries(mtcopynum
+        ${HTSLIB}
+        curl
+        ${LZMA_STATIC}
+        ${BZ2_STATIC}
+        ${ZLIB_STATIC}
+        pthread
+        m
+    )
+elseif(STATIC_BUILD AND NOT APPLE)
+    target_link_options(mtcopynum PRIVATE -static-libstdc++ -static-libgcc)
+    target_link_libraries(mtcopynum
+        ${HTSLIB}
+        ${SSL_STATIC}
+        ${CRYPTO_STATIC}
+        ${LZMA_STATIC}
+        ${BZ2_STATIC}
+        ${ZLIB_STATIC}
+        pthread
+        m
+        dl
+    )
+else()
+    target_link_libraries(mtcopynum ${HTSLIB} ${COMMON_SYS_LIB})
+endif()
 
 ####################################################################################################
 ####### Testing Configuration
