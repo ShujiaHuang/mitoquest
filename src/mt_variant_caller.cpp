@@ -22,7 +22,7 @@ void MtVariantCaller::usage(const Config &config) const {
               << "                             from the BAM file if the name of BAM/CRAM is something like 'SampleID.xxxx.bam'.\n"
               << "  -j, --het-threshold FLOAT  Heteroplasmy threshold (default: " << config.heteroplasmy_threshold << ")\n"
               << "  -c, --chunk INT            Chunk size for parallel processing (default: " << config.chunk_size << ")\n"
-              << "  -t, --threads INT          Number of threads (default: all available threads [" << config.thread_count << "])\n"
+              << "  -t, --threads INT          Number of threads (default: all available threads [hardware_concurrency])\n"
               << "  -h, --help                 Print this help message.\n\n";
     
     return;
