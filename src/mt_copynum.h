@@ -15,6 +15,7 @@
 #define _MT_COPYNUM_H_
 
 #include <getopt.h>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -38,6 +39,16 @@ public:
         int min_mapq;       // a mapping quality score less than this value will be filtered
         int thread_count;   // number of worker threads
         SeqType seq_type;   // sequencing type: AUTO|PE|SE
+
+        // Optional: when non-empty, the listed regions REPLACE the whole-
+        // chromosome interval for the chromosomes they cover. A chromosome
+        // that does not appear in any region is still measured over its
+        // full length (default behaviour).
+        //
+        // The original CLI string is kept for the TSV header; `regions`
+        // holds the parsed, 1-based inclusive intervals.
+        std::string regions_arg;
+        std::vector<ngslib::GenomeRegion> regions;
     };
 
     // Mean + 95% confidence interval of a vector of values.
@@ -52,16 +63,24 @@ public:
     // Per-chromosome bookkeeping.
     struct ChromosomeData {
         std::string name;
-        uint32_t    length;
+        uint32_t    length;            // full chromosome length (from BAM header)
+        uint32_t    effective_length;  // length actually measured (sum of `regions`; ==
+                                       // `length` when `regions` is empty)
         int64_t     count;             // counted fragments
-        double      gc_content;        // GC fraction over the whole chromosome
-        double      normalized_ratio;  // (count / total_count) / (length / total_length)
+        double      gc_content;        // GC fraction over the measured region(s)
+        double      normalized_ratio;  // (count / total_count) / (effective_length / total_effective)
         Statistics  cn_stats;          // copy number relative to autosomes (mean + CI95)
+
+        // Region restriction. Empty => the whole chromosome is used.
+        // Intervals are 1-based, inclusive, on this chromosome.
+        std::vector<ngslib::GenomeRegion> regions;
+
         // Track read names for paired-end de-duplication of fragments.
         robin_hood::unordered_set<std::string> processed_reads;
 
         ChromosomeData(const std::string &n, uint32_t l)
-            : name(n), length(l), count(0), gc_content(0.0), normalized_ratio(0.0) {}
+            : name(n), length(l), effective_length(l),
+              count(0), gc_content(0.0), normalized_ratio(0.0) {}
     };
 
     explicit MtCopyNumber(int argc, char* argv[]);
@@ -89,8 +108,25 @@ public:
     // In-place: fill .normalized_ratio and .cn_stats for every contig.
     // The autosomes form the diploid baseline; mtDNA is weighted by 2 so
     // the value matches "copies per diploid cell".
+    // Length-normalization uses ChromosomeData::effective_length so that
+    // region-restricted contigs (e.g. mtDNA with NUMT zones masked out)
+    // are scored only on the bases that were actually measured.
     // Throws std::runtime_error if the input is empty or all-zero.
     static void compute_normalized_ratios(std::vector<ChromosomeData> &chromosomes);
+
+    // Parse a user-supplied region argument into a vector of 1-based
+    // inclusive GenomeRegion intervals. The argument may be either:
+    //   * a path to a file (one region per line; either BED-style
+    //     `chr<TAB>start<TAB>end` 0-based half-open, or samtools-style
+    //     `chr:start-end` 1-based inclusive; '#' starts a comment)
+    //   * a comma-separated list of `chr:start-end` strings
+    //
+    // `chr` alone, or `chr:start`, are accepted with the missing end
+    // filled in from `chrom_length` (or left as UINT32_MAX when the
+    // length lookup is null).
+    static std::vector<ngslib::GenomeRegion>
+    parse_regions_arg(const std::string &arg,
+                      const std::function<uint32_t(const std::string &)> &chrom_length = nullptr);
 
 private:
     // Prevent copying (C++11 style)
@@ -109,6 +145,12 @@ private:
 
     // List all chromosomes from the BAM/CRAM header.
     std::vector<ChromosomeData> _load_chromosomes() const;
+
+    // Attach Config::regions to the matching ChromosomeData entries
+    // (clamping to chromosome length and merging overlaps), and refresh
+    // each chromosome's `effective_length`. Throws if no supplied region
+    // matches any chromosome in the BAM header.
+    void _attach_regions_to_chroms(std::vector<ChromosomeData> &chromosomes) const;
 
     // Per-chromosome fragment counter; safe to run from a worker thread
     // because each call opens its own ngslib::Bam handle.

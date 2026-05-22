@@ -1,5 +1,17 @@
 # MitoQuest Changelog
 
+## [1.7.1] - 2026-05-22
+
+- `mitoquest copynum` 新增 `-L/--regions` 命令行参数，可以将某条染色体（典型用法是 chrM）的拷贝数计算限制在用户指定的一组区间内
+- 未在 `-L` 中出现的染色体仍按全长计算，因此常染色体作为二倍体基线的归一化逻辑保持不变
+- 主要应用场景：排除线粒体 NUMT 区域对 mtDNA 拷贝数估算的污染
+- 区间参数支持两种形式：内联的逗号分隔字符串（`chrM:1-300,chrM:16000-16569`），或区间文件路径（samtools 风格 `chr:start-end` 或 BED 风格 `chr<TAB>start<TAB>end`，支持 `#` 行内注释）
+- 同一染色体上的重叠/相邻区间会自动合并；不在 BAM header 中的染色体名会发出警告并跳过；若所有区间均无匹配则报错退出
+- 片段计数采用 5' 端锚定去重，确保跨区间边界的 reads 不会被重复计数
+- TSV 输出新增两列 `Effective_Length` 与 `Regions_Used`，并在使用 `-L` 时写入 `#Regions argument:` 头部注释，保持原有 8 列向后兼容（已有解析脚本无需改动）
+- 区间限定后的 GC 含量按区间长度加权计算
+- 新增 8 个 GoogleTest 用例覆盖 `parse_regions_arg`（内联、文件、BED、错误输入）以及端到端 `run()` 区间限定（覆盖范围缩减、重叠合并、未匹配抛错）
+
 ## [1.7.0] - 2026-05-22
 
 - 将原本独立的 `mtcopynum` 工具重写并融合进主程序，作为 `mitoquest copynum` 子命令调用

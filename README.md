@@ -13,7 +13,7 @@ clinical workflow to population-level cohorts with thousands of samples.
 
 ```bash
 mitoquest: Human Mitochondrial sequencing data Analysis Toolkit
-Version: 1.7.0
+Version: 1.7.1
 
 Usage: mitoquest <command> [options]
 Commands:
@@ -448,6 +448,17 @@ Options:
   -t, --threads   INT    Number of worker threads [hardware_concurrency].
   -s, --seqtype   STR    Sequencing type: auto | pe | se [auto].
                          pe = paired-end, se = single-end.
+  -L, --regions   STR    Restrict counting / GC / length normalization to
+                         the listed regions, given either as a comma-
+                         separated list (e.g. 'chrM:1-300,chrM:16000-16569')
+                         or as a path to a file (one region per line, in
+                         either 'chr:start-end' samtools form or BED-style
+                         'chr<TAB>start<TAB>end' triples; '#' starts a
+                         comment). The intervals REPLACE the whole-
+                         chromosome window for the chromosomes they cover;
+                         chromosomes not mentioned keep their full-length
+                         behaviour. Typical use: exclude NUMT-affected zones
+                         from the mtDNA copy-number estimate.
   -h, --help             Show this help message and exit.
 ```
 
@@ -478,12 +489,48 @@ mitoquest copynum \
     sample.bam > sample.cn.tsv
 ```
 
+**Exclude NUMT-affected zones via inline regions (recommended for mtCN):**
+
+```bash
+# Restrict chrM measurement to the two stretches least affected by NUMTs;
+# autosomes are still measured over their full length, so the diploid
+# baseline is unchanged.
+mitoquest copynum \
+    -r reference.fasta \
+    -L 'chrM:1-300,chrM:16000-16569' \
+    -q 30 -t 8 \
+    sample.bam > sample.cn.tsv
+```
+
+**Exclude NUMT zones via a BED file (one region per line):**
+
+```bash
+# my_chrM_regions.bed (0-based half-open, standard BED):
+#   chrM    0       300
+#   chrM    15999   16569
+mitoquest copynum \
+    -r reference.fasta \
+    -L my_chrM_regions.bed \
+    -q 30 -t 8 \
+    sample.bam > sample.cn.tsv
+```
+
 The TSV output has one row per contig in the BAM header, with the
 following columns:
 
 ```
-#Chromosome  Fragments  Chrom_Length  GC_Content  Fragment_Normalized_Ratio  CopyNum  CopyNum-CI95-Lower  CopyNum-CI95-Upper
+#Chromosome  Fragments  Chrom_Length  GC_Content  Fragment_Normalized_Ratio  CopyNum  CopyNum-CI95-Lower  CopyNum-CI95-Upper  Effective_Length  Regions_Used
 ```
+
+- `Chrom_Length` always reports the full contig length from the BAM header.
+- `Effective_Length` is the number of bases that were actually counted
+  (equals `Chrom_Length` when `-L` did not target that contig; otherwise it
+  is the sum of the merged user-supplied intervals on that chromosome).
+- `Regions_Used` is `.` for unrestricted chromosomes, or a comma-separated
+  list of merged `start-end` intervals (1-based inclusive) when `-L` was
+  applied to that chromosome.
+- When `-L` is supplied, the output also includes a `#Regions argument: ...`
+  header comment recording the original CLI value for reproducibility.
 
 ---
 
@@ -587,9 +634,12 @@ Highlights:
   `mitoquest` automatically writes bgzipped, tabix-ready output when the
   extension matches.
 - **NUMT filtering**: For samples with elevated mtCN ratios (`mitoquest copynum`
-  output much higher than expected), consider running with
-  `-P/--proper-pairs-only` and inspecting outputs with
-  `tools/detect_NUMT_by_mtCN.py`.
+  output much higher than expected), consider either:
+    * restricting the mtDNA measurement to NUMT-poor stretches with
+      `mitoquest copynum -L 'chrM:1-300,chrM:16000-16569' ...`
+      (chrM is measured only on the listed intervals; autosomes stay full-length),
+    * and/or running the caller with `-P/--proper-pairs-only`
+      and inspecting outputs with `tools/detect_NUMT_by_mtCN.py`.
 
 ---
 

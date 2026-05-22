@@ -362,3 +362,208 @@ TEST(MtCopyNumRunE2E, ManualSeqTypeMatchesAutoDetection) {
     std::remove("data/copynum_auto.tsv");
     std::remove("data/copynum_pe.tsv");
 }
+
+// =====================================================================
+//  MtCopyNumber::parse_regions_arg  (the new -L/--regions parser)
+// =====================================================================
+
+TEST(MtCopyNumRegionsParse, InlineCommaList) {
+    auto regs = MtCopyNumber::parse_regions_arg("chrM:1-300,chrM:16000-16569");
+    ASSERT_EQ(regs.size(), 2u);
+    EXPECT_EQ(regs[0].chrom, "chrM");
+    EXPECT_EQ(regs[0].start, 1u);
+    EXPECT_EQ(regs[0].end,   300u);
+    EXPECT_EQ(regs[1].chrom, "chrM");
+    EXPECT_EQ(regs[1].start, 16000u);
+    EXPECT_EQ(regs[1].end,   16569u);
+}
+
+TEST(MtCopyNumRegionsParse, InlineWithWhitespaceAndEmptyTokens) {
+    auto regs = MtCopyNumber::parse_regions_arg(" chr1:10-20 , ,chr2:5-7 ");
+    ASSERT_EQ(regs.size(), 2u);
+    EXPECT_EQ(regs[0].chrom, "chr1");
+    EXPECT_EQ(regs[0].start, 10u);
+    EXPECT_EQ(regs[0].end,   20u);
+    EXPECT_EQ(regs[1].chrom, "chr2");
+    EXPECT_EQ(regs[1].start, 5u);
+    EXPECT_EQ(regs[1].end,   7u);
+}
+
+TEST(MtCopyNumRegionsParse, MalformedTokenThrows) {
+    EXPECT_THROW(MtCopyNumber::parse_regions_arg("chrM:abc-100"),
+                 std::invalid_argument);
+    EXPECT_THROW(MtCopyNumber::parse_regions_arg("chrM:100-50"),
+                 std::invalid_argument);
+    EXPECT_THROW(MtCopyNumber::parse_regions_arg(":1-10"),
+                 std::invalid_argument);
+}
+
+TEST(MtCopyNumRegionsParse, FileSamtoolsForm) {
+    const std::string path = "data/__copynum_regions_samtools.txt";
+    {
+        std::ofstream ofs(path);
+        ASSERT_TRUE(ofs.is_open());
+        ofs << "# leading comment\n"
+            << "chrM:1-300\n"
+            << "\n"
+            << "chrM:16000-16569   # trailing comment\n";
+    }
+    auto regs = MtCopyNumber::parse_regions_arg(path);
+    std::remove(path.c_str());
+    ASSERT_EQ(regs.size(), 2u);
+    EXPECT_EQ(regs[0].start, 1u);
+    EXPECT_EQ(regs[0].end,   300u);
+    EXPECT_EQ(regs[1].start, 16000u);
+    EXPECT_EQ(regs[1].end,   16569u);
+}
+
+TEST(MtCopyNumRegionsParse, FileBedForm) {
+    // BED is 0-based half-open; parser must convert to 1-based inclusive.
+    const std::string path = "data/__copynum_regions_bed.txt";
+    {
+        std::ofstream ofs(path);
+        ASSERT_TRUE(ofs.is_open());
+        ofs << "chrM\t0\t300\n"
+            << "chrM\t15999\t16569\n";
+    }
+    auto regs = MtCopyNumber::parse_regions_arg(path);
+    std::remove(path.c_str());
+    ASSERT_EQ(regs.size(), 2u);
+    EXPECT_EQ(regs[0].chrom, "chrM");
+    EXPECT_EQ(regs[0].start, 1u);     // 0 -> 1
+    EXPECT_EQ(regs[0].end,   300u);   // 300 (half-open) -> 300 (inclusive)
+    EXPECT_EQ(regs[1].start, 16000u); // 15999 -> 16000
+    EXPECT_EQ(regs[1].end,   16569u);
+}
+
+// =====================================================================
+//  End-to-end run() with -L/--regions populated.
+// =====================================================================
+
+// Helper to grab a TSV row's Effective_Length + Regions_Used columns,
+// which sit after the eight columns parsed by parse_tsv().
+namespace {
+struct TsvExtraCols {
+    uint32_t    effective_length = 0;
+    std::string regions_used;
+};
+
+TsvExtraCols read_extra_cols(const std::string &path, const std::string &chrom) {
+    TsvExtraCols out;
+    std::ifstream ifs(path);
+    if (!ifs.is_open()) return out;
+    std::string line;
+    while (std::getline(ifs, line)) {
+        if (line.empty() || line[0] == '#') continue;
+        std::stringstream ss(line);
+        std::string name; int64_t frags = 0; uint32_t clen = 0;
+        double a = 0, b = 0, c = 0, d = 0, e = 0;
+        uint32_t eff = 0; std::string regs;
+        ss >> name >> frags >> clen >> a >> b >> c >> d >> e >> eff >> regs;
+        if (!ss.fail() && name == chrom) {
+            out.effective_length = eff;
+            out.regions_used     = regs;
+            return out;
+        }
+    }
+    return out;
+}
+}  // namespace
+
+TEST(MtCopyNumRunE2E, RegionsRestrictChrMCount) {
+    // Baseline: count over the full chrM contig.
+    MtCopyNumber::Config base;
+    base.reference_file = "data/chrM_rCRS.decoy.fa.gz";
+    base.input_bam      = "data/smp2_subset.bam";
+    base.output_file    = "data/copynum_full.tsv";
+    base.min_mapq       = 20;
+    base.thread_count   = 2;
+    base.seq_type       = SeqType::PE;
+    std::remove(base.output_file.c_str());
+    {
+        MtCopyNumber tool(base);
+        ASSERT_NO_THROW(tool.run());
+    }
+    auto rows_full = parse_tsv(base.output_file);
+    ASSERT_FALSE(rows_full.empty());
+    auto it_full = std::find_if(rows_full.begin(), rows_full.end(),
+                                [](const TsvRow &r){ return r.chrom == "chrM"; });
+    ASSERT_NE(it_full, rows_full.end());
+    auto extra_full = read_extra_cols(base.output_file, "chrM");
+    EXPECT_EQ(extra_full.effective_length, 16569u);
+    EXPECT_EQ(extra_full.regions_used,     ".");
+
+    // Region-restricted run: count only the first 1000 bp of chrM.
+    MtCopyNumber::Config cfg = base;
+    cfg.output_file = "data/copynum_regions.tsv";
+    cfg.regions_arg = "chrM:1-1000";
+    cfg.regions     = MtCopyNumber::parse_regions_arg(cfg.regions_arg);
+    std::remove(cfg.output_file.c_str());
+    {
+        MtCopyNumber tool(cfg);
+        ASSERT_NO_THROW(tool.run());
+    }
+    auto rows_reg = parse_tsv(cfg.output_file);
+    ASSERT_FALSE(rows_reg.empty());
+    auto it_reg = std::find_if(rows_reg.begin(), rows_reg.end(),
+                               [](const TsvRow &r){ return r.chrom == "chrM"; });
+    ASSERT_NE(it_reg, rows_reg.end());
+    auto extra_reg = read_extra_cols(cfg.output_file, "chrM");
+
+    // Restricting to a sub-interval must shrink the effective length, surface
+    // the region in the TSV, and not increase the fragment count.
+    EXPECT_EQ(extra_reg.effective_length, 1000u);
+    EXPECT_EQ(extra_reg.regions_used,     "1-1000");
+    EXPECT_LE(it_reg->fragments, it_full->fragments);
+    EXPECT_EQ(it_reg->chrom_length, 16569u);  // full length still reported
+
+    // The decoy contig had no -L region attached, so it stays full-length.
+    auto extra_decoy = read_extra_cols(cfg.output_file, "NUMT_JoinedSequences_gaps1000N_decoy");
+    EXPECT_GT(extra_decoy.effective_length, 0u);
+    EXPECT_EQ(extra_decoy.regions_used, ".");
+
+    std::remove(base.output_file.c_str());
+    std::remove(cfg.output_file.c_str());
+}
+
+TEST(MtCopyNumRunE2E, RegionsOverlappingAreMerged) {
+    // Two overlapping intervals on chrM should be merged into a single
+    // 1-2000 window once attached to the chromosome.
+    MtCopyNumber::Config cfg;
+    cfg.reference_file = "data/chrM_rCRS.decoy.fa.gz";
+    cfg.input_bam      = "data/smp2_subset.bam";
+    cfg.output_file    = "data/copynum_merged.tsv";
+    cfg.min_mapq       = 20;
+    cfg.thread_count   = 2;
+    cfg.seq_type       = SeqType::PE;
+    cfg.regions_arg    = "chrM:1-1500,chrM:1000-2000";
+    cfg.regions        = MtCopyNumber::parse_regions_arg(cfg.regions_arg);
+    std::remove(cfg.output_file.c_str());
+
+    MtCopyNumber tool(cfg);
+    ASSERT_NO_THROW(tool.run());
+
+    auto extra = read_extra_cols(cfg.output_file, "chrM");
+    EXPECT_EQ(extra.effective_length, 2000u);
+    EXPECT_EQ(extra.regions_used,     "1-2000");
+
+    std::remove(cfg.output_file.c_str());
+}
+
+TEST(MtCopyNumRunE2E, RegionsAllUnmatchedThrows) {
+    // No supplied region matches any chromosome in the BAM header -> error.
+    MtCopyNumber::Config cfg;
+    cfg.reference_file = "data/chrM_rCRS.decoy.fa.gz";
+    cfg.input_bam      = "data/smp2_subset.bam";
+    cfg.output_file    = "data/copynum_unmatched.tsv";
+    cfg.min_mapq       = 20;
+    cfg.thread_count   = 1;
+    cfg.seq_type       = SeqType::PE;
+    cfg.regions_arg    = "chrZZZ:1-100";
+    cfg.regions        = MtCopyNumber::parse_regions_arg(cfg.regions_arg);
+    std::remove(cfg.output_file.c_str());
+
+    MtCopyNumber tool(cfg);
+    EXPECT_THROW(tool.run(), std::runtime_error);
+    std::remove(cfg.output_file.c_str());
+}
