@@ -1,3 +1,9 @@
+<p align="center">
+  <a href="https://github.com/ShujiaHuang/mitoquest">
+    <img height="300" src="docs/assets/images/mitoquest_logo.svg">
+  </a>
+</p>
+
 # MitoQuest: Human Mitochondrial sequencing data Analysis Toolkit
 
 ***MitoQuest*** is a cross-platform, efficient and practical bioinformatics

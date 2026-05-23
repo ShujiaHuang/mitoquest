@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 420 150" width="100%" height="100%">
+  <defs>
+    <style>
+      /* 默认浅色模式配色 */
+      .text-mito { fill: #1E40AF; font-weight: 800; }
+      .text-quest { fill: #10B981; font-weight: 700; letter-spacing: -1px; }
+      .q-stroke { stroke: #10B981; fill: none; }
+      .q-stroke-inner { stroke: #10B981; fill: none; }
+      .q-fill { fill: #10B981; }
+
+      /* GitHub 深色模式自动适配 */
+      @media (prefers-color-scheme: dark) {
+        .text-mito { fill: #E2E8F0; }
+        .text-quest { fill: #34D399; }
+        .q-stroke, .q-stroke-inner { stroke: #34D399; }
+        .q-fill { fill: #34D399; }
+      }
+    </style>
+  </defs>
+
+  <!-- 整体内容组居中平移 -->
+  <g transform="translate(20, 10)">
+    
+    <!-- 1. 左侧文字 "Mito" -->
+    <text x="0" y="100" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="76" class="text-mito">Mito</text>
+    
+    <!-- 2. 中间自定义字母 "Q" (线粒体放大镜) -->
+    <g transform="translate(165, 0)">
+      
+      <!-- 放大镜外壳 (放在下层) -->
+      <rect x="0" y="35" width="56" height="70" rx="28" class="q-stroke" stroke-width="10" />
+
+      <!-- 放大镜柄 \ Q 的尾巴 -->
+      <!-- 缩短延伸长度，使其更加精干 -->
+      <line x1="50" y1="99" x2="65" y2="114" class="q-stroke" stroke-width="12" stroke-linecap="round" />
+      
+      <!-- 线粒体内嵴 / 数据分析波形 -->
+      <path d="M 18 53 L 38 65 L 18 77 L 38 89" class="q-stroke-inner" stroke-width="4.5" stroke-linejoin="round" stroke-linecap="round" />
+      
+      <!-- 波形节点 / 数据点 -->
+      <circle cx="18" cy="53" r="4.5" class="q-fill" />
+      <circle cx="38" cy="65" r="4.5" class="q-fill" />
+      <circle cx="18" cy="77" r="4.5" class="q-fill" />
+      <circle cx="38" cy="89" r="4.5" class="q-fill" />
+      
+    </g>
+    
+    <!-- 3. 右侧文字 "uest" -->
+    <!-- 向左平移，缩短字偶距，增强紧凑感 -->
+    <text x="230" y="100" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-weight="40" font-size="76" class="text-quest">uest</text>
+    
+  </g>
+</svg>
