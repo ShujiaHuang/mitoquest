@@ -31,7 +31,6 @@
       <rect x="0" y="35" width="56" height="70" rx="28" class="q-stroke" stroke-width="10" />
 
       <!-- 放大镜柄 \ Q 的尾巴 -->
-      <!-- 缩短延伸长度，使其更加精干 -->
       <line x1="50" y1="99" x2="65" y2="114" class="q-stroke" stroke-width="12" stroke-linecap="round" />
       
       <!-- 线粒体内嵴 / 数据分析波形 -->
@@ -46,7 +45,6 @@
     </g>
     
     <!-- 3. 右侧文字 "uest" -->
-    <!-- 向左平移，缩短字偶距，增强紧凑感 -->
     <text x="230" y="100" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-weight="40" font-size="76" class="text-quest">uest</text>
     
   </g>
