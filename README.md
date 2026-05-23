@@ -1,6 +1,6 @@
 <p align="center">
   <a href="https://github.com/ShujiaHuang/mitoquest">
-    <img height="300" src="docs/assets/images/mitoquest_logo.svg">
+    <img height="200" src="docs/assets/images/mitoquest_logo.svg">
   </a>
 </p>
 
