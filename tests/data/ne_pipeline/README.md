@@ -573,6 +573,108 @@ data also exhibit `g = 3` worth of accumulated variance. So:
 | Low depth (`m_dp` or `c_dp` < 200) | Continuous MLE remains accurate; discrete MLE biases up; Kimura's sampling correction becomes noisy. |
 | Few transmission pairs (n < 30) | Use continuous MLE and report wide CIs honestly. Kimura bootstrap CI is a useful agreement check. |
 
+### 6.6 When discrete MLE is actually the right choice
+
+Reading §6.2 it is tempting to conclude that **discrete MLE is
+useless** — it loses on 9 of 11 scenarios and only matches truth on
+S1 and S11. That conclusion is wrong, but it deserves a careful
+answer because the validation panel is **deliberately
+mtDNA-flavoured**: 9 of 11 scenarios use the continuous Beta-diffusion
+bottleneck because that is how human mtDNA actually behaves. On any
+continuous-bottleneck data the discrete model is *misspecified by
+design*, and a misspecified MLE always loses. So:
+
+> **For human mtDNA deep-sequencing studies, `--model continuous` is
+> the primary estimator and discrete MLE is rarely the right answer.**
+> mitoquest still ships discrete MLE because it has four legitimate,
+> non-overlapping niches in which it is *the* correct choice.
+
+#### Niche 1 — Hard biological bottlenecks (its native habitat)
+
+There are real systems where the Multinomial sampling kernel is the
+*biology*, not a modelling artefact:
+
+| System | Why discrete is the correct model |
+| :--- | :--- |
+| Virus passage experiments (influenza, HIV, SARS-CoV-2 in cell culture) | Each passage really does pick `Ne` virions; founder count is integer. |
+| Animal / plant breeding bottlenecks | Founder population is an integer number of individuals. |
+| Bacterial colony picks, microfluidic dilution, FACS sub-sampling | Counts are integer cells. |
+| Y-chromosome / single-locus founder events | Per-generation transmission is a single chromosome out of a discrete pool. |
+
+For these systems, MLE_cont systematically *under*-estimates Ne
+(mirror image of S1) because Beta cannot reproduce the `{k/Ne}` grid
+clumping. Discrete MLE wins on the same generative process that
+defines the system.
+
+#### Niche 2 — Very small Ne (Ne ≲ 5)
+
+The Beta-diffusion law is the `Ne → ∞` limit of Wright-Fisher. At
+small Ne the limit is poor:
+
+* The discrete sampler can put non-zero mass on `p_child = 0` and
+  `p_child = 1` (true loss / fixation events).
+* `Beta(α, β)` with `α + β = Ne − 1` has zero density at `0` and `1`
+  → the continuous likelihood has to compensate by squeezing `Ne`
+  even smaller, which is exactly the S1 failure (true Ne=5,
+  MLE_cont=2.55).
+
+For mtDNA-like data with deep coverage and `Ne` in the 5–30 range,
+this hardly matters; for cell-line bottleneck experiments where `Ne`
+might literally be 2 or 3, it matters a lot.
+
+#### Niche 3 — Multi-generation per-generation Ne recovery (S11)
+
+This is the most striking row in the validation table. Under iterated
+**discrete** transmission with `g = 3, true_ne = 10`:
+
+| Estimator | Reports | Recovers |
+| :--- | :---: | :--- |
+| MLE_cont    | 2.25 | neither apparent Ne (3.69) nor per-gen Ne (10) |
+| Ne_Kimura   | 3.81 | apparent Ne (variance-implied) ≈ `1/F_g` |
+| **MLE_disc**| **10** | **true per-generation Ne, despite 3 generations of drift** |
+
+Reason (see §6.4): each iterated discrete step keeps the
+post-bottleneck VAFs on the integer grid `{0, 1/Ne, …, 1}`, *regardless
+of `g`*. The BetaBinomial-Binomial likelihood reads that grid
+signature as decisive evidence for `Ne = 10`. So when you have
+genuine discrete-bottleneck data and a deep pedigree, **discrete MLE
+is the only one of the three estimators that can disentangle `Ne`
+from `g`** — Kimura and continuous MLE both report the deflated
+apparent Ne `1/F_g`. This is a niche but real biological use case for
+passage / breeding studies with multi-generation pedigrees.
+
+#### Niche 4 — Diagnostic for model misspecification
+
+Even when you intend to report MLE_cont, the **gap** between MLE_cont
+and MLE_disc is itself informative:
+
+| Pattern | Diagnosis |
+| :--- | :--- |
+| `MLE_disc ≈ MLE_cont`, both small | Tight bottleneck, both models converge — high confidence (S7). |
+| `MLE_disc ≫ MLE_cont` (e.g. 30 vs 5) | Continuous diffusion is the right physical model (mtDNA, S2–S10). The discrete grid had to inflate to fit. |
+| `MLE_disc ≪ MLE_cont` | Hard discrete bottleneck (S1-flavoured). Switch primary estimate to discrete. |
+| `MLE_disc` lands close to true Ne while MLE_cont and Kimura land at `1/F_g` | Iterated discrete sampling — flag pedigree depth (S11). |
+
+You cannot read these patterns off a single estimate; you need both
+numbers. Removing discrete MLE from the toolbox would lose the
+ability to detect (a) model misspecification, (b) whether the
+bottleneck is really discrete vs diffusion, and (c) the niche-3
+pedigree-depth recovery.
+
+#### Bottom line
+
+* **Default for human mtDNA = `--model continuous --cross-check
+  kimura`.** Discrete MLE is *not* a competitor here; it is
+  intentionally misspecified for biologically continuous data.
+* **Default for hard-bottleneck systems = `--model discrete`.**
+  mitoquest exposes both because the same binary needs to handle both
+  regimes.
+* **Always look at all three numbers.** They each estimate a
+  *different* quantity (likelihood under Beta, likelihood under
+  Multinomial, variance-implied Ne); their pattern of agreement and
+  disagreement is itself a primary diagnostic for misspecification,
+  outlier contamination, and pedigree-depth bias.
+
 ---
 
 ## 7. `synthesize.py` reference
