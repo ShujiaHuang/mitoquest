@@ -371,7 +371,7 @@ TEST(NeEstContinuous, NearKimuraOnCleanData) {
     EXPECT_GE(k.ne_kimura, 5.0);
     EXPECT_LE(k.ne_kimura, 25.0);
     // They should agree within a factor of 2.
-    double ratio = static_cast<double>(r.ne) / k.ne_kimura;
+    double ratio = r.ne / k.ne_kimura;
     EXPECT_GT(ratio, 0.5);
     EXPECT_LT(ratio, 2.0);
 }
@@ -391,10 +391,112 @@ TEST(NeEstContinuous, DiscreteGivesHigherNeThanContinuousOnCleanData) {
     EXPECT_GE(r_cont.ne, 5);
     EXPECT_LE(r_cont.ne, 20);
     // Continuous CI should typically be wider than discrete.
-    int ci_width_cont = r_cont.ci_high - r_cont.ci_low;
-    int ci_width_disc = r_disc.ci_high - r_disc.ci_low;
+    double ci_width_cont = r_cont.ci_high - r_cont.ci_low;
+    double ci_width_disc = r_disc.ci_high - r_disc.ci_low;
     EXPECT_GE(ci_width_cont, ci_width_disc);
 }
+
+// =====================================================================
+// Continuous model: real-valued Ne optimization (v1.8.3)
+// =====================================================================
+
+namespace {
+// Simulate a cohort under the continuous Beta-diffusion model:
+//   p0       ~ Uniform[vaf_low, vaf_high]
+//   p_child  ~ Beta(p0 * (true_ne - 1), (1 - p0) * (true_ne - 1))
+//   m_ad_alt ~ Binomial(m_dp, p0)
+//   c_ad_alt ~ Binomial(c_dp, p_child)
+std::vector<NeEstimator::PairData>
+simulate_pairs_continuous(double true_ne, int n_pairs,
+                          int m_dp, int c_dp,
+                          double vaf_low, double vaf_high,
+                          unsigned seed) {
+    std::mt19937 rng(seed);
+    std::uniform_real_distribution<double> pdist(vaf_low, vaf_high);
+
+    std::vector<NeEstimator::PairData> data;
+    data.reserve(n_pairs);
+    const double ne1 = true_ne - 1.0;
+    for (int i = 0; i < n_pairs; ++i) {
+        const double p0 = pdist(rng);
+        // Draw child true heteroplasmy from Beta diffusion.
+        const double alpha = p0 * ne1;
+        const double beta  = (1.0 - p0) * ne1;
+        std::gamma_distribution<double> ga(alpha, 1.0);
+        std::gamma_distribution<double> gb(beta,  1.0);
+        double xa = ga(rng);
+        double xb = gb(rng);
+        double p_child = xa / (xa + xb);
+        if (p_child < 0.0) p_child = 0.0;
+        if (p_child > 1.0) p_child = 1.0;
+
+        std::binomial_distribution<int> bm(m_dp, p0);
+        std::binomial_distribution<int> bc(c_dp, p_child);
+        NeEstimator::PairData pd;
+        pd.m_dp     = m_dp;
+        pd.m_ad_alt = bm(rng);
+        pd.c_dp     = c_dp;
+        pd.c_ad_alt = bc(rng);
+        data.push_back(pd);
+    }
+    return data;
+}
+}  // namespace
+
+TEST(NeEstContinuous, RealValuedOptimum) {
+    // Simulate under the continuous model with a non-integer true Ne.
+    // The real-valued optimizer should return a fractional Ne that is
+    // closer to the truth than any integer.
+    constexpr double true_ne = 5.5;
+    auto data = simulate_pairs_continuous(true_ne,
+                                          /*n_pairs=*/800,
+                                          /*m_dp=*/2000,
+                                          /*c_dp=*/2000,
+                                          /*vaf_low=*/0.20,
+                                          /*vaf_high=*/0.80,
+                                          /*seed=*/2024u);
+    auto r = NeEstimator::estimate(data, 1, 100, 1, /*continuous=*/true);
+
+    // The real-valued MLE should be fractional (not exactly integer).
+    double frac_part = r.ne - std::floor(r.ne);
+    // With 800 pairs there's enough power: fractional part should be
+    // noticeably away from 0 or 1 (i.e. the optimizer actually refined).
+    EXPECT_GT(frac_part, 0.01);
+    EXPECT_LT(frac_part, 0.99);
+
+    // Should be within 30% of the truth.
+    EXPECT_NEAR(r.ne, true_ne, true_ne * 0.30);
+
+    // CI should bracket the truth.
+    EXPECT_LE(r.ci_low,  true_ne);
+    EXPECT_GE(r.ci_high, true_ne);
+}
+
+TEST(NeEstContinuous, RealValuedAgreesWithKimura) {
+    // On clean continuous-model data, the real-valued MLE and Kimura
+    // should agree within 20% (much tighter than the old 50% tolerance).
+    constexpr double true_ne = 8.0;
+    auto data = simulate_pairs_continuous(true_ne,
+                                          /*n_pairs=*/1000,
+                                          /*m_dp=*/2000,
+                                          /*c_dp=*/2000,
+                                          /*vaf_low=*/0.25,
+                                          /*vaf_high=*/0.75,
+                                          /*seed=*/2025u);
+    auto r = NeEstimator::estimate(data, 1, 100, 1, /*continuous=*/true);
+    auto k = NeEstimator::compute_kimura_check(data);
+
+    EXPECT_NEAR(r.ne, true_ne, true_ne * 0.25);
+    EXPECT_NEAR(k.ne_kimura, true_ne, true_ne * 0.25);
+    // MLE and Kimura should agree within 20%.
+    double ratio = r.ne / k.ne_kimura;
+    EXPECT_GT(ratio, 0.80);
+    EXPECT_LT(ratio, 1.20);
+}
+
+// =====================================================================
+// Kimura trimmed estimator
+// =====================================================================
 
 TEST(NeEstKimuraTrimmed, TrimmedFieldsPopulatedWhenTrimFracPositive) {
     // Clean data with true Ne=10: trimmed and untrimmed should both be

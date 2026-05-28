@@ -145,9 +145,9 @@ public:
 
     // Final estimate.
     struct Result {
-        int    ne          = 0;
-        int    ci_low      = 0;
-        int    ci_high     = 0;
+        double ne          = 0.0;
+        double ci_low      = 0.0;
+        double ci_high     = 0.0;
         double max_log_lik = 0.0;
         size_t n_pairs     = 0;
         bool   ci_low_clipped  = false;   // optimum is at the search-boundary
@@ -199,11 +199,15 @@ public:
     static double compute_ll_single(const PairData& pd, int ne,
                                     const LogFactorial& lf);
 
-    // Per-pair log-likelihood (continuous Beta-diffusion model).
+    // Per-pair log-likelihood (continuous Beta-diffusion model, integer Ne).
     // Models: p_child | p_m ~ Beta(p_m*(Ne-1), (1-p_m)*(Ne-1)),
     // then c_alt | p_child ~ Bin(c_dp, p_child), marginalized to:
     //   c_alt ~ BetaBin(c_dp, p_m*(Ne-1), (1-p_m)*(Ne-1)).
     static double compute_ll_single_continuous(const PairData& pd, int ne,
+                                               const LogFactorial& lf);
+
+    // Per-pair log-likelihood (continuous model, real-valued Ne).
+    static double compute_ll_single_continuous(const PairData& pd, double ne,
                                                const LogFactorial& lf);
 
     // Global log-likelihood (single-threaded).
@@ -227,7 +231,26 @@ public:
                                int min_ne, int max_ne, int threads = 1,
                                bool continuous = false);
 
+    // Global log-likelihood for the continuous model with real-valued Ne.
+    static double compute_global_ll_continuous(double ne,
+                                              const std::vector<PairData>& data,
+                                              const LogFactorial& lf,
+                                              int threads = 1);
+
+    // Real-valued Ne optimizer for the continuous model.
+    // Phase 1: coarse integer scan; Phase 2: golden-section refinement.
+    static double find_optimal_ne_continuous(const std::vector<PairData>& data,
+                                            const LogFactorial& lf,
+                                            int min_ne, int max_ne,
+                                            int threads = 1);
+
+    // Full estimate with real-valued Ne for the continuous model.
+    static Result estimate_continuous(const std::vector<PairData>& data,
+                                     int min_ne = 1, int max_ne = 200,
+                                     int threads = 1);
+
     // Full estimate (point + 95% CI by profile likelihood, threshold = -1.92).
+    // For discrete model only (integer Ne scan).
     static Result estimate(const std::vector<PairData>& data,
                            int min_ne = 1, int max_ne = 200,
                            int threads = 1, bool continuous = false);

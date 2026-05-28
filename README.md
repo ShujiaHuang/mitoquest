@@ -834,6 +834,26 @@ The discrete model is still available via `--model discrete` for
 specialised use cases (e.g. virus-passage experiments where the
 physical inoculum count is the target).
 
+### Choosing the right estimator
+
+| Estimator | Role | Strengths | Limitations |
+|-----------|------|-----------|-------------|
+| **Continuous MLE** (default) | Primary | Real-valued Ne, Cramér-Rao efficient, tighter CI, handles per-read sampling uncertainty, robust to moderate outliers | Assumes single-generation bottleneck (`g = 1`) |
+| **Kimura cross-check** (`--cross-check kimura`) | Secondary validator | Method-of-moments (fast), independent confirmation, natively supports multi-generational pedigrees (`g > 1`) | Wider CI, sensitive to outliers without `--kimura-trim` |
+| **Discrete MLE** (`--model discrete`) | Specialised | Exact for virus-passage / fixed-inoculum experiments | Systematic upward bias on mtDNA at high DP; integer-only grid |
+
+**Decision rule:**
+
+1. Use the **continuous MLE** as the reported Ne (default behaviour).
+2. Run `--cross-check kimura --kimura-trim 0.10` as a sanity check.
+3. When the two agree (CI overlap), confidence is high.
+4. When they disagree (MLE >> Kimura), inspect outlier pairs with
+   `--top-drift-k 20` — a handful of high-drift pairs (NUMTs /
+   sequencing errors) can collapse the variance-based Kimura estimate
+   while the likelihood-based MLE is robust.
+5. For multi-generation pedigree data (`g > 1`), prefer the Kimura
+   framework which supports generation-adjusted Ne.
+
 ### Full parameter reference of `ne-estimate`
 
 ```bash
@@ -871,9 +891,9 @@ Optional options:
 
 ```json
 {
-  "Ne":              3,
-  "CI_95_Low":       2,
-  "CI_95_High":      5,
+  "Ne":              2.78,
+  "CI_95_Low":       2.12,
+  "CI_95_High":      3.54,
   "CI_Low_Clipped":  false,
   "CI_High_Clipped": false,
   "Pairs_Used":      147,

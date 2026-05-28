@@ -105,6 +105,20 @@ double NeEstimator::compute_ll_single_continuous(const PairData& pd, int ne,
                                 pm * ne1, (1.0 - pm) * ne1);
 }
 
+// Real-valued Ne overload for continuous model.
+double NeEstimator::compute_ll_single_continuous(const PairData& pd, double ne,
+                                                  const LogFactorial& lf) {
+    if (ne <= 1.0) return compute_ll_single(pd, 1, lf);
+
+    const double pm = static_cast<double>(pd.m_ad_alt)
+                    / static_cast<double>(pd.m_dp);
+    if (pm <= 0.0 || pm >= 1.0) return 0.0;
+
+    const double ne1 = ne - 1.0;
+    return lf.log_betabinom_pmf(pd.c_dp, pd.c_ad_alt,
+                                pm * ne1, (1.0 - pm) * ne1);
+}
+
 double NeEstimator::compute_global_ll(int ne,
                                       const std::vector<PairData>& data,
                                       const LogFactorial& lf,
@@ -177,15 +191,161 @@ int NeEstimator::find_optimal_ne(const std::vector<PairData>& data,
     return best_ne;
 }
 
+// -----------------------------------------------------------------
+// Real-valued continuous model optimization
+// -----------------------------------------------------------------
+
 // 95% profile-likelihood confidence interval threshold:
 //   under regularity, -2 * (logL(Ne) - logL_max) ~~ chi2_1
 // so the 95% CI is { Ne : logL(Ne) >= logL_max - chi2_{1, 0.95}/2 }
 //             with  chi2_{1, 0.95} / 2 = 3.841 / 2 ~~ 1.92.
 static constexpr double kProfileLLThresholdDelta = 1.92;
 
+double NeEstimator::compute_global_ll_continuous(
+    double ne, const std::vector<PairData>& data,
+    const LogFactorial& lf, int threads) {
+    if (threads <= 1 || data.size() < 64) {
+        double total = 0.0;
+        for (const PairData& pd : data) {
+            total += compute_ll_single_continuous(pd, ne, lf);
+        }
+        return total;
+    }
+    ThreadPool pool(static_cast<size_t>(threads));
+    const size_t n = data.size();
+    const size_t chunk = (n + threads - 1) / threads;
+    std::vector<std::future<double>> futures;
+    futures.reserve(static_cast<size_t>(threads));
+    for (size_t start = 0; start < n; start += chunk) {
+        const size_t end = std::min(start + chunk, n);
+        futures.emplace_back(pool.submit([&, start, end, ne]() {
+            double s = 0.0;
+            for (size_t i = start; i < end; ++i) {
+                s += compute_ll_single_continuous(data[i], ne, lf);
+            }
+            return s;
+        }));
+    }
+    double total = 0.0;
+    for (auto& f : futures) total += f.get();
+    return total;
+}
+
+// Golden-section search to find the maximum of a unimodal function
+// on [a, b] to within tolerance `tol`.  Returns the Ne that maximizes
+// compute_global_ll_continuous.
+static double golden_section_max(
+    double a, double b, double tol,
+    const std::vector<NeEstimator::PairData>& data,
+    const NeEstimator::LogFactorial& lf, int threads) {
+    constexpr double phi = 0.6180339887498949;  // (sqrt(5)-1)/2
+    double x1 = b - phi * (b - a);
+    double x2 = a + phi * (b - a);
+    double f1 = NeEstimator::compute_global_ll_continuous(x1, data, lf, threads);
+    double f2 = NeEstimator::compute_global_ll_continuous(x2, data, lf, threads);
+    while ((b - a) > tol) {
+        if (f1 < f2) {
+            a  = x1;
+            x1 = x2;
+            f1 = f2;
+            x2 = a + phi * (b - a);
+            f2 = NeEstimator::compute_global_ll_continuous(x2, data, lf, threads);
+        } else {
+            b  = x2;
+            x2 = x1;
+            f2 = f1;
+            x1 = b - phi * (b - a);
+            f1 = NeEstimator::compute_global_ll_continuous(x1, data, lf, threads);
+        }
+    }
+    return (a + b) * 0.5;
+}
+
+double NeEstimator::find_optimal_ne_continuous(
+    const std::vector<PairData>& data, const LogFactorial& lf,
+    int min_ne, int max_ne, int threads) {
+    if (min_ne < 1) min_ne = 1;
+    if (max_ne < min_ne) max_ne = min_ne;
+
+    // Phase 1: coarse integer scan to bracket the peak.
+    int    best_int = min_ne;
+    double best_ll  = compute_global_ll_continuous(
+        static_cast<double>(min_ne), data, lf, threads);
+    for (int ne = min_ne + 1; ne <= max_ne; ++ne) {
+        const double ll = compute_global_ll_continuous(
+            static_cast<double>(ne), data, lf, threads);
+        if (ll > best_ll) {
+            best_ll  = ll;
+            best_int = ne;
+        }
+    }
+
+    // Phase 2: golden-section refinement in [best_int - 1, best_int + 1].
+    const double lo = std::max(static_cast<double>(min_ne),
+                               static_cast<double>(best_int) - 1.0);
+    const double hi = std::min(static_cast<double>(max_ne),
+                               static_cast<double>(best_int) + 1.0);
+    return golden_section_max(lo, hi, 0.01, data, lf, threads);
+}
+
+NeEstimator::Result NeEstimator::estimate_continuous(
+    const std::vector<PairData>& data, int min_ne, int max_ne, int threads) {
+    Result r;
+    r.n_pairs = data.size();
+    if (data.empty()) {
+        throw std::runtime_error("[ne-estimate] No transmission pairs to fit.");
+    }
+    if (min_ne < 1)        min_ne = 1;
+    if (max_ne < min_ne)   max_ne = min_ne;
+
+    const int cache_size = required_cache_size(data, max_ne);
+    LogFactorial lf(cache_size);
+
+    r.ne          = find_optimal_ne_continuous(data, lf, min_ne, max_ne, threads);
+    r.max_log_lik = compute_global_ll_continuous(r.ne, data, lf, threads);
+
+    const double thr = r.max_log_lik - kProfileLLThresholdDelta;
+    constexpr double step = 0.01;
+
+    // Walk leftward for ci_low.
+    r.ci_low = r.ne;
+    r.ci_low_clipped = true;
+    for (double ne = r.ne - step; ne >= static_cast<double>(min_ne); ne -= step) {
+        const double ll = compute_global_ll_continuous(ne, data, lf, threads);
+        if (ll < thr) {
+            r.ci_low = ne + step;
+            r.ci_low_clipped = false;
+            break;
+        }
+        r.ci_low = ne;
+    }
+    if (r.ci_low_clipped) r.ci_low = static_cast<double>(min_ne);
+
+    // Walk rightward for ci_high.
+    r.ci_high = r.ne;
+    r.ci_high_clipped = true;
+    for (double ne = r.ne + step; ne <= static_cast<double>(max_ne); ne += step) {
+        const double ll = compute_global_ll_continuous(ne, data, lf, threads);
+        if (ll < thr) {
+            r.ci_high = ne - step;
+            r.ci_high_clipped = false;
+            break;
+        }
+        r.ci_high = ne;
+    }
+    if (r.ci_high_clipped) r.ci_high = static_cast<double>(max_ne);
+
+    return r;
+}
+
 NeEstimator::Result NeEstimator::estimate(const std::vector<PairData>& data,
                                           int min_ne, int max_ne, int threads,
                                           bool continuous) {
+    // For the continuous model, delegate to the real-valued optimizer.
+    if (continuous) {
+        return estimate_continuous(data, min_ne, max_ne, threads);
+    }
+
     Result r;
     r.n_pairs = data.size();
     if (data.empty()) {
@@ -197,22 +357,23 @@ NeEstimator::Result NeEstimator::estimate(const std::vector<PairData>& data,
     const int cache_size = required_cache_size(data, max_ne);
     LogFactorial lf(cache_size);
 
-    r.ne          = find_optimal_ne(data, lf, min_ne, max_ne, threads, continuous);
-    r.max_log_lik = compute_global_ll_parallel(r.ne, data, lf, threads, continuous);
+    const int best_ne = find_optimal_ne(data, lf, min_ne, max_ne, threads, false);
+    r.ne          = static_cast<double>(best_ne);
+    r.max_log_lik = compute_global_ll_parallel(best_ne, data, lf, threads, false);
 
     const double thr = r.max_log_lik - kProfileLLThresholdDelta;
 
     // Walk leftward for ci_low; flag when we run off the search boundary.
     r.ci_low = r.ne;
     r.ci_low_clipped = true;
-    for (int ne = r.ne - 1; ne >= min_ne; --ne) {
-        const double ll = compute_global_ll_parallel(ne, data, lf, threads, continuous);
+    for (int ne = best_ne - 1; ne >= min_ne; --ne) {
+        const double ll = compute_global_ll_parallel(ne, data, lf, threads, false);
         if (ll < thr) {
-            r.ci_low = ne + 1;
+            r.ci_low = static_cast<double>(ne + 1);
             r.ci_low_clipped = false;
             break;
         }
-        r.ci_low = ne;
+        r.ci_low = static_cast<double>(ne);
         if (ne == min_ne) {
             r.ci_low_clipped = true;
             break;
@@ -222,14 +383,14 @@ NeEstimator::Result NeEstimator::estimate(const std::vector<PairData>& data,
     // Walk rightward for ci_high.
     r.ci_high = r.ne;
     r.ci_high_clipped = true;
-    for (int ne = r.ne + 1; ne <= max_ne; ++ne) {
-        const double ll = compute_global_ll_parallel(ne, data, lf, threads, continuous);
+    for (int ne = best_ne + 1; ne <= max_ne; ++ne) {
+        const double ll = compute_global_ll_parallel(ne, data, lf, threads, false);
         if (ll < thr) {
-            r.ci_high = ne - 1;
+            r.ci_high = static_cast<double>(ne - 1);
             r.ci_high_clipped = false;
             break;
         }
-        r.ci_high = ne;
+        r.ci_high = static_cast<double>(ne);
         if (ne == max_ne) {
             r.ci_high_clipped = true;
             break;
@@ -669,15 +830,15 @@ void NeEstimator::usage() {
                  "      --max-vaf   FLOAT  Upper maternal VAF gate, inclusive [0.90].\n"
                  "      --min-ne    INT    Smallest Ne value to consider [1].\n"
                  "      --max-ne    INT    Largest Ne value to consider  [200].\n"
-                 "  -t, --threads     INT    Worker threads for the inner sum [1].\n"
+                 "  -t, --threads   INT    Worker threads for the inner sum [1].\n"
                  "      --cross-check NAME   Optional secondary estimator alongside the\n"
                  "                           MLE.  Supported value: `kimura`,\n"
                  "                           which computes the Wonnapinij b and the implied\n"
                  "                           Ne (single-generation approximation).\n"
-                "      --kimura-bootstrap INT  Non-parametric bootstrap iterations for the\n"
+                "      --kimura-bootstrap  INT  Non-parametric bootstrap iterations for the\n"
                  "                              Kimura cross-check 95%% CI.  0 disables [1000].\n"
                  "      --kimura-seed      INT  RNG seed for the Kimura bootstrap [42].\n"
-                 "      --kimura-trim   FLOAT   Fraction of highest-drift pairs to drop before\n"
+                 "      --kimura-trim    FLOAT  Fraction of highest-drift pairs to drop before\n"
                  "                              recomputing the Kimura b (robust trimmed mean,\n"
                  "                              0.0 disables, recommended 0.10) [0.0].\n"
                  "      --top-drift-k     INT   Emit the top-K highest-drift pairs in the JSON\n"
@@ -811,13 +972,27 @@ void NeEstimator::_parse_args(int argc, char* argv[]) {
 }
 
 void NeEstimator::_write_json(const Result& r, std::ostream& out) const {
+    const bool is_continuous = (_config.model == "continuous");
+    // For the continuous model, emit Ne/CI with 2 decimal places;
+    // for discrete, emit as integers (no trailing decimals).
+    auto emit_ne = [&](double v) {
+        if (is_continuous) {
+            out << std::fixed << std::setprecision(2) << v;
+        } else {
+            out << static_cast<int>(std::round(v));
+        }
+    };
+    // Reset float format after emit_ne calls (std::fixed is sticky).
+    auto reset_fmt = [&]() {
+        out << std::defaultfloat;
+    };
     out << "{\n"
-        << "  \"Ne\":              " << r.ne          << ",\n"
-        << "  \"CI_95_Low\":       " << r.ci_low      << ",\n"
-        << "  \"CI_95_High\":      " << r.ci_high     << ",\n"
+        << "  \"Ne\":              "; emit_ne(r.ne);      out << ",\n"
+        << "  \"CI_95_Low\":       "; emit_ne(r.ci_low);  out << ",\n"
+        << "  \"CI_95_High\":      "; emit_ne(r.ci_high); reset_fmt(); out << ",\n"
         << "  \"CI_Low_Clipped\":  " << (r.ci_low_clipped  ? "true" : "false") << ",\n"
         << "  \"CI_High_Clipped\": " << (r.ci_high_clipped ? "true" : "false") << ",\n"
-        << "  \"Pairs_Used\":      " << r.n_pairs     << ",\n"
+        << "  \"Pairs_Used\":      " << r.n_pairs << ",\n"
         << "  \"Max_LogLik\":      " << std::setprecision(8) << r.max_log_lik << ",\n"
         << "  \"Model\":           \"" << _config.model << "\",\n"
         << "  \"Min_VAF\":         " << _config.min_vaf << ",\n"
@@ -966,7 +1141,7 @@ NeEstimator::Result NeEstimator::run() {
 
         // Warn when MLE and Kimura disagree by more than 3x.
         if (r.kimura.ne_kimura > 0 && std::isfinite(r.kimura.ne_kimura)) {
-            const double ratio = static_cast<double>(r.ne) / r.kimura.ne_kimura;
+            const double ratio = r.ne / r.kimura.ne_kimura;
             if (ratio > 3.0 || ratio < 1.0/3.0) {
                 std::cerr << "\n*** WARNING *** Ne_MLE (" << r.ne
                           << ") and Ne_Kimura (" << r.kimura.ne_kimura
