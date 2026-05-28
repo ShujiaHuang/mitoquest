@@ -12,5 +12,7 @@ __pycache__/
 .DS_Store
 .qoder/
 
-# Generated demo artifacts (regenerable via tests/data/ne_pipeline/run_demo.sh)
+# Generated demo artifacts (regenerable via tests/data/ne_pipeline/run_demo.sh
+# and tests/data/ne_pipeline/validate_estimators.py)
 tests/data/ne_pipeline/cohort.*
+tests/data/ne_pipeline/scenarios/

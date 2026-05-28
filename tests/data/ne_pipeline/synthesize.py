@@ -21,9 +21,37 @@ Default model:
     DP positive, AD absent) so that the GT-aware drop logic in
     `mitoquest trans-prep` is exercised end-to-end.
 
+Bottleneck models:
+  * discrete   (default) - sample `round(true_ne)` integer copies via
+                            Multinomial; matches `--model discrete` MLE.
+  * continuous           - draw post-bottleneck heteroplasmy from a
+                            Beta-diffusion (Wright-Fisher diffusion limit),
+                            i.e. `p_child ~ Beta(p_m*(Ne-1), (1-p_m)*(Ne-1))`;
+                            matches `--model continuous` MLE.  Permits a
+                            non-integer `--true-ne`.
+
+Outlier injection (--outlier-frac):
+  A fraction of (site, pair) cells is forced to extreme drift
+  (`p_child` set to 0 or 1 with equal probability) to simulate NUMTs,
+  mosaicism, or genotyping errors.  Used to demonstrate the
+  outlier sensitivity of the Kimura method-of-moments estimator.
+
+Multi-generation transmission (--n-generations):
+  Iterates the bottleneck `g` times before read sampling, simulating a
+  pedigree of depth `g` (e.g. grand-mother -> grand-child uses g=2).
+  Wright-Fisher predicts that the per-pair accumulated drift is
+      F_g = 1 - (1 - 1/Ne)^g,
+  so feeding multi-generation pairs into a single-generation estimator
+  will yield an apparent `Ne_apparent = 1 / F_g`, biased *downward*
+  relative to the true per-generation Ne.  Useful for studying the
+  pedigree-depth bias of all three estimators.
+
 Usage:
-    python3 synthesize.py                # writes files in this directory
-    python3 synthesize.py --true-ne 10   # tighter / looser bottleneck
+    python3 synthesize.py                          # default cohort
+    python3 synthesize.py --true-ne 10             # tighter / looser bottleneck
+    python3 synthesize.py --bottleneck-model continuous --true-ne 7.5
+    python3 synthesize.py --outlier-frac 0.05      # 5% high-drift outliers
+    python3 synthesize.py --n-generations 5        # 5-generation pedigree
     python3 synthesize.py --help
 
 Author: Shujia Huang (hshujia@qq.com)
@@ -33,6 +61,7 @@ Date:   2026-05-28
 from __future__ import annotations
 
 import argparse
+import math
 import os
 import random
 from pathlib import Path
@@ -48,6 +77,80 @@ def binomial(n: int, p: float, rng: random.Random) -> int:
     return sum(1 for _ in range(n) if rng.random() < p)
 
 
+def gamma_sample(shape: float, rng: random.Random) -> float:
+    """Sample X ~ Gamma(shape, 1) using Marsaglia-Tsang (shape >= 1) or the
+    boost-shape trick for shape < 1 (Stuart's theorem).  No numpy needed.
+    """
+    if shape <= 0.0:
+        return 0.0
+    if shape < 1.0:
+        # Stuart: if Y ~ Gamma(shape+1, 1) and U ~ Uniform(0,1), then
+        # Y * U^(1/shape) ~ Gamma(shape, 1).
+        u = rng.random()
+        return gamma_sample(shape + 1.0, rng) * (u ** (1.0 / shape))
+    d = shape - 1.0 / 3.0
+    c = 1.0 / (9.0 * d) ** 0.5
+    while True:
+        x = rng.gauss(0.0, 1.0)
+        v = (1.0 + c * x) ** 3
+        if v <= 0.0:
+            continue
+        u = rng.random()
+        x2 = x * x
+        if u < 1.0 - 0.0331 * x2 * x2:
+            return d * v
+        if math.log(u) < 0.5 * x2 + d * (1.0 - v + math.log(v)):
+            return d * v
+
+
+def dirichlet_sample(alphas: List[float], rng: random.Random) -> List[float]:
+    """Sample p ~ Dirichlet(alphas) via Gamma decomposition.  Falls back
+    to a uniform vector if all alphas are tiny (degenerate)."""
+    xs = [gamma_sample(max(a, 1e-12), rng) for a in alphas]
+    s = sum(xs)
+    if s <= 0.0:
+        # Degenerate: return REF=1, ALTs=0
+        return [1.0] + [0.0] * (len(alphas) - 1)
+    return [x / s for x in xs]
+
+
+def bottleneck_step(p_in: List[float], true_ne: float,
+                    model: str, rng: random.Random) -> List[float]:
+    """Apply one Wright-Fisher / Kimura bottleneck step to a category
+    probability vector `p_in` (sums to 1, length = 1 + n_alts) and
+    return the post-bottleneck category vector `p_out`.
+
+    Discrete:   k ~ Multinomial(round(true_ne), p_in); p_out = k / true_ne.
+                  This is the exact Wright-Fisher transition.
+    Continuous: p_out ~ Dirichlet(p_in * (true_ne - 1)).
+                  Kimura diffusion limit; for biallelic this reduces to
+                  Beta(p_alt*(Ne-1), (1-p_alt)*(Ne-1)).
+
+    Both have E[p_out|p_in] = p_in and the marginal variance of any
+    category is p_in*(1-p_in)/Ne, matching one-generation drift.
+    """
+    if model == "discrete":
+        ne_i = max(1, int(round(true_ne)))
+        counts = [0] * len(p_in)
+        for _ in range(ne_i):
+            u = rng.random()
+            acc = 0.0
+            idx = len(p_in) - 1
+            for ci, pc in enumerate(p_in):
+                acc += pc
+                if u <= acc:
+                    idx = ci
+                    break
+            counts[idx] += 1
+        return [c / ne_i for c in counts]
+    else:
+        # Continuous Dirichlet sampler.  For Ne <= 1 this is degenerate;
+        # we already gate that in synthesize().
+        ne1 = float(true_ne) - 1.0
+        alphas = [c * ne1 for c in p_in]
+        return dirichlet_sample(alphas, rng)
+
+
 # ---------------------------------------------------------------------
 # Synthesizer
 # ---------------------------------------------------------------------
@@ -55,16 +158,29 @@ def binomial(n: int, p: float, rng: random.Random) -> int:
 def synthesize(out_dir: Path,
                n_pairs: int,
                n_sites: int,
-               true_ne: int,
+               true_ne: float,
                m_dp: int,
                c_dp: int,
                vaf_low: float,
                vaf_high: float,
                seed: int,
                n_multiallelic: int = 0,
-               missing_gt_rate: float = 0.0) -> None:
+               missing_gt_rate: float = 0.0,
+               bottleneck_model: str = "discrete",
+               outlier_frac: float = 0.0,
+               n_generations: int = 1) -> None:
     rng = random.Random(seed)
     missing_gt_rate = max(0.0, min(1.0, missing_gt_rate))
+    outlier_frac    = max(0.0, min(1.0, outlier_frac))
+    n_generations   = max(1, int(n_generations))
+    if bottleneck_model not in ("discrete", "continuous"):
+        raise ValueError(f"Unknown bottleneck_model: {bottleneck_model}")
+    # Continuous Beta-diffusion needs Ne > 1; discrete needs integer >= 1.
+    if bottleneck_model == "discrete":
+        true_ne_i = max(1, int(round(true_ne)))
+    else:
+        if true_ne <= 1.0:
+            raise ValueError("continuous bottleneck requires true_ne > 1")
 
     # ----- 1. sample names + FAM -------------------------------------------------
     samples: List[str] = []
@@ -121,23 +237,23 @@ def synthesize(out_dir: Path,
                 p_alts = [total * share, total * (1.0 - share)]
             p_ref = max(0.0, 1.0 - sum(p_alts))
 
-            # Bottleneck: sample true_ne copies, distribute by category.
+            # Bottleneck sampling (possibly iterated for multi-generation
+            # transmission): produces `p_c_alts` (per-ALT child VAFs).
             categories = [p_ref] + p_alts          # length = 1 + n_alts
-            counts = [0] * len(categories)
-            for _ in range(true_ne):
-                u = rng.random()
-                acc = 0.0
-                idx = 0
-                for ci, pc in enumerate(categories):
-                    acc += pc
-                    if u <= acc:
-                        idx = ci
-                        break
+            p_curr = list(categories)
+            for _g in range(n_generations):
+                p_curr = bottleneck_step(p_curr, true_ne, bottleneck_model, rng)
+            p_c_alts = p_curr[1:]   # drop REF, keep per-ALT
+
+            # Optional outlier injection: with prob `outlier_frac`, replace
+            # the post-bottleneck child VAFs with an extreme value (0 or 1).
+            # This simulates NUMTs / mosaicism / errors that drive Kimura's
+            # method-of-moments estimator upward.
+            if outlier_frac > 0.0 and rng.random() < outlier_frac:
+                if rng.random() < 0.5:
+                    p_c_alts = [1.0] + [0.0] * (n_alts - 1)
                 else:
-                    idx = len(categories) - 1
-                counts[idx] += 1
-            # child p for each ALT after bottleneck:
-            p_c_alts = [counts[1 + a] / true_ne for a in range(n_alts)]
+                    p_c_alts = [0.0] * n_alts
 
             # Read-level multinomial sampling at depth m_dp / c_dp.
             mom_alt_reads = [0] * n_alts
@@ -263,7 +379,9 @@ def synthesize(out_dir: Path,
         f"#synthesize.py: n_pairs={n_pairs} n_sites={n_sites} "
         f"true_ne={true_ne} m_dp={m_dp} c_dp={c_dp} "
         f"vaf=[{vaf_low},{vaf_high}] seed={seed} "
-        f"n_multiallelic={n_multiallelic} missing_gt_rate={missing_gt_rate}\n"
+        f"n_multiallelic={n_multiallelic} missing_gt_rate={missing_gt_rate} "
+        f"bottleneck_model={bottleneck_model} outlier_frac={outlier_frac} "
+        f"n_generations={n_generations}\n"
     )
     tsv_lines = [provenance + tsv_header]
     for (pos, ref, alt, fam_id, mom_id, child_id,
@@ -285,8 +403,10 @@ def main() -> None:
                    help="Where to write cohort.{vcf,fam,transmission_pairs.tsv}.")
     p.add_argument("--n-pairs",   type=int,   default=20)
     p.add_argument("--n-sites",   type=int,   default=12)
-    p.add_argument("--true-ne",   type=int,   default=5,
-                   help="True bottleneck size used for simulation.")
+    p.add_argument("--true-ne",   type=float, default=5,
+                   help="True bottleneck size used for simulation. Float "
+                        "is allowed under --bottleneck-model continuous; "
+                        "rounded to int under --bottleneck-model discrete.")
     p.add_argument("--m-dp",      type=int,   default=2000)
     p.add_argument("--c-dp",      type=int,   default=2000)
     p.add_argument("--vaf-low",   type=float, default=0.15)
@@ -299,6 +419,25 @@ def main() -> None:
                         "truncated GT='.' call (GT missing, DP positive, AD "
                         "absent), exercising the GT-aware drop logic in "
                         "`mitoquest trans-prep`.  Set to 0 to disable.")
+    p.add_argument("--bottleneck-model",
+                   choices=["discrete", "continuous"], default="discrete",
+                   help="Bottleneck process: `discrete` (Multinomial over "
+                        "true_ne integer copies, matches `--model discrete` "
+                        "MLE) or `continuous` (Beta-diffusion / Dirichlet, "
+                        "matches `--model continuous` MLE; allows fractional "
+                        "true_ne).")
+    p.add_argument("--outlier-frac", type=float, default=0.0,
+                   help="Fraction of (site, pair) cells whose post-bottleneck "
+                        "child VAF is forced to 0 or 1, simulating NUMTs / "
+                        "mosaicism / genotyping errors. Used to demonstrate "
+                        "the outlier sensitivity of the Kimura estimator.")
+    p.add_argument("--n-generations", type=int, default=1,
+                   help="Number of bottleneck generations between mother and "
+                        "child (1 = direct mother-child, 2 = grandmother to "
+                        "grandchild, ...). Drift accumulates as "
+                        "F_g = 1 - (1 - 1/Ne)^g, so feeding multi-generation "
+                        "pairs into a single-generation estimator under-"
+                        "estimates the true per-generation Ne.")
     p.add_argument("--seed",      type=int,   default=20260528)
     args = p.parse_args()
 
@@ -314,9 +453,15 @@ def main() -> None:
                vaf_high=args.vaf_high,
                seed=args.seed,
                n_multiallelic=args.n_multiallelic,
-               missing_gt_rate=args.missing_gt_rate)
+               missing_gt_rate=args.missing_gt_rate,
+               bottleneck_model=args.bottleneck_model,
+               outlier_frac=args.outlier_frac,
+               n_generations=args.n_generations)
     print(f"Wrote cohort.vcf, cohort.fam, cohort.transmission_pairs.tsv "
-          f"to {out_dir}")
+          f"to {out_dir} (model={args.bottleneck_model}, true_ne={args.true_ne}, "
+          f"n_pairs={args.n_pairs}, n_sites={args.n_sites}, "
+          f"depth={args.m_dp}/{args.c_dp}, outliers={args.outlier_frac}, "
+          f"n_generations={args.n_generations})")
 
 
 if __name__ == "__main__":

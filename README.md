@@ -892,7 +892,7 @@ sequencing errors) dominate, they inflate V and collapse Ne_Kimura *below*
 Ne_MLE.  The direction depends on the data:
 
 | Scenario | Typical relationship |
-|----------|---------------------|
+| :----------: | :---------------------: |
 | Clean cohort, large N, small Ne | Ne_MLE ≲ Ne_Kimura (Jensen's bias dominates) |
 | High-drift outliers present | Ne_MLE > Ne_Kimura (outliers collapse Kimura) |
 | Perfect synthetic data | Ne_MLE ≈ Ne_Kimura within ~10–20% |
