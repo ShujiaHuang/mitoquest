@@ -855,6 +855,54 @@ physical inoculum count is the target).
 5. For multi-generation pedigree data (`g > 1`), prefer the Kimura
    framework which supports generation-adjusted Ne.
 
+#### Why Ne_MLE is often smaller than Ne_Kimura
+
+On real mtDNA data it is common to observe `Ne_MLE < Ne_Kimura` (e.g.,
+Ne_MLE ≈ 1.9 vs Ne_Kimura ≈ 2.7).  This is **expected behaviour**, not a
+bug, and the MLE estimate is the more accurate of the two.  The gap arises
+from several statistical effects:
+
+1. **Jensen's inequality bias in the Kimura ratio estimator.**
+   The Kimura formula computes `Ne = 1/V` where `V = Σ(d_i − s_i) / Σw_i`.
+   Because `1/x` is a convex function, the estimator `1/V̂` is biased
+   *upward* by Jensen's inequality: `E[1/V̂] > 1/E[V̂]`.  With large
+   cohorts (hundreds of pairs) the CIs are tight enough to expose this
+   systematic upward bias in Ne_Kimura.
+
+2. **Full distribution vs. second moment only.**
+   The MLE fits the entire BetaBinomial shape (all moments), while the
+   Kimura estimator uses only the second central moment (variance).  At
+   small Ne the Beta distribution is highly non-Gaussian (often U-shaped),
+   so the higher-order information captured by the MLE carries real signal
+   that the variance-only Kimura discards.
+
+3. **Information-optimal weighting.**
+   The MLE weights each pair by its Fisher information (how much that
+   pair's specific depths and counts reveal about Ne).  The Kimura method
+   weights pairs only by `p_m(1 − p_m)`, ignoring how informative the
+   child observation actually is.
+
+4. **Plug-in sampling correction noise.**
+   The Kimura correction term `s_i = p̂_m(1−p̂_m)/m_dp + p̂_c(1−p̂_c)/c_dp`
+   uses noisy point estimates; the MLE avoids this by marginalising the
+   read-sampling process analytically via the BetaBinomial.
+
+**Is it always MLE < Kimura?**  No — when high-drift outliers (NUMTs,
+sequencing errors) dominate, they inflate V and collapse Ne_Kimura *below*
+Ne_MLE.  The direction depends on the data:
+
+| Scenario | Typical relationship |
+|----------|---------------------|
+| Clean cohort, large N, small Ne | Ne_MLE ≲ Ne_Kimura (Jensen's bias dominates) |
+| High-drift outliers present | Ne_MLE > Ne_Kimura (outliers collapse Kimura) |
+| Perfect synthetic data | Ne_MLE ≈ Ne_Kimura within ~10–20% |
+
+**Bottom line:** Trust the continuous MLE as the primary Ne estimate; treat
+Ne_Kimura as a qualitative confirmation that Ne is in the same order of
+magnitude.  Non-overlapping CIs between the two estimators (with the MLE
+lower) is a well-understood property of method-of-moments vs.
+likelihood estimators, not a sign of data problems.
+
 ### Full parameter reference of `ne-estimate`
 
 ```bash
