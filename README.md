@@ -19,15 +19,16 @@ clinical workflow to population-level cohorts with thousands of samples.
 
 ```bash
 mitoquest: Human Mitochondrial sequencing data Analysis Toolkit
-Version: 1.7.1
+Version: 1.8.3
 
 Usage: mitoquest <command> [options]
 Commands:
-  caller    Mitochondrial variants and heteroplasmy/homoplasmy caller.
-  subsam    Extract mitochondrial variants for specified samples from VCF
-            files and output a new VCF file.
-  copynum   Estimate per-chromosome (incl. mtDNA) relative copy number
-            from a BAM/CRAM file.
+  caller       Mitochondrial variants and heteroplasmy/homoplasmy caller.
+  subsam       Extract mitochondrial variants for specified samples from VCF files and output a new VCF file.
+  copynum      Estimate per-chromosome (incl. mtDNA) relative copy number from a BAM/CRAM file.
+  trans-prep   Extract mother-child mtDNA allele transmission pairs from a multi-sample VCF + FAM file.
+  ne-estimate  Estimate the mtDNA bottleneck size (Ne) from transmission pairs via Beta-Binomial MLE.
+
 ```
 
 In addition to the main `mitoquest` binary, the project ships:
