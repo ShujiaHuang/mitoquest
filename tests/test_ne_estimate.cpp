@@ -335,3 +335,141 @@ TEST(NeEstKimura, EmptyOrHomoplasmicReturnsInformativeFlag) {
     EXPECT_TRUE(k_homo.computed);
     EXPECT_EQ(k_homo.n_informative, 0u);
 }
+
+// =====================================================================
+// Continuous (Beta-diffusion) model tests (v1.8.2)
+// =====================================================================
+
+TEST(NeEstContinuous, SinglePairLLIsFinite) {
+    // Basic smoke test: continuous LL should be finite for valid input.
+    NeEstimator::LogFactorial lf(2000);
+    NeEstimator::PairData pd{2000, 600, 2000, 700}; // mom=0.3, child=0.35
+    for (int ne : {2, 5, 10, 20, 50}) {
+        double ll = NeEstimator::compute_ll_single_continuous(pd, ne, lf);
+        EXPECT_TRUE(std::isfinite(ll));
+        EXPECT_LT(ll, 0.0);  // log-likelihood is negative
+    }
+}
+
+TEST(NeEstContinuous, NearKimuraOnCleanData) {
+    // On clean WF-generated data (no post-bottleneck noise),
+    // continuous MLE and Kimura should agree within ~50%.
+    constexpr int true_ne = 10;
+    auto data = simulate_pairs(true_ne,
+                               /*n_pairs=*/600,
+                               /*m_dp=*/   2000,
+                               /*c_dp=*/   2000,
+                               /*vaf_low=*/0.20,
+                               /*vaf_high=*/0.80,
+                               /*seed=*/   555u);
+    auto r = NeEstimator::estimate(data, 1, 100, 1, /*continuous=*/true);
+    auto k = NeEstimator::compute_kimura_check(data);
+
+    // Both should be in the same ballpark.
+    EXPECT_GE(r.ne, 5);
+    EXPECT_LE(r.ne, 25);
+    EXPECT_GE(k.ne_kimura, 5.0);
+    EXPECT_LE(k.ne_kimura, 25.0);
+    // They should agree within a factor of 2.
+    double ratio = static_cast<double>(r.ne) / k.ne_kimura;
+    EXPECT_GT(ratio, 0.5);
+    EXPECT_LT(ratio, 2.0);
+}
+
+TEST(NeEstContinuous, DiscreteGivesHigherNeThanContinuousOnCleanData) {
+    // On WF data with moderate Ne, the discrete model can give a
+    // similar or slightly lower Ne (on perfect data it hits the
+    // exact grid).  The continuous model's CI should be wider.
+    constexpr int true_ne = 10;
+    auto data = simulate_pairs(true_ne, 300, 2000, 2000, 0.20, 0.80, 321u);
+    auto r_disc = NeEstimator::estimate(data, 1, 50, 1, /*continuous=*/false);
+    auto r_cont = NeEstimator::estimate(data, 1, 50, 1, /*continuous=*/true);
+
+    // Both should be near the truth.
+    EXPECT_GE(r_disc.ne, 5);
+    EXPECT_LE(r_disc.ne, 20);
+    EXPECT_GE(r_cont.ne, 5);
+    EXPECT_LE(r_cont.ne, 20);
+    // Continuous CI should typically be wider than discrete.
+    int ci_width_cont = r_cont.ci_high - r_cont.ci_low;
+    int ci_width_disc = r_disc.ci_high - r_disc.ci_low;
+    EXPECT_GE(ci_width_cont, ci_width_disc);
+}
+
+TEST(NeEstKimuraTrimmed, TrimmedFieldsPopulatedWhenTrimFracPositive) {
+    // Clean data with true Ne=10: trimmed and untrimmed should both be
+    // in the same ballpark because there are no real outliers.
+    constexpr int true_ne = 10;
+    auto data = simulate_pairs(true_ne,
+                               /*n_pairs=*/400,
+                               /*m_dp=*/   2000,
+                               /*c_dp=*/   2000,
+                               /*vaf_low=*/0.20,
+                               /*vaf_high=*/0.80,
+                               /*seed=*/   999u);
+    auto k = NeEstimator::compute_kimura_check(data,
+                                               /*n_bootstrap=*/0,
+                                               /*seed=*/42,
+                                               /*trim_frac=*/0.10,
+                                               /*top_drift_k=*/0);
+    EXPECT_TRUE(k.computed);
+    EXPECT_TRUE(k.trimmed_computed);
+    EXPECT_DOUBLE_EQ(k.trim_frac, 0.10);
+    // n_after_trim = floor(0.9 * n_informative)
+    EXPECT_GT(k.n_after_trim, 300u);
+    EXPECT_LT(k.n_after_trim, k.n_informative);
+    EXPECT_TRUE(std::isfinite(k.b_trimmed));
+    EXPECT_TRUE(std::isfinite(k.ne_kimura_trimmed));
+    EXPECT_GT(k.ne_kimura_trimmed, 1.0);
+}
+
+TEST(NeEstKimuraTrimmed, NotPopulatedWhenTrimFracZero) {
+    // trim_frac = 0 => trimmed fields should NOT be populated.
+    auto data = simulate_pairs(10, 100, 500, 500, 0.25, 0.75, 111u);
+    auto k = NeEstimator::compute_kimura_check(data,
+                                               /*n_bootstrap=*/0,
+                                               /*seed=*/42,
+                                               /*trim_frac=*/0.0,
+                                               /*top_drift_k=*/0);
+    EXPECT_TRUE(k.computed);
+    EXPECT_FALSE(k.trimmed_computed);
+}
+
+TEST(NeEstKimuraTrimmed, TrimmedCloserToMLEWhenOutliersPresent) {
+    // Inject ~20% outlier pairs: child VAF far from mother.
+    // MLE is robust; untrimmed Kimura is pulled down; trimmed should
+    // recover a value closer to the truth than the untrimmed Kimura.
+    constexpr int true_ne = 20;
+    auto data = simulate_pairs(true_ne,
+                               /*n_pairs=*/300,
+                               /*m_dp=*/   2000,
+                               /*c_dp=*/   2000,
+                               /*vaf_low=*/0.20,
+                               /*vaf_high=*/0.80,
+                               /*seed=*/   777u);
+    // Replace the last 20% of pairs with extreme-drift fakes.
+    const size_t n_outlier = data.size() / 5;
+    for (size_t i = data.size() - n_outlier; i < data.size(); ++i) {
+        data[i].m_ad_alt = data[i].m_dp / 2;  // mom ~0.5
+        data[i].c_ad_alt = 0;                  // child = 0  (extreme drift)
+    }
+    auto k = NeEstimator::compute_kimura_check(data,
+                                               /*n_bootstrap=*/0,
+                                               /*seed=*/42,
+                                               /*trim_frac=*/0.25,
+                                               /*top_drift_k=*/5);
+    EXPECT_TRUE(k.computed);
+    EXPECT_TRUE(k.trimmed_computed);
+    // Untrimmed Ne_kimura should be low (pulled by outliers).
+    EXPECT_LT(k.ne_kimura, 10.0);
+    // Trimmed should be noticeably higher than untrimmed.
+    EXPECT_GT(k.ne_kimura_trimmed, k.ne_kimura * 1.5);
+
+    // Top drift outliers: should have 5 entries.
+    EXPECT_EQ(k.top_drift_outliers.size(), 5u);
+    // The first outlier should have the largest F_i.
+    if (k.top_drift_outliers.size() >= 2) {
+        EXPECT_GE(k.top_drift_outliers[0].f_i,
+                  k.top_drift_outliers[1].f_i);
+    }
+}

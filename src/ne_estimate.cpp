@@ -80,12 +80,39 @@ double NeEstimator::compute_ll_single(const PairData& pd, int ne,
     return total;
 }
 
+// Continuous (Beta-diffusion) per-pair log-likelihood.
+//
+//   p_child | p_mother  ~  Beta(p_m * (Ne-1), (1-p_m) * (Ne-1))
+//   c_alt   | p_child   ~  Binomial(c_dp, p_child)
+//
+// Marginalising p_child analytically:
+//   c_alt  |  p_m  ~  BetaBinomial(c_dp, p_m*(Ne-1), (1-p_m)*(Ne-1))
+//
+// At Ne=1 the Kimura diffusion degenerates (complete drift to fixation)
+// so we fall back to the discrete model which handles k in {0, 1}.
+double NeEstimator::compute_ll_single_continuous(const PairData& pd, int ne,
+                                                  const LogFactorial& lf) {
+    if (ne < 1) return -std::numeric_limits<double>::infinity();
+    if (ne == 1) return compute_ll_single(pd, 1, lf);
+
+    const double pm = static_cast<double>(pd.m_ad_alt)
+                    / static_cast<double>(pd.m_dp);
+    // Mother homoplasmic: no information about drift.
+    if (pm <= 0.0 || pm >= 1.0) return 0.0;
+
+    const double ne1 = static_cast<double>(ne - 1);
+    return lf.log_betabinom_pmf(pd.c_dp, pd.c_ad_alt,
+                                pm * ne1, (1.0 - pm) * ne1);
+}
+
 double NeEstimator::compute_global_ll(int ne,
                                       const std::vector<PairData>& data,
-                                      const LogFactorial& lf) {
+                                      const LogFactorial& lf,
+                                      bool continuous) {
     double total = 0.0;
     for (const PairData& pd : data) {
-        total += compute_ll_single(pd, ne, lf);
+        total += continuous ? compute_ll_single_continuous(pd, ne, lf)
+                           : compute_ll_single(pd, ne, lf);
     }
     return total;
 }
@@ -93,9 +120,10 @@ double NeEstimator::compute_global_ll(int ne,
 double NeEstimator::compute_global_ll_parallel(int ne,
                                                const std::vector<PairData>& data,
                                                const LogFactorial& lf,
-                                               int threads) {
+                                               int threads,
+                                               bool continuous) {
     if (threads <= 1 || data.size() < 64) {
-        return compute_global_ll(ne, data, lf);
+        return compute_global_ll(ne, data, lf, continuous);
     }
 
     ThreadPool pool(static_cast<size_t>(threads));
@@ -106,10 +134,11 @@ double NeEstimator::compute_global_ll_parallel(int ne,
     futures.reserve(static_cast<size_t>(threads));
     for (size_t start = 0; start < n; start += chunk) {
         const size_t end = std::min(start + chunk, n);
-        futures.emplace_back(pool.submit([&, start, end, ne]() {
+        futures.emplace_back(pool.submit([&, start, end, ne, continuous]() {
             double s = 0.0;
             for (size_t i = start; i < end; ++i) {
-                s += compute_ll_single(data[i], ne, lf);
+                s += continuous ? compute_ll_single_continuous(data[i], ne, lf)
+                               : compute_ll_single(data[i], ne, lf);
             }
             return s;
         }));
@@ -131,14 +160,15 @@ double NeEstimator::compute_global_ll_parallel(int ne,
 // typical range max_ne <= a few hundred.
 int NeEstimator::find_optimal_ne(const std::vector<PairData>& data,
                                  const LogFactorial& lf,
-                                 int min_ne, int max_ne, int threads) {
+                                 int min_ne, int max_ne, int threads,
+                                 bool continuous) {
     if (min_ne < 1)          min_ne = 1;
     if (max_ne < min_ne)     max_ne = min_ne;
 
     int    best_ne = min_ne;
-    double best_ll = compute_global_ll_parallel(min_ne, data, lf, threads);
+    double best_ll = compute_global_ll_parallel(min_ne, data, lf, threads, continuous);
     for (int ne = min_ne + 1; ne <= max_ne; ++ne) {
-        const double ll = compute_global_ll_parallel(ne, data, lf, threads);
+        const double ll = compute_global_ll_parallel(ne, data, lf, threads, continuous);
         if (ll > best_ll) {
             best_ll = ll;
             best_ne = ne;
@@ -154,7 +184,8 @@ int NeEstimator::find_optimal_ne(const std::vector<PairData>& data,
 static constexpr double kProfileLLThresholdDelta = 1.92;
 
 NeEstimator::Result NeEstimator::estimate(const std::vector<PairData>& data,
-                                          int min_ne, int max_ne, int threads) {
+                                          int min_ne, int max_ne, int threads,
+                                          bool continuous) {
     Result r;
     r.n_pairs = data.size();
     if (data.empty()) {
@@ -166,8 +197,8 @@ NeEstimator::Result NeEstimator::estimate(const std::vector<PairData>& data,
     const int cache_size = required_cache_size(data, max_ne);
     LogFactorial lf(cache_size);
 
-    r.ne          = find_optimal_ne(data, lf, min_ne, max_ne, threads);
-    r.max_log_lik = compute_global_ll_parallel(r.ne, data, lf, threads);
+    r.ne          = find_optimal_ne(data, lf, min_ne, max_ne, threads, continuous);
+    r.max_log_lik = compute_global_ll_parallel(r.ne, data, lf, threads, continuous);
 
     const double thr = r.max_log_lik - kProfileLLThresholdDelta;
 
@@ -175,7 +206,7 @@ NeEstimator::Result NeEstimator::estimate(const std::vector<PairData>& data,
     r.ci_low = r.ne;
     r.ci_low_clipped = true;
     for (int ne = r.ne - 1; ne >= min_ne; --ne) {
-        const double ll = compute_global_ll_parallel(ne, data, lf, threads);
+        const double ll = compute_global_ll_parallel(ne, data, lf, threads, continuous);
         if (ll < thr) {
             r.ci_low = ne + 1;
             r.ci_low_clipped = false;
@@ -192,7 +223,7 @@ NeEstimator::Result NeEstimator::estimate(const std::vector<PairData>& data,
     r.ci_high = r.ne;
     r.ci_high_clipped = true;
     for (int ne = r.ne + 1; ne <= max_ne; ++ne) {
-        const double ll = compute_global_ll_parallel(ne, data, lf, threads);
+        const double ll = compute_global_ll_parallel(ne, data, lf, threads, continuous);
         if (ll < thr) {
             r.ci_high = ne - 1;
             r.ci_high_clipped = false;
@@ -350,6 +381,7 @@ NeEstimator::load_pairs(const std::string& tsv_path,
 namespace {
 
 struct PairContribution {
+    size_t idx;  // 0-based index back into the original PairData vector
     double pm;   // mother point-estimate VAF
     double pc;   // child  point-estimate VAF
     double w;    // p_m (1 - p_m) -- denominator term
@@ -363,8 +395,10 @@ std::vector<PairContribution>
 prepare_pair_contributions(const std::vector<NeEstimator::PairData>& data) {
     std::vector<PairContribution> out;
     out.reserve(data.size());
-    for (const auto& pd : data) {
+    for (size_t i = 0; i < data.size(); ++i) {
+        const auto& pd = data[i];
         PairContribution c;
+        c.idx = i;
         c.informative = false;
         c.pm = c.pc = c.w = c.r = 0.0;
         if (pd.m_dp <= 0 || pd.c_dp <= 0) { out.push_back(c); continue; }
@@ -416,7 +450,8 @@ double quantile(const std::vector<double>& xs, double q) {
 
 NeEstimator::KimuraCheck
 NeEstimator::compute_kimura_check(const std::vector<PairData>& data,
-                                  int n_bootstrap, uint64_t seed) {
+                                  int n_bootstrap, uint64_t seed,
+                                  double trim_frac, int top_drift_k) {
     KimuraCheck out;
     out.computed = true;
     out.n_informative = 0;
@@ -503,6 +538,81 @@ NeEstimator::compute_kimura_check(const std::vector<PairData>& data,
         }
     }
 
+    // ---- Robust trimmed Kimura (drops top `trim_frac` of high-drift pairs)
+    // The standard Wonnapinij b is variance-of-moments and is *not* robust
+    // to outliers (NUMTs / sequencing errors / mixed populations): a small
+    // fraction of high-drift pairs can collapse Ne_kimura by an order of
+    // magnitude even when the bulk of pairs are well-behaved.  Sort the
+    // informative pairs by their per-pair Wonnapinij contribution
+    //     F_i = (d_i - s_i) / w_i
+    // (high F_i ~~ high apparent drift), drop the top `trim_frac` of them,
+    // and recompute b on the survivors.  When the gap between trimmed and
+    // untrimmed is large, the data contain heavy-tailed outliers that the
+    // unweighted Wonnapinij is over-fitting.
+    if (trim_frac > 0.0 && trim_frac < 1.0 && out.n_informative > 0) {
+        std::vector<PairContribution> info;
+        info.reserve(out.n_informative);
+        for (const auto& c : contribs) {
+            if (c.informative) info.push_back(c);
+        }
+        // Sort by F_i descending (highest-drift first).
+        std::sort(info.begin(), info.end(),
+                  [](const PairContribution& a, const PairContribution& b) {
+                      return (a.r / a.w) > (b.r / b.w);
+                  });
+        const size_t n_drop = static_cast<size_t>(
+            std::floor(trim_frac * static_cast<double>(info.size())));
+        const size_t n_keep = (n_drop >= info.size()) ? 0 : info.size() - n_drop;
+
+        double tnum = 0.0, tden = 0.0;
+        for (size_t i = n_drop; i < info.size(); ++i) {
+            tnum += info[i].r;
+            tden += info[i].w;
+        }
+        out.trimmed_computed = true;
+        out.trim_frac        = trim_frac;
+        out.n_after_trim     = n_keep;
+        if (n_keep > 0 && tden > 0.0) {
+            const double b_t = b_from_aggregates(tnum, tden);
+            out.b_trimmed         = b_t;
+            out.ne_kimura_trimmed = 1.0 / (1.0 - b_t);
+        } else {
+            out.b_trimmed         = std::numeric_limits<double>::quiet_NaN();
+            out.ne_kimura_trimmed = std::numeric_limits<double>::quiet_NaN();
+            if (!out.note.empty()) out.note += "; ";
+            out.note += "trimmed Kimura: no informative pairs after trimming";
+        }
+    }
+
+    // ---- Per-pair drift outlier diagnostic (top-K by F_i, descending) -----
+    if (top_drift_k > 0 && out.n_informative > 0) {
+        std::vector<PairContribution> info;
+        info.reserve(out.n_informative);
+        for (const auto& c : contribs) {
+            if (c.informative) info.push_back(c);
+        }
+        std::sort(info.begin(), info.end(),
+                  [](const PairContribution& a, const PairContribution& b) {
+                      return (a.r / a.w) > (b.r / b.w);
+                  });
+        const size_t k = std::min(static_cast<size_t>(top_drift_k), info.size());
+        out.top_drift_outliers.reserve(k);
+        for (size_t i = 0; i < k; ++i) {
+            const PairContribution& c  = info[i];
+            const PairData&         pd = data[c.idx];
+            KimuraCheck::DriftOutlier o;
+            o.pair_index = c.idx;
+            o.m_dp       = pd.m_dp;
+            o.m_ad_alt   = pd.m_ad_alt;
+            o.c_dp       = pd.c_dp;
+            o.c_ad_alt   = pd.c_ad_alt;
+            o.m_vaf      = c.pm;
+            o.c_vaf      = c.pc;
+            o.f_i        = c.r / c.w;
+            out.top_drift_outliers.push_back(o);
+        }
+    }
+
     return out;
 }
 
@@ -522,6 +632,9 @@ NeEstimator::NeEstimator(Config config) : _config(std::move(config)) {
     if (_config.max_ne < _config.min_ne) _config.max_ne = _config.min_ne;
     if (_config.threads < 1)      _config.threads = 1;
     if (_config.kimura_bootstrap < 0) _config.kimura_bootstrap = 0;
+    if (_config.kimura_trim < 0.0 || _config.kimura_trim >= 1.0) _config.kimura_trim = 0.0;
+    if (_config.top_drift_k < 0)  _config.top_drift_k = 0;
+    if (_config.model.empty())    _config.model = "continuous";
     // kimura_check defaults to false; callers may flip it explicitly.
 }
 
@@ -529,11 +642,19 @@ void NeEstimator::usage() {
     std::cerr << "Usage: mitoquest ne-estimate [options] -i <pairs.tsv>\n\n"
                  "Description:\n"
                  "  Estimate the mitochondrial DNA bottleneck size (Ne) from mother-child\n"
-                 "  transmission pairs using a Beta-Binomial maximum-likelihood framework.\n"
+                 "  transmission pairs using maximum-likelihood inference.\n"
                  "\n"
-                 "  Maternal true VAF p0 ~ Beta(m_alt + 1, m_ref + 1)  (uniform prior).\n"
-                 "  Bottleneck count    k ~ BetaBinom(Ne, alpha, beta).\n"
-                 "  Child read counts c_alt ~ Binomial(c_dp, k/Ne).\n"
+                 "  Default model (continuous / Beta-diffusion):\n"
+                 "    p_child | p_mother  ~  Beta(p_m*(Ne-1), (1-p_m)*(Ne-1))\n"
+                 "    c_alt   | p_child   ~  Binomial(c_dp, p_child)\n"
+                 "  This models mtDNA drift as a continuous Kimura diffusion, which\n"
+                 "  naturally accounts for post-bottleneck vegetative segregation.\n"
+                 "\n"
+                 "  Alternative model (discrete / BetaBinomial-Binomial):\n"
+                 "    k ~ BetaBinomial(Ne, m_alt+1, m_ref+1)\n"
+                 "    c_alt ~ Binomial(c_dp, k/Ne)\n"
+                 "  This restricts child heteroplasmy to the grid {0, 1/Ne, ..., 1}\n"
+                 "  and can suffer from upward bias at high sequencing depth.\n"
                  "\n"
                  "  Reports the maximum-likelihood Ne and 95%% profile-likelihood CI\n"
                  "  (LL_max - 1.92).\n"
@@ -542,18 +663,26 @@ void NeEstimator::usage() {
                  "                         `mitoquest trans-prep`.\n"
                  "\nOptional options:\n"
                  "  -o, --output    FILE   JSON output file (default: stdout).\n"
+                 "      --model     NAME   Likelihood model: `continuous` (default,\n"
+                 "                         recommended for mtDNA) or `discrete`.\n"
                  "      --min-vaf   FLOAT  Lower maternal VAF gate, inclusive [0.10].\n"
                  "      --max-vaf   FLOAT  Upper maternal VAF gate, inclusive [0.90].\n"
                  "      --min-ne    INT    Smallest Ne value to consider [1].\n"
                  "      --max-ne    INT    Largest Ne value to consider  [200].\n"
                  "  -t, --threads     INT    Worker threads for the inner sum [1].\n"
                  "      --cross-check NAME   Optional secondary estimator alongside the\n"
-                 "                           Beta-Binomial MLE.  Supported value: `kimura`,\n"
+                 "                           MLE.  Supported value: `kimura`,\n"
                  "                           which computes the Wonnapinij b and the implied\n"
                  "                           Ne (single-generation approximation).\n"
-                 "      --kimura-bootstrap INT  Non-parametric bootstrap iterations for the\n"
+                "      --kimura-bootstrap INT  Non-parametric bootstrap iterations for the\n"
                  "                              Kimura cross-check 95%% CI.  0 disables [1000].\n"
                  "      --kimura-seed      INT  RNG seed for the Kimura bootstrap [42].\n"
+                 "      --kimura-trim   FLOAT   Fraction of highest-drift pairs to drop before\n"
+                 "                              recomputing the Kimura b (robust trimmed mean,\n"
+                 "                              0.0 disables, recommended 0.10) [0.0].\n"
+                 "      --top-drift-k     INT   Emit the top-K highest-drift pairs in the JSON\n"
+                 "                              output for outlier inspection (NUMTs / errors).\n"
+                 "                              0 disables [0].\n"
                  "  -h, --help               Print this help message.\n\n"
                  "Notes:\n"
                  "  * Sites with maternal VAF near 0 or 1 carry virtually no information\n"
@@ -564,8 +693,10 @@ void NeEstimator::usage() {
                  "    exact discrete-Wright-Fisher likelihood for a single transmission and\n"
                  "    is the reported primary estimate.  On real data the two can diverge\n"
                  "    when many concordant heteroplasmic pairs co-exist with a few high-\n"
-                 "    drift outliers (errors / NUMTs / mixed populations) -- see release\n"
-                 "    notes for v1.8.1.\n\n"
+                 "    drift outliers (errors / NUMTs / mixed populations).  Use\n"
+                 "    --kimura-trim 0.10 (drops the top 10%% of high-drift pairs) and/or\n"
+                 "    --top-drift-k 20 (lists the worst pairs) to diagnose this -- see\n"
+                 "    release notes for v1.8.2.\n\n"
               << "Version: " << MITOQUEST_VERSION << "\n"
               << std::endl;
 }
@@ -578,9 +709,12 @@ void NeEstimator::_parse_args(int argc, char* argv[]) {
     _config.min_ne           = 1;
     _config.max_ne           = 200;
     _config.threads          = 1;
+    _config.model            = "continuous";
     _config.kimura_check     = false;
     _config.kimura_bootstrap = 1000;
     _config.kimura_seed      = 42;
+    _config.kimura_trim      = 0.0;
+    _config.top_drift_k      = 0;
 
     _cmdline_string = "#mitoquest_ne_estimate_command=";
     for (int i = 0; i < argc; ++i) {
@@ -590,6 +724,7 @@ void NeEstimator::_parse_args(int argc, char* argv[]) {
     static const struct option long_options[] = {
         {"input",            required_argument, 0, 'i'},
         {"output",           required_argument, 0, 'o'},
+        {"model",            required_argument, 0, 10 },
         {"min-vaf",          required_argument, 0,  1 },
         {"max-vaf",          required_argument, 0,  2 },
         {"min-ne",           required_argument, 0,  3 },
@@ -597,6 +732,8 @@ void NeEstimator::_parse_args(int argc, char* argv[]) {
         {"cross-check",      required_argument, 0,  5 },
         {"kimura-bootstrap", required_argument, 0,  6 },
         {"kimura-seed",      required_argument, 0,  7 },
+        {"kimura-trim",      required_argument, 0,  8 },
+        {"top-drift-k",      required_argument, 0,  9 },
         {"threads",          required_argument, 0, 't'},
         {"help",             no_argument,       0, 'h'},
         {0, 0, 0, 0}
@@ -629,6 +766,19 @@ void NeEstimator::_parse_args(int argc, char* argv[]) {
             case  6 : _config.kimura_bootstrap = std::stoi(optarg); break;
             case  7 : _config.kimura_seed      = static_cast<uint64_t>(
                                                     std::stoull(optarg)); break;
+            case  8 : _config.kimura_trim      = std::stod(optarg); break;
+            case  9 : _config.top_drift_k      = std::stoi(optarg); break;
+            case 10 : {
+                const std::string m(optarg);
+                if (m == "continuous" || m == "discrete") {
+                    _config.model = m;
+                } else {
+                    throw std::runtime_error(
+                        "[ne-estimate] Unknown --model value: " + m
+                        + " (supported: continuous, discrete).");
+                }
+                break;
+            }
             case 't': _config.threads     = std::stoi(optarg); break;
             case 'h': usage(); std::exit(EXIT_SUCCESS);
             case '?':
@@ -654,6 +804,10 @@ void NeEstimator::_parse_args(int argc, char* argv[]) {
     }
     if (_config.threads < 1)            _config.threads = 1;
     if (_config.kimura_bootstrap < 0)   _config.kimura_bootstrap = 0;
+    if (_config.kimura_trim < 0.0 || _config.kimura_trim >= 1.0) {
+        throw std::runtime_error("[ne-estimate] --kimura-trim must be in [0, 1).");
+    }
+    if (_config.top_drift_k < 0) _config.top_drift_k = 0;
 }
 
 void NeEstimator::_write_json(const Result& r, std::ostream& out) const {
@@ -665,6 +819,7 @@ void NeEstimator::_write_json(const Result& r, std::ostream& out) const {
         << "  \"CI_High_Clipped\": " << (r.ci_high_clipped ? "true" : "false") << ",\n"
         << "  \"Pairs_Used\":      " << r.n_pairs     << ",\n"
         << "  \"Max_LogLik\":      " << std::setprecision(8) << r.max_log_lik << ",\n"
+        << "  \"Model\":           \"" << _config.model << "\",\n"
         << "  \"Min_VAF\":         " << _config.min_vaf << ",\n"
         << "  \"Max_VAF\":         " << _config.max_vaf << ",\n"
         << "  \"Search_Min_Ne\":   " << _config.min_ne  << ",\n"
@@ -695,8 +850,48 @@ void NeEstimator::_write_json(const Result& r, std::ostream& out) const {
                 << "    \"Bootstrap_Seed\":      " << r.kimura.bootstrap_seed  << ",\n";
         }
 
-        out << "    \"N_Informative\": " << r.kimura.n_informative << ",\n"
-            << "    \"Note\":          \"" << r.kimura.note << "\",\n"
+        out << "    \"N_Informative\": " << r.kimura.n_informative << ",\n";
+
+        // ---- Trimmed Kimura diagnostic ----
+        if (r.kimura.trimmed_computed) {
+            auto emit_num = [&](double v) {
+                if (std::isfinite(v)) {
+                    out << std::setprecision(8) << v;
+                } else if (std::isnan(v)) {
+                    out << "\"NaN\"";
+                } else {
+                    out << "\"" << (v < 0 ? "-Infinity" : "Infinity") << "\"";
+                }
+            };
+            out << "    \"Trimmed_Kimura\": {\n"
+                << "      \"Trim_Frac\":        " << std::setprecision(4) << r.kimura.trim_frac   << ",\n"
+                << "      \"N_After_Trim\":     " << r.kimura.n_after_trim  << ",\n"
+                << "      \"b_Trimmed\":        "; emit_num(r.kimura.b_trimmed);                  out << ",\n"
+                << "      \"Ne_Kimura_Trimmed\": "; emit_num(r.kimura.ne_kimura_trimmed);          out << "\n"
+                << "    },\n";
+        }
+
+        // ---- Top-K drift outlier diagnostic ----
+        if (!r.kimura.top_drift_outliers.empty()) {
+            out << "    \"Top_Drift_Outliers\": [\n";
+            for (size_t oi = 0; oi < r.kimura.top_drift_outliers.size(); ++oi) {
+                const auto& d = r.kimura.top_drift_outliers[oi];
+                out << "      { \"Pair_Index\": " << d.pair_index
+                    << ", \"M_DP\": " << d.m_dp
+                    << ", \"M_AD_ALT\": " << d.m_ad_alt
+                    << ", \"C_DP\": " << d.c_dp
+                    << ", \"C_AD_ALT\": " << d.c_ad_alt
+                    << ", \"M_VAF\": " << std::setprecision(6) << d.m_vaf
+                    << ", \"C_VAF\": " << std::setprecision(6) << d.c_vaf
+                    << ", \"F_i\": "   << std::setprecision(8) << d.f_i
+                    << " }";
+                if (oi + 1 < r.kimura.top_drift_outliers.size()) out << ",";
+                out << "\n";
+            }
+            out << "    ],\n";
+        }
+
+        out << "    \"Note\":          \"" << r.kimura.note << "\",\n"
             << "    \"Method\":        \"Wonnapinij 2008/2010 with sampling-error correction; "
             << "single-generation Ne = 1 / (1 - b); 95% CI by non-parametric pair-level bootstrap\"\n"
             << "  }";
@@ -716,14 +911,17 @@ NeEstimator::Result NeEstimator::run() {
 
     std::cerr << "[ne-estimate] Fitting Ne on " << data.size()
               << " pairs (maternal VAF in [" << _config.min_vaf
-              << ", " << _config.max_vaf << "]).\n";
+              << ", " << _config.max_vaf << "], model=" << _config.model << ").\n";
 
-    Result r = estimate(data, _config.min_ne, _config.max_ne, _config.threads);
+    Result r = estimate(data, _config.min_ne, _config.max_ne, _config.threads,
+                        _config.model == "continuous");
 
     if (_config.kimura_check) {
         r.kimura = compute_kimura_check(data,
                                         _config.kimura_bootstrap,
-                                        _config.kimura_seed);
+                                        _config.kimura_seed,
+                                        _config.kimura_trim,
+                                        _config.top_drift_k);
     }
 
     std::ofstream out_file;
@@ -757,8 +955,30 @@ NeEstimator::Result NeEstimator::run() {
                       << r.kimura.ne_kimura_ci_high
                       << " via " << r.kimura.n_bootstrap << " bootstraps]";
         }
+        if (r.kimura.trimmed_computed && std::isfinite(r.kimura.ne_kimura_trimmed)) {
+            std::cerr << "\n[ne-estimate] Trimmed Kimura (trim "
+                      << r.kimura.trim_frac * 100.0 << "%%): Ne_kimura_trimmed = "
+                      << r.kimura.ne_kimura_trimmed
+                      << " on " << r.kimura.n_after_trim << " pairs";
+        }
         if (!r.kimura.note.empty()) std::cerr << "  [" << r.kimura.note << "]";
         std::cerr << "\n";
+
+        // Warn when MLE and Kimura disagree by more than 3x.
+        if (r.kimura.ne_kimura > 0 && std::isfinite(r.kimura.ne_kimura)) {
+            const double ratio = static_cast<double>(r.ne) / r.kimura.ne_kimura;
+            if (ratio > 3.0 || ratio < 1.0/3.0) {
+                std::cerr << "\n*** WARNING *** Ne_MLE (" << r.ne
+                          << ") and Ne_Kimura (" << r.kimura.ne_kimura
+                          << ") disagree by >3x.\n"
+                          << "    This usually indicates the data contain high-drift outlier pairs\n"
+                          << "    (NUMTs / sequencing errors / mixed populations) that collapse the\n"
+                          << "    variance-of-moments Kimura estimator but do not affect the MLE.\n"
+                          << "    Recommendation: re-run with --kimura-trim 0.10 --top-drift-k 20\n"
+                          << "    to inspect the outlier pairs and compare the trimmed Ne_Kimura\n"
+                          << "    against the MLE.\n\n";
+            }
+        }
     }
 
     return r;

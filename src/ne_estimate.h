@@ -5,55 +5,49 @@
  *        Wonnapinij/Kimura cross-check.
  *
  * ====================================================================
- * Statistical model (primary estimator: Beta-Binomial MLE)
+ * Statistical model (primary estimator: continuous Beta-diffusion MLE)
  * ====================================================================
  *
- * For each independent mother-child (M-C) transmission pair we treat
- * the maternal heteroplasmy `p0` as latent and *fit it from the actual
- * read counts*, rather than substituting the VCF point estimate.
+ * For each independent mother-child (M-C) transmission pair the child's
+ * heteroplasmy is modelled as a Kimura-diffusion draw from the maternal
+ * heteroplasmy after a single-generation bottleneck of Ne transmitting
+ * units:
  *
- *   Maternal posterior :  p0 ~ Beta(alpha = m_alt + 1,
- *                                   beta  = m_ref + 1)
- *                         (uniform Beta(1, 1) prior on heteroplasmy.)
+ *   p_child | p_mother  ~  Beta( p_mother * (Ne - 1),
+ *                                (1 - p_mother) * (Ne - 1) )
  *
- *   Single-generation
- *   bottleneck         :  k  ~ Binomial(Ne, p0)
- *   Marginalising p0   :  k  ~ BetaBinomial(Ne, alpha, beta)
+ *   c_alt | p_child     ~  Binomial(c_dp, p_child)
  *
- *   Child read counts  :  c_alt ~ Binomial(c_dp, p1),   p1 = k / Ne.
+ * After marginalising out p_child:
  *
- *   Per-pair logL(Ne)  =  log Sigma_{k=0..Ne} [
- *                              logBetaBin(k | Ne, alpha, beta)
- *                            + logBin     (c_alt | c_dp, k/Ne) ]
+ *   c_alt | p_mother    ~  BetaBinomial(c_dp, p_mother * (Ne - 1),
+ *                                             (1 - p_mother) * (Ne - 1))
  *
- *   Global logL(Ne)    =  Sigma over independent M-C pairs.
+ * The maternal p_mother is taken as the point estimate m_alt / m_dp
+ * (at typical mtDNA depths >= 100 this is virtually identical to the
+ * fully marginalised integral over a Beta posterior).
  *
- * Optimum is found by a *brute-force integer scan* over [min_ne, max_ne].
- * The discrete LL is NOT unimodal in Ne — when the true Ne is small,
- * integer multiples (2*Ne, 3*Ne, ...) of the truth align with the
- * observed VAF grid and create secondary local maxima.  Golden-section
- * search converges to those side maxima and misses the true peak; a
- * full scan is O(max_ne) global-LL evaluations and is plenty fast for
- * the typical operating range max_ne <= a few hundred.
+ * This continuous model is appropriate for mtDNA transmission because
+ * the child's actual heteroplasmy is shaped not only by the initial
+ * bottleneck sampling but also by post-bottleneck vegetative
+ * segregation during cell division.  The Kimura diffusion captures
+ * *all* these sources of variance as a single effective Ne.
+ *
+ * The previous discrete model (k ~ BetaBin, c ~ Bin(c_dp, k/Ne))
+ * restricted child heteroplasmy to the coarse grid {0, 1/Ne, ..., 1}
+ * and suffered from systematic upward bias at high sequencing depths:
+ * the tight Binomial likelihood forced the MLE to inflate Ne to obtain
+ * a fine enough grid, giving answers ~5-10x above the deCODE / Kimura
+ * consensus.  See release_v1.8.2.md for details.
+ *
+ * The discrete model is still available via `--model discrete` for
+ * specialised use cases (e.g. virus-passage bottleneck experiments
+ * where the physical inoculum count is the target).
  *
  * 95% confidence interval is the *contiguous* Ne range with
  *   logL(Ne) >= logL_max - chi2_{1, 0.95} / 2  =  logL_max - 1.92
  * (Wilks's theorem on the profile log-likelihood; see Cox & Hinkley
  *  1974, "Theoretical Statistics", Section 9.3).
- *
- * ====================================================================
- * Why DP/AD instead of the VCF AF field?
- * ====================================================================
- *
- *   * VCF AF is a *point estimate* and discards depth-dependent
- *     uncertainty.  A homoplasmic site at depth 50 (AD=50/50, AF=1.0)
- *     and at depth 5,000 (AD=5000/5000, AF=1.0) carry very different
- *     amounts of information about the true maternal heteroplasmy.
- *   * The Beta-Binomial posterior naturally weights each pair by its
- *     depth and is the *exact* discrete-Wright-Fisher likelihood for a
- *     single transmission.  Any approach that plugs in AF as if it
- *     were the truth biases Ne (downward at low VAF, upward near 0.5)
- *     and underestimates the CI width.
  *
  * ====================================================================
  * Cross-check estimator (Wonnapinij / Kimura), optional
@@ -64,11 +58,9 @@
  * method-of-moments estimator (Wonnapinij et al., 2008/2010; Helgason
  * et al., 2024 Cell), then convert to a single-generation Ne via
  *   Ne_kimura = 1 / (1 - b).
- * This is reported alongside the Beta-Binomial MLE for comparison
- * with the deCODE genetics 2024 Cell paper, but it is NOT the primary
- * estimator: for single-generation M-C data the Beta-Binomial MLE is
- * the exact form that the Kimura distribution approximates and it is
- * strictly more efficient (Cramer-Rao).
+ * On well-behaved data the continuous MLE and Wonnapinij b should
+ * agree closely.  Residual discrepancies indicate either heavy-tailed
+ * outliers (use `--kimura-trim`) or model misspecification.
  *
  * @author Shujia Huang (hshujia@qq.com)
  * @date 2026-05-28
@@ -116,6 +108,39 @@ public:
         double b_ci_high         = 0.0;     // 97.5 percentile of bootstrap b
         double ne_kimura_ci_low  = 0.0;     // 2.5 percentile of 1/(1-b)
         double ne_kimura_ci_high = 0.0;     // 97.5 percentile of 1/(1-b)
+
+        // ---- Robust trimmed Kimura (drops top trim_frac of high-drift pairs) ----
+        // Populated only when trim_frac > 0 in compute_kimura_check().
+        // Standard Wonnapinij b is variance-of-moments and is *not* robust to
+        // outliers (NUMTs / sequencing errors / mixed populations).  A handful
+        // of high-drift pairs can collapse Ne_kimura by an order of magnitude
+        // even when the bulk of pairs are well-behaved.  The trimmed estimator
+        // ranks pairs by their per-pair contribution F_i = (d_i - s_i) / w_i
+        // and drops the top `trim_frac` of pairs (highest-drift) before
+        // computing b.  When the gap between trimmed and untrimmed is large,
+        // the data contain outliers that the standard Kimura is over-fitting.
+        bool   trimmed_computed     = false;
+        double trim_frac            = 0.0;  // user-specified --kimura-trim
+        size_t n_after_trim         = 0;    // informative pairs surviving the trim
+        double b_trimmed            = 0.0;
+        double ne_kimura_trimmed    = 0.0;
+
+        // ---- Per-pair drift outlier diagnostic (top-K) -----------------
+        // Populated only when top_drift_k > 0 in compute_kimura_check().
+        // Each entry identifies a pair by its 0-based index in the input
+        // PairData vector and reports the per-pair Wonnapinij contribution
+        // F_i = (d_i - s_i) / w_i, sorted in descending order.
+        struct DriftOutlier {
+            size_t pair_index;   // 0-based index into the input PairData vector
+            int    m_dp;
+            int    m_ad_alt;
+            int    c_dp;
+            int    c_ad_alt;
+            double m_vaf;
+            double c_vaf;
+            double f_i;          // (d_i - s_i) / w_i, the Wonnapinij per-pair F
+        };
+        std::vector<DriftOutlier> top_drift_outliers;
     };
 
     // Final estimate.
@@ -134,6 +159,7 @@ public:
     struct Config {
         std::string input_tsv;       // input pairs TSV (from `trans-prep`)
         std::string output_file;     // JSON output (empty => stdout)
+        std::string model;           // "continuous" (default) or "discrete"
         double      min_vaf;         // maternal VAF lower bound (inclusive)
         double      max_vaf;         // maternal VAF upper bound (inclusive)
         int         min_ne;          // smallest Ne to consider (>= 1)
@@ -143,6 +169,12 @@ public:
         int         kimura_bootstrap;// non-parametric bootstrap iterations for the Kimura CI;
                                      // 0 disables the CI computation.
         uint64_t    kimura_seed;     // RNG seed for the Kimura bootstrap
+        double      kimura_trim;     // fraction of high-drift pairs to drop from
+                                     // the trimmed Kimura cross-check;
+                                     // 0.0 disables (default).
+        int         top_drift_k;     // emit the top-K drift outlier pairs in the
+                                     // JSON output for diagnostic inspection;
+                                     // 0 disables (default).
     };
 
     explicit NeEstimator(int argc, char* argv[]);
@@ -163,32 +195,42 @@ public:
     static std::vector<PairData> load_pairs(const std::string& tsv_path,
                                             double min_vaf, double max_vaf);
 
-    // Per-pair log-likelihood.
+    // Per-pair log-likelihood (discrete bottleneck model).
     static double compute_ll_single(const PairData& pd, int ne,
                                     const LogFactorial& lf);
+
+    // Per-pair log-likelihood (continuous Beta-diffusion model).
+    // Models: p_child | p_m ~ Beta(p_m*(Ne-1), (1-p_m)*(Ne-1)),
+    // then c_alt | p_child ~ Bin(c_dp, p_child), marginalized to:
+    //   c_alt ~ BetaBin(c_dp, p_m*(Ne-1), (1-p_m)*(Ne-1)).
+    static double compute_ll_single_continuous(const PairData& pd, int ne,
+                                               const LogFactorial& lf);
 
     // Global log-likelihood (single-threaded).
     static double compute_global_ll(int ne,
                                     const std::vector<PairData>& data,
-                                    const LogFactorial& lf);
+                                    const LogFactorial& lf,
+                                    bool continuous = false);
 
     // Global log-likelihood with optional thread-pool parallelism.
     // Falls back to sequential when `threads <= 1`.
     static double compute_global_ll_parallel(int ne,
                                              const std::vector<PairData>& data,
                                              const LogFactorial& lf,
-                                             int threads);
+                                             int threads,
+                                             bool continuous = false);
 
     // Brute-force integer scan over [min_ne, max_ne]; see header comment
     // for why golden-section search is unsafe here.
     static int find_optimal_ne(const std::vector<PairData>& data,
                                const LogFactorial& lf,
-                               int min_ne, int max_ne, int threads = 1);
+                               int min_ne, int max_ne, int threads = 1,
+                               bool continuous = false);
 
     // Full estimate (point + 95% CI by profile likelihood, threshold = -1.92).
     static Result estimate(const std::vector<PairData>& data,
                            int min_ne = 1, int max_ne = 200,
-                           int threads = 1);
+                           int threads = 1, bool continuous = false);
 
     // Determine the LogFactorial cache size needed by `data`.
     // Cache must cover max(child DP) and the search ceiling for Ne.
@@ -229,8 +271,10 @@ public:
      * confidence interval for both `b` and `Ne_kimura`.
      */
     static KimuraCheck compute_kimura_check(const std::vector<PairData>& data,
-                                            int n_bootstrap = 0,
-                                            uint64_t seed   = 42);
+                                            int      n_bootstrap = 0,
+                                            uint64_t seed        = 42,
+                                            double   trim_frac   = 0.0,
+                                            int      top_drift_k = 0);
 
 private:
     NeEstimator(const NeEstimator&)            = delete;
