@@ -175,6 +175,34 @@ public:
         int         top_drift_k;     // emit the top-K drift outlier pairs in the
                                      // JSON output for diagnostic inspection;
                                      // 0 disables (default).
+        std::string bin_simulation_file; // when non-empty, write a deCODE-style
+                                         // "Figure 5" simulation TSV (per
+                                         // maternal-VAF bin: observed mean
+                                         // drift vs theoretical p(1-p)/Ne at
+                                         // the fitted Ne and its 95% CI).
+        int         bin_simulation_n_bins; // number of equal-width bins to use
+                                           // when --bin-simulation is set.
+    };
+
+    /// One row of the per-bin observed-vs-simulated drift summary used
+    /// to reproduce the deCODE 2024 Cell Figure 5 ("Observed and simulated
+    /// means for bottleneck parameter, b").  All quantities are computed
+    /// on the same pair set the MLE / Kimura cross-check was fit on.
+    struct BinSimulationRow {
+        int    bin_idx       = 0;
+        double bin_low       = 0.0;   // maternal-VAF bin lower edge (inclusive)
+        double bin_high      = 0.0;   // maternal-VAF bin upper edge (exclusive,
+                                      // except the top bin which is inclusive)
+        double bin_center    = 0.0;   // (bin_low + bin_high) / 2
+        size_t n_pairs       = 0;     // pairs with p_m in this bin AND informative
+        double mean_pm       = 0.0;   // empirical mean p_mother in bin
+        double mean_pc       = 0.0;   // empirical mean p_child  in bin
+        double obs_var       = 0.0;   // empirical mean of (p_c - p_m)^2 (raw drift)
+        double obs_var_corr  = 0.0;   // empirical mean of (d_i - s_i)
+                                      //   = sampling-corrected drift squared
+        double obs_F         = 0.0;   // empirical mean of F_i = (d_i - s_i) / w_i
+                                      //   (= bin estimate of 1 - b)
+        double obs_F_se      = 0.0;   // standard error of mean F_i in bin
     };
 
     explicit NeEstimator(int argc, char* argv[]);
@@ -298,6 +326,27 @@ public:
                                             uint64_t seed        = 42,
                                             double   trim_frac   = 0.0,
                                             int      top_drift_k = 0);
+
+    /**
+     * @brief Aggregate per-pair drift statistics into equal-width
+     *        maternal-VAF bins for the deCODE-style "Figure 5" plot.
+     *
+     * For each bin the row reports:
+     *   * `obs_var`      = mean (p_c - p_m)^2          (raw observed drift)
+     *   * `obs_var_corr` = mean (d_i - s_i)            (sampling-corrected drift)
+     *   * `obs_F`        = mean (d_i - s_i) / [p_m(1-p_m)]
+     *                                                  (bin estimate of 1-b)
+     *   * `obs_F_se`     = SE of mean F_i in the bin
+     *
+     * The downstream theoretical curves p_m(1-p_m) / Ne and 1/Ne are
+     * computed by the caller (or the plotting script) from the fitted Ne.
+     *
+     * Pairs with p_m outside [vaf_low, vaf_high] or with p_m equal to 0
+     * or 1 (mother homoplasmic) are skipped.  `n_bins` is clamped to >= 1.
+     */
+    static std::vector<BinSimulationRow>
+    compute_bin_simulation(const std::vector<PairData>& data,
+                           double vaf_low, double vaf_high, int n_bins);
 
 private:
     NeEstimator(const NeEstimator&)            = delete;

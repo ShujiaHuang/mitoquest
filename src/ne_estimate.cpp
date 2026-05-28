@@ -778,6 +778,103 @@ NeEstimator::compute_kimura_check(const std::vector<PairData>& data,
 }
 
 // ---------------------------------------------------------------------
+// Per-bin observed drift summary (deCODE 2024 Cell Figure 5 reproduction)
+// ---------------------------------------------------------------------
+//
+// For each equal-width maternal-VAF bin in [vaf_low, vaf_high] we report
+// three independent estimates of the per-bin drift, all computed on the
+// same informative pairs that drive the MLE / Wonnapinij b:
+//
+//   obs_var      =  mean_i (p_c_i - p_m_i)^2                 (raw)
+//   obs_var_corr =  mean_i (d_i - s_i)                       (sampling-corrected)
+//   obs_F        =  mean_i (d_i - s_i) / [ p_m_i (1 - p_m_i) ]   (= 1 - b per bin)
+//
+// Under one-generation Wright-Fisher with effective size Ne the
+// theoretical predictions at the *bin center* p_bar are:
+//
+//   E[obs_var]      ~~ p_bar (1 - p_bar) / Ne
+//   E[obs_var_corr] ~~ p_bar (1 - p_bar) / Ne
+//   E[obs_F]        =  1 / Ne
+//
+// The plotting script overlays these theoretical parabolas on the
+// observed bin means using the fitted Ne and its 95% CI, reproducing
+// the deCODE Figure 5 layout.
+std::vector<NeEstimator::BinSimulationRow>
+NeEstimator::compute_bin_simulation(const std::vector<PairData>& data,
+                                    double vaf_low, double vaf_high, int n_bins) {
+    if (n_bins < 1) n_bins = 1;
+    if (vaf_high <= vaf_low) {
+        // Caller-supplied window is degenerate; force a single bin
+        // covering the (eps, 1 - eps) interior and emit an empty row.
+        vaf_low  = 0.0;
+        vaf_high = 1.0;
+    }
+
+    std::vector<BinSimulationRow> rows(static_cast<size_t>(n_bins));
+    const double width = (vaf_high - vaf_low) / static_cast<double>(n_bins);
+    for (int b = 0; b < n_bins; ++b) {
+        rows[b].bin_idx    = b;
+        rows[b].bin_low    = vaf_low + width * static_cast<double>(b);
+        rows[b].bin_high   = (b == n_bins - 1) ? vaf_high
+                                               : vaf_low + width * static_cast<double>(b + 1);
+        rows[b].bin_center = 0.5 * (rows[b].bin_low + rows[b].bin_high);
+    }
+
+    // Per-bin running sums for mean and (sample) variance via Welford-
+    // style accumulation.  We need the SE of mean F_i, so collect
+    // sum_F and sum_F_sq for each bin.
+    std::vector<double> sum_pm  (n_bins, 0.0);
+    std::vector<double> sum_pc  (n_bins, 0.0);
+    std::vector<double> sum_d   (n_bins, 0.0);
+    std::vector<double> sum_dc  (n_bins, 0.0);   // d - s (corrected)
+    std::vector<double> sum_F   (n_bins, 0.0);
+    std::vector<double> sum_F_sq(n_bins, 0.0);
+    std::vector<size_t> n_in    (n_bins, 0);
+
+    const std::vector<PairContribution> contribs = prepare_pair_contributions(data);
+    for (const auto& c : contribs) {
+        if (!c.informative) continue;
+        if (c.pm < vaf_low || c.pm > vaf_high) continue;
+        // Locate bin index; clamp to [0, n_bins - 1] to absorb the upper
+        // boundary point.
+        int b = static_cast<int>(std::floor((c.pm - vaf_low) / width));
+        if (b < 0)        b = 0;
+        if (b >= n_bins)  b = n_bins - 1;
+
+        const double dsq = (c.pc - c.pm) * (c.pc - c.pm);
+        const double F_i = c.r / c.w;     // (d - s) / w  ; w > 0 by informativeness
+
+        sum_pm  [b] += c.pm;
+        sum_pc  [b] += c.pc;
+        sum_d   [b] += dsq;
+        sum_dc  [b] += c.r;
+        sum_F   [b] += F_i;
+        sum_F_sq[b] += F_i * F_i;
+        ++n_in[b];
+    }
+
+    for (int b = 0; b < n_bins; ++b) {
+        BinSimulationRow& r = rows[b];
+        r.n_pairs = n_in[b];
+        if (n_in[b] == 0) continue;
+        const double n = static_cast<double>(n_in[b]);
+        r.mean_pm      = sum_pm[b] / n;
+        r.mean_pc      = sum_pc[b] / n;
+        r.obs_var      = sum_d   [b] / n;
+        r.obs_var_corr = sum_dc  [b] / n;
+        r.obs_F        = sum_F   [b] / n;
+        if (n_in[b] >= 2) {
+            const double var_F = (sum_F_sq[b] - n * r.obs_F * r.obs_F)
+                                  / (n - 1.0);
+            r.obs_F_se = (var_F > 0.0) ? std::sqrt(var_F / n) : 0.0;
+        } else {
+            r.obs_F_se = 0.0;
+        }
+    }
+    return rows;
+}
+
+// ---------------------------------------------------------------------
 // Constructors / CLI
 // ---------------------------------------------------------------------
 
@@ -795,6 +892,7 @@ NeEstimator::NeEstimator(Config config) : _config(std::move(config)) {
     if (_config.kimura_bootstrap < 0) _config.kimura_bootstrap = 0;
     if (_config.kimura_trim < 0.0 || _config.kimura_trim >= 1.0) _config.kimura_trim = 0.0;
     if (_config.top_drift_k < 0)  _config.top_drift_k = 0;
+    if (_config.bin_simulation_n_bins < 1) _config.bin_simulation_n_bins = 1;
     if (_config.model.empty())    _config.model = "continuous";
     // kimura_check defaults to false; callers may flip it explicitly.
 }
@@ -844,6 +942,13 @@ void NeEstimator::usage() {
                  "      --top-drift-k     INT   Emit the top-K highest-drift pairs in the JSON\n"
                  "                              output for outlier inspection (NUMTs / errors).\n"
                  "                              0 disables [0].\n"
+                 "      --bin-simulation FILE   Emit a deCODE-style \"Figure 5\" TSV: per\n"
+                 "                              maternal-VAF bin observed mean drift vs\n"
+                 "                              theoretical p_m(1 - p_m) / Ne under the\n"
+                 "                              fitted Ne (and its 95%% CI).  Bin range =\n"
+                 "                              [--min-vaf, --max-vaf].\n"
+                 "      --bin-simulation-bins INT  Number of equal-width maternal-VAF bins\n"
+                 "                                 for --bin-simulation [10].\n"
                  "  -h, --help               Print this help message.\n\n"
                  "Notes:\n"
                  "  * Sites with maternal VAF near 0 or 1 carry virtually no information\n"
@@ -876,6 +981,8 @@ void NeEstimator::_parse_args(int argc, char* argv[]) {
     _config.kimura_seed      = 42;
     _config.kimura_trim      = 0.0;
     _config.top_drift_k      = 0;
+    _config.bin_simulation_file.clear();
+    _config.bin_simulation_n_bins = 10;
 
     _cmdline_string = "#mitoquest_ne_estimate_command=";
     for (int i = 0; i < argc; ++i) {
@@ -895,6 +1002,8 @@ void NeEstimator::_parse_args(int argc, char* argv[]) {
         {"kimura-seed",      required_argument, 0,  7 },
         {"kimura-trim",      required_argument, 0,  8 },
         {"top-drift-k",      required_argument, 0,  9 },
+        {"bin-simulation",       required_argument, 0, 11 },
+        {"bin-simulation-bins",  required_argument, 0, 12 },
         {"threads",          required_argument, 0, 't'},
         {"help",             no_argument,       0, 'h'},
         {0, 0, 0, 0}
@@ -940,6 +1049,8 @@ void NeEstimator::_parse_args(int argc, char* argv[]) {
                 }
                 break;
             }
+            case 11 : _config.bin_simulation_file   = optarg;          break;
+            case 12 : _config.bin_simulation_n_bins = std::stoi(optarg); break;
             case 't': _config.threads     = std::stoi(optarg); break;
             case 'h': usage(); std::exit(EXIT_SUCCESS);
             case '?':
@@ -969,6 +1080,7 @@ void NeEstimator::_parse_args(int argc, char* argv[]) {
         throw std::runtime_error("[ne-estimate] --kimura-trim must be in [0, 1).");
     }
     if (_config.top_drift_k < 0) _config.top_drift_k = 0;
+    if (_config.bin_simulation_n_bins < 1) _config.bin_simulation_n_bins = 1;
 }
 
 void NeEstimator::_write_json(const Result& r, std::ostream& out) const {
@@ -1097,6 +1209,95 @@ NeEstimator::Result NeEstimator::run() {
                                         _config.kimura_seed,
                                         _config.kimura_trim,
                                         _config.top_drift_k);
+    }
+
+    // ---------------------------------------------------------------
+    // Optional: deCODE-style "Figure 5" per-bin observed-vs-simulated
+    // drift TSV.  Computed on the same pair set used by the MLE; the
+    // theoretical curves p_m(1 - p_m) / Ne are derived from the fitted
+    // Ne and (when available) its 95% profile-likelihood CI bounds.
+    // ---------------------------------------------------------------
+    if (!_config.bin_simulation_file.empty()) {
+        const std::vector<BinSimulationRow> bins = compute_bin_simulation(
+            data, _config.min_vaf, _config.max_vaf, _config.bin_simulation_n_bins);
+
+        std::ofstream sim_out(_config.bin_simulation_file);
+        if (!sim_out.is_open()) {
+            throw std::runtime_error(
+                "[ne-estimate] Failed to open --bin-simulation output: "
+                + _config.bin_simulation_file);
+        }
+
+        // Commented-header metadata so downstream Python loaders can
+        // recover the fitted Ne / CI without re-parsing the JSON.
+        if (!_cmdline_string.empty()) sim_out << _cmdline_string << "\n";
+        sim_out << "#mitoquest_version="   << MITOQUEST_VERSION   << "\n"
+                << "#model="               << _config.model       << "\n"
+                << "#min_vaf="             << _config.min_vaf     << "\n"
+                << "#max_vaf="             << _config.max_vaf     << "\n"
+                << "#n_bins="              << _config.bin_simulation_n_bins << "\n"
+                << "#n_pairs_used="        << r.n_pairs           << "\n"
+                << "#fitted_ne="           << std::setprecision(8) << r.ne      << "\n"
+                << "#fitted_ne_ci_low="    << std::setprecision(8) << r.ci_low  << "\n"
+                << "#fitted_ne_ci_high="   << std::setprecision(8) << r.ci_high << "\n"
+                << "#max_log_lik="         << std::setprecision(8) << r.max_log_lik << "\n";
+        if (r.kimura.computed) {
+            sim_out << "#kimura_b="        << std::setprecision(8) << r.kimura.b         << "\n"
+                    << "#kimura_ne="       << std::setprecision(8) << r.kimura.ne_kimura << "\n";
+            if (r.kimura.ci_computed) {
+                sim_out << "#kimura_ne_ci_low="  << std::setprecision(8) << r.kimura.ne_kimura_ci_low  << "\n"
+                        << "#kimura_ne_ci_high=" << std::setprecision(8) << r.kimura.ne_kimura_ci_high << "\n";
+            }
+        }
+
+        // TSV header + rows.  All quantities are computed at the bin
+        // *center* p_bar; the plotting script can re-derive the per-pair
+        // theoretical curve from the data column.
+        sim_out << "bin_idx\tbin_low\tbin_high\tbin_center\tn_pairs"
+                   "\tmean_pm\tmean_pc\tobs_var\tobs_var_corr"
+                   "\tobs_F\tobs_F_se"
+                   "\texpected_var_at_ne\texpected_var_at_ne_ci_low"
+                   "\texpected_var_at_ne_ci_high"
+                   "\texpected_F_at_ne\texpected_F_at_ne_ci_low"
+                   "\texpected_F_at_ne_ci_high\n";
+        sim_out << std::setprecision(8);
+        const double ne_pt   = r.ne;
+        // Note: smaller Ne -> larger F = 1/Ne and larger expected
+        // variance.  Hence the "expected_*_ci_low" column uses
+        // ci_high (looser bound on drift) and "expected_*_ci_high"
+        // uses ci_low (tighter bound on drift).
+        const double ne_lo_f = (r.ci_high > 0) ? r.ci_high : ne_pt;
+        const double ne_hi_f = (r.ci_low  > 0) ? r.ci_low  : ne_pt;
+        for (const auto& b : bins) {
+            const double pbar    = b.bin_center;
+            const double pbar1mp = pbar * (1.0 - pbar);
+            const double exp_var_pt = (ne_pt   > 0) ? pbar1mp / ne_pt   : 0.0;
+            const double exp_var_lo = (ne_lo_f > 0) ? pbar1mp / ne_lo_f : 0.0;
+            const double exp_var_hi = (ne_hi_f > 0) ? pbar1mp / ne_hi_f : 0.0;
+            const double exp_F_pt   = (ne_pt   > 0) ? 1.0 / ne_pt       : 0.0;
+            const double exp_F_lo   = (ne_lo_f > 0) ? 1.0 / ne_lo_f     : 0.0;
+            const double exp_F_hi   = (ne_hi_f > 0) ? 1.0 / ne_hi_f     : 0.0;
+            sim_out << b.bin_idx       << "\t"
+                    << b.bin_low       << "\t"
+                    << b.bin_high      << "\t"
+                    << b.bin_center    << "\t"
+                    << b.n_pairs       << "\t"
+                    << b.mean_pm       << "\t"
+                    << b.mean_pc       << "\t"
+                    << b.obs_var       << "\t"
+                    << b.obs_var_corr  << "\t"
+                    << b.obs_F         << "\t"
+                    << b.obs_F_se      << "\t"
+                    << exp_var_pt      << "\t"
+                    << exp_var_lo      << "\t"
+                    << exp_var_hi      << "\t"
+                    << exp_F_pt        << "\t"
+                    << exp_F_lo        << "\t"
+                    << exp_F_hi        << "\n";
+        }
+        std::cerr << "[ne-estimate] Wrote bin-simulation TSV ("
+                  << bins.size() << " bins) to "
+                  << _config.bin_simulation_file << "\n";
     }
 
     std::ofstream out_file;

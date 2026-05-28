@@ -59,3 +59,62 @@ options:
 - 2. 输出CSV文件：包括每个样本每个位点的相关信息。
 - 3. 输出Figure文件：包括GMM模型的训练过程和分类结果。
 - 4. 输出Log文件：包括每个步骤中数据的相关数量信息。
+
+#### plot_bottleneck_simulation.py
+##### 1. Purpose
+Reproduces the deCODE 2024 Cell **"Figure 5. Observed and simulated
+means for bottleneck parameter, b"** panel from the per-bin TSV emitted
+by `mitoquest ne-estimate --bin-simulation`. The figure shows two panels
+side by side:
+
+* **Left** — observed mean drift `(p_c - p_m)^2` per maternal-VAF bin
+  with error bars, overlaid on the simulated parabolas
+  `p_m(1 - p_m) / Ne` at the fitted MLE Ne (red, with 95% CI ribbon) and
+  the Wonnapinij/Kimura cross-check Ne (blue dashed).
+* **Right** — per-bin estimate of `1 - b = F_i = (d_i - s_i) / [p_m(1 - p_m)]`
+  with error bars, overlaid on the horizontal lines `1/Ne_MLE` (red
+  with CI band) and `1/Ne_Kimura` (blue dashed).
+
+Marker size scales with the number of pairs in each bin so visual
+weight is proportional to information content, exactly as in the
+deCODE figure.
+
+##### 2. Upstream input — generate the TSV with `mitoquest ne-estimate`
+```bash
+# Build mitoquest first (cmake --build build -j8), then:
+mitoquest ne-estimate \
+    -i  cohort.transmission_pairs.tsv \
+    -o  cohort.ne.json \
+    --cross-check kimura \
+    --kimura-bootstrap 1000 \
+    --bin-simulation       cohort.bin_sim.tsv \
+    --bin-simulation-bins  10
+```
+The TSV stores per-bin `obs_var`, `obs_var_corr`, `obs_F`, `obs_F_se`
+plus the theoretical curves at the fitted Ne and its 95% CI; a
+commented header records the fitted Ne, CI bounds, and (when Kimura
+is enabled) the Wonnapinij b and Ne_Kimura.
+
+##### 3. Plot it
+```bash
+python tools/plot_bottleneck_simulation.py \
+    -i  cohort.bin_sim.tsv \
+    -o  cohort.bottleneck.png
+```
+Key options: `--dpi` (default 300), `--figsize W,H` (default `13,5.2`),
+`--title` (overrides the auto-generated suptitle).
+
+##### 4. How to read it
+* If the observed bin means **track the red MLE parabola**, the data
+  are consistent with the fitted Ne and the single-generation
+  Wright-Fisher model is a good fit.
+* If the observed means **fall between the red and blue curves**, the
+  MLE and Wonnapinij b are picking up different aspects of the same
+  variance (typically the Kimura b is pulled by a few high-drift
+  outliers; rerun `mitoquest ne-estimate` with `--kimura-trim 0.10
+  --top-drift-k 20` to inspect).
+* If the observed means **deviate systematically from the parabolic
+  shape** (e.g. a linear or U-shaped pattern), the single-generation
+  model is misspecified — likely candidates are deep pedigrees (`g > 1`),
+  NUMT contamination, or strongly heterogeneous Ne across sites.
+
