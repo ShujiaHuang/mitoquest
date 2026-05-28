@@ -10,3 +10,7 @@ __pycache__/
 .vscode/
 .ipynb_checkpoints/
 .DS_Store
+.qoder/
+
+# Generated demo artifacts (regenerable via tests/data/ne_pipeline/run_demo.sh)
+tests/data/ne_pipeline/cohort.*

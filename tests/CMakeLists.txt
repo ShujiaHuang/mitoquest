@@ -4,8 +4,11 @@ file(COPY ${CMAKE_SOURCE_DIR}/tests/data DESTINATION ${CMAKE_CURRENT_BINARY_DIR}
 # Create test library
 add_library(mitoquest_lib STATIC
     ${CMAKE_SOURCE_DIR}/src/algorithm.cpp
+    ${CMAKE_SOURCE_DIR}/src/log_factorial.cpp
     ${CMAKE_SOURCE_DIR}/src/mt_copynum.cpp
-    
+    ${CMAKE_SOURCE_DIR}/src/trans_prep.cpp
+    ${CMAKE_SOURCE_DIR}/src/ne_estimate.cpp
+
     ${CMAKE_SOURCE_DIR}/src/io/utils.cpp
     ${CMAKE_SOURCE_DIR}/src/io/bam.cpp
     ${CMAKE_SOURCE_DIR}/src/io/bam_header.cpp
@@ -38,6 +41,8 @@ target_link_libraries(mitoquest_lib PUBLIC
 add_executable(mitoquest_tests
     algorithm_test.cpp
     mt_copynum_test.cpp
+    test_trans_prep.cpp
+    test_ne_estimate.cpp
 
     io/bam_test.cpp
     io/iobgzf_test.cpp

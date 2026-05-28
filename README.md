@@ -238,12 +238,16 @@ g++ -O3 -fPIC -std=c++17 -Wl,-no_compact_unwind \
 Usage: mitoquest <command> [options]
 
 Commands:
-  caller    Call mitochondrial variants (SNVs/Indels) and quantify
-            heteroplasmy / homoplasmy from BAM/CRAM files.
-  subsam    Extract a subset of samples from an mtDNA VCF and recompute
-            INFO fields.
-  copynum   Estimate per-chromosome (incl. mtDNA) relative copy number
-            from a BAM/CRAM file.
+  caller       Call mitochondrial variants (SNVs/Indels) and quantify
+               heteroplasmy / homoplasmy from BAM/CRAM files.
+  subsam       Extract a subset of samples from an mtDNA VCF and recompute
+               INFO fields.
+  copynum      Estimate per-chromosome (incl. mtDNA) relative copy number
+               from a BAM/CRAM file.
+  trans-prep   Extract mother-child mtDNA allele transmission pairs from a
+               multi-sample VCF + a PLINK FAM file.
+  ne-estimate  Estimate the mtDNA bottleneck size (Ne) from transmission
+               pairs via Beta-Binomial maximum likelihood.
 ```
 
 ---
@@ -255,7 +259,7 @@ emits a multi-sample VCF containing per-sample heteroplasmy fractions
 (HF) and per-site INFO fields suitable for downstream filtering and
 annotation.
 
-### Full parameter reference
+### Full parameter reference of `caller`
 
 ```bash
 Usage: mitoquest caller [options] -f ref.fa -o output.vcf.gz in1.bam [in2.bam ...]
@@ -378,7 +382,7 @@ Extract a subset of samples from a multi-sample VCF/BCF file, optionally
 recomputing INFO fields (AC/AN/AF/NS, …) so they reflect only the kept
 samples.
 
-### Full parameter reference
+### Full parameter reference of `subsam`
 
 ```bash
 Usage: mitoquest subsam [options] -i <input.vcf> -o <output.vcf> [-s <samplelist>] [<sample1> ...]
@@ -396,7 +400,7 @@ Options:
   -h, --help           Show this help message and exit.
 ```
 
-### Usage examples
+### Usage examples for extracting samples
 
 **Extract samples listed in a file (output bgzipped VCF):**
 
@@ -468,7 +472,7 @@ Options:
   -h, --help             Show this help message and exit.
 ```
 
-### Usage examples
+### Usage examples for estimating copynum
 
 **Estimate copy numbers from a BAM file (paired-end auto-detected):**
 
@@ -537,6 +541,371 @@ following columns:
   applied to that chromosome.
 - When `-L` is supplied, the output also includes a `#Regions argument: ...`
   header comment recording the original CLI value for reproducibility.
+
+---
+
+## `mitoquest trans-prep` — Extract mother-child transmission pairs
+
+`mitoquest trans-prep` walks a multi-sample VCF (typically the output of
+`mitoquest caller`) together with a PLINK-format FAM file describing the
+trios, and emits a per-allele TSV of mother-child mtDNA transmission
+pairs. The TSV is the input format expected by `mitoquest ne-estimate`.
+
+Only mother-child relationships are retained; fathers do not transmit
+mtDNA in mammals and are deliberately ignored.
+
+### Full parameter reference
+
+```bash
+Usage: mitoquest trans-prep [options] -v <vcf> -f <fam> -o <pairs.tsv>
+
+Required options:
+  -v, --vcf         FILE   Input multi-sample VCF/BCF (must declare
+                           FORMAT/GT, FORMAT/DP and FORMAT/AD; see
+                           "AD interpretation" below).
+  -f, --fam         FILE   PLINK 6-column FAM file: family_id, child_id,
+                           father_id, mother_id, sex, phenotype
+                           (whitespace-delimited).
+  -o, --output      FILE   Output TSV file (use `-` for stdout).
+
+Optional options:
+  -d, --min-depth   INT    Minimum DP at both mother and child for the
+                           pair to be tagged QC=PASS [100].
+      --require-pass       Only keep VCF records whose FILTER == PASS
+                           (default: enabled).
+      --no-require-pass    Disable the FILTER=PASS gate.
+      --snv-only           Restrict to SNV records (default: enabled).
+      --no-snv-only        Disable the SNV-only gate (also keeps indels).
+  -h, --help               Print this help message.
+```
+
+### FAM format
+
+The FAM file is the standard PLINK 6-column whitespace-delimited format:
+
+```
+FAM_ID  CHILD_ID  FATHER_ID  MOTHER_ID  SEX  PHENOTYPE
+```
+
+- `MOTHER_ID == 0` denotes "unknown"; that line is skipped (counted under
+  `ignored_no_mother_in_fam` in the matching report).
+- Sample IDs are matched **case-sensitively** against the VCF sample names.
+- A FAM line whose mother or child is not present in the VCF is dropped
+  (counted under `ignored_missing_mother` / `ignored_missing_child`).
+- The FATHER_ID column is preserved in the report but otherwise ignored.
+
+### Output TSV columns
+
+One row is emitted per (transmission-pair, ALT allele) combination.
+Multi-allelic sites produce one row per ALT.
+
+| Column         | Type   | Description                                          |
+| -------------- | ------ | ---------------------------------------------------- |
+| `CHROM`        | string | Reference contig (e.g. `chrM`).                      |
+| `POS`          | int    | 1-based position.                                    |
+| `REF`          | string | Reference allele.                                    |
+| `ALT`          | string | One ALT allele.                                      |
+| `FAMILY_ID`    | string | FAM family ID.                                       |
+| `MOTHER_ID`    | string | Mother sample ID (must match VCF sample column).     |
+| `CHILD_ID`     | string | Child sample ID (must match VCF sample column).      |
+| `MOTHER_DP`    | int    | Mother total depth at this site.                     |
+| `MOTHER_AD_REF`| int    | Mother reads supporting REF.                         |
+| `MOTHER_AD_ALT`| int    | Mother reads supporting ALT.                         |
+| `MOTHER_VAF`   | float  | `MOTHER_AD_ALT / MOTHER_DP`.                         |
+| `CHILD_DP`     | int    | Child total depth at this site.                      |
+| `CHILD_AD_REF` | int    | Child reads supporting REF.                          |
+| `CHILD_AD_ALT` | int    | Child reads supporting ALT.                          |
+| `CHILD_VAF`    | float  | `CHILD_AD_ALT / CHILD_DP`.                           |
+| `QC`           | string | `PASS`, `LOW_DEPTH`, or other failure reason.        |
+
+A leading provenance comment line (`#mitoquest_trans_prep_command=...`)
+records the exact CLI invocation for reproducibility.
+
+### Usage example
+
+```bash
+# Step 1: variant calling on a cohort that includes mother-child trios
+mitoquest caller \
+    -f rCRS.fasta \
+    -o cohort.vcf.gz \
+    -Q 30 -q 30 -t 24 \
+    -b bamfile.list
+
+# Step 2: extract per-allele transmission pairs
+mitoquest trans-prep \
+    -v cohort.vcf.gz \
+    -f cohort.fam \
+    -d 500 \
+    -o cohort.transmission_pairs.tsv
+```
+
+`mitoquest trans-prep` writes a small "matching report" to STDERR
+summarising how many FAM lines were retained / dropped and why; review
+it before downstream analysis.
+
+### Caveats
+
+- **Garbage in, garbage out**: the QC of the upstream variant calls
+  fundamentally determines the quality of the Ne estimate. Always run
+  this on a high-quality, filtered VCF (e.g. after VQSR).
+- **AD interpretation is GT-aligned**: see "FORMAT/AD layout" below.
+  Any `Number=` declaration is accepted; AD is always decoded
+  per-sample using `FORMAT/GT`.
+- **Sample IDs are case-sensitive** and must match exactly between the
+  FAM file and the VCF sample column.
+
+### Multi-allelic sites
+
+`mitoquest trans-prep` decomposes each multi-allelic VCF record into
+one output row **per ALT × per trio**.  AD is decoded per-sample
+using `FORMAT/GT` (see "FORMAT/AD layout" below), so a tri-allelic
+SNV like `chrM 1000 . A G,T` produces two rows per trio, one for the
+`A>G` allele and one for the `A>T` allele.
+
+* **Pure multi-allelic SNVs** (e.g. `A>G,T,C`) — every ALT is kept.
+* **Mixed multi-allelic** (e.g. `A>G,GT`, one SNV + one indel) — with
+  the default `--snv-only` flag, the SNV ALT is kept and the indel ALT
+  is silently skipped within the same record. Disabling `--snv-only`
+  keeps both.
+
+Downstream, `mitoquest ne-estimate` treats each row as an independent
+`(REF reads, ALT reads)` 2-allele observation — the standard biallelic
+decomposition. This is exact for any single ALT and is a mild
+approximation only when two heteroplasmic ALTs co-segregate in the
+same mother (rare in mtDNA).
+
+The `tests/data/ne_pipeline/` directory ships a synthetic dataset that
+includes 2 tri-allelic SNV sites, so you can verify multi-allelic
+handling end-to-end with one command:
+
+```bash
+bash tests/data/ne_pipeline/run_demo.sh
+```
+
+### FORMAT/AD layout (GT-aligned, per sample)
+
+`mitoquest caller` emits `FORMAT/AD` with a **GT-aligned per-sample
+layout** rather than the standard `Number=R` layout: for each sample,
+`AD[i]` is the read depth of the allele at GT position *i*, and only
+alleles present in that sample's `GT` are listed.  Examples:
+
+| Sample call           | Meaning                                          |
+| --------------------- | ------------------------------------------------ |
+| `0/1:DP:r,a`          | heteroplasmic; `r`=REF reads, `a`=ALT reads      |
+| `0:DP:r`              | homoplasmic REF; only REF depth recorded         |
+| `1:DP:a`              | homoplasmic ALT; only ALT depth recorded         |
+| `0/1/2:DP:r,a1,a2`    | tri-allelic heteroplasmy; depths in GT order     |
+| `.:GQ:DP` (truncated) | GT missing / no variant evidence; AD absent      |
+
+`mitoquest trans-prep` decodes AD by walking each sample's `GT`
+and mapping AD positions back to allele indices.  An allele *not
+present* in a sample's GT yields **0 supporting reads** for that
+sample (this is the canonical "transmission-loss" case where a
+heteroplasmic mother transmits homoplasmic REF or ALT to the child).
+
+Any `Number=` declaration on `FORMAT/AD` is accepted (`R`, `A`, `.`)
+because AD is always decoded via GT.  Standard `Number=R` AD
+(REF + all ALTs, fixed width per record) is also handled correctly
+as a special case where every sample's GT lists every allele.
+
+### Missing genotypes (`GT='.'`)
+
+When a sample's `FORMAT/GT` is `'.'`, AD positions cannot be mapped
+to allele indices.  In that case `mitoquest trans-prep` drops the
+`(mother, child)` pair at that site.  The count of dropped
+`(pair, site)` observations is reported on STDERR after the run as:
+
+```
+[trans-prep] (pair, site) dropped due to GT='.' or AD/GT mismatch: <N>
+```
+
+The same drop also fires when the lengths of `GT` and `AD` for a
+sample disagree (which prevents an unambiguous GT-aligned AD lookup).
+
+---
+
+## `mitoquest ne-estimate` — Bottleneck size (Ne) maximum-likelihood estimation
+
+`mitoquest ne-estimate` fits the mitochondrial **transmission bottleneck
+size** Ne from the per-allele TSV produced by `mitoquest trans-prep`,
+using a Beta-Binomial maximum-likelihood model.
+
+### Statistical model
+
+For each transmission pair the model assumes:
+
+```txt
+  Maternal true VAF p0 ~ Beta(alpha = m_alt + 1,
+                              beta  = m_ref + 1)        # uniform prior
+  Bottleneck count   k  ~ Binomial(Ne, p0)
+  Child true VAF     p1 = k / Ne
+  Child read counts  c_alt ~ Binomial(c_dp, p1)
+```
+
+Integrating `p0` analytically yields `k ~ BetaBinomial(Ne, alpha, beta)`,
+so the per-pair likelihood collapses to a finite sum over `k = 0..Ne`:
+
+```txt
+  L(Ne) = Sigma_{k=0..Ne} BetaBinom(k | Ne, alpha, beta)
+                          * Binom(c_alt | c_dp, k/Ne)
+```
+
+The global log-likelihood is the sum across independent transmission
+pairs. The optimum is found by a **brute-force integer scan** over
+`[--min-ne, --max-ne]` (the discrete LL is *not* unimodal in `Ne` —
+fitted `Ne = k * true_Ne` aligns with the observed VAF grid and
+produces secondary local maxima, so golden-section search is unsafe);
+the 95% confidence interval is the contiguous range of `Ne` where
+`logL >= logL_max - 1.92` (profile likelihood, `chi2_{1, 0.95} / 2`).
+
+### Why DP/AD instead of the VCF AF field?
+
+A reasonable instinct is to take the per-sample `AF` (or `HF`) field
+that `mitoquest caller` already writes for every site and feed those
+values into the bottleneck model. We deliberately do not, for two
+reasons:
+
+1. `AF` is a **point estimate** that throws away depth-dependent
+   uncertainty. A homoplasmic site at depth 50 (`AD = 50/50`,
+   `AF = 1.0`) and at depth 5,000 (`AD = 5000/5000`, `AF = 1.0`) carry
+   very different amounts of information about the maternal
+   heteroplasmy. The Beta-Binomial step propagates that uncertainty
+   into the per-pair likelihood.
+2. The bottleneck model is exquisitely sensitive at the boundary
+   (small `p0`). Plugging a noisy point estimate biases `Ne` downward
+   for low-VAF pairs and underestimates the CI width.
+
+Using raw `(DP, AD)` and marginalising the maternal posterior is the
+**exact discrete-Wright-Fisher likelihood** for a single transmission;
+any method that uses `AF` as if it were the truth is an approximation
+to this.
+
+### Comparison with the deCODE 2024 *Cell* paper
+
+[Helgason et al. (2024), *Cell*](https://doi.org/10.1016/j.cell.2024.05.022)
+estimated the human mtDNA bottleneck on 3,457 mother-child pairs from
+Iceland. Their headline number for direct M-C transmissions is
+**Ne ≈ 2.29 (95% CI 1.95–2.62)**; pooling deeper-pedigree relatives
+places it at **Ne ≈ 3** (best fit in the simulated range 2–30).
+
+Methodologically, deCODE uses Wonnapinij's bottleneck parameter `b`
+(based on the Kimura distribution; Wonnapinij 2008/2010) fitted to the
+*variance* of frequency changes between relatives. Our `mitoquest
+ne-estimate` uses the full per-pair Beta-Binomial likelihood. For
+single-generation M-C data **the Beta-Binomial MLE is the exact form
+that the Kimura `b` approach approximates**, and is strictly more
+statistically efficient (Cramér-Rao); for multi-generation pedigrees
+(e.g. cousins, deeper relatives) Wonnapinij/Kimura is the better
+framework because it natively handles `g > 1`.
+
+For sanity, `mitoquest ne-estimate` ships an optional cross-check that
+computes Wonnapinij's `b` (with the 2010 sampling-error correction) and
+the implied single-generation `Ne_kimura = 1 / (1 - b)` alongside the
+primary Beta-Binomial estimate. Pass `--cross-check kimura` to enable
+it. The two numbers should land in the same biological ballpark
+(typically Ne ≈ 1–10 in human cohorts); large disagreement is a signal
+to investigate data quality (NUMT contamination, somatic clones,
+uneven depth) rather than to switch estimators.
+
+### Why not Kimura's neutral-drift Fst formula as the primary?
+
+Kimura's classical Fst-based bottleneck estimator (and its many
+derivatives) assumes a **drift-only** generation of variance and **clean
+allele frequencies** as input. With short-read sequencing of mtDNA,
+low-VAF heteroplasmy is dominated by **sequencing noise** rather than
+drift, so feeding raw VAFs into Kimura's formula systematically biases
+Ne downward (often by an order of magnitude). The Beta-Binomial model
+used here propagates **per-read sampling uncertainty** through to the
+likelihood, producing properly calibrated estimates from realistic
+NGS depths.
+
+### Full parameter reference of `ne-estimate`
+
+```bash
+Usage: mitoquest ne-estimate [options] -i <pairs.tsv>
+
+Required options:
+  -i, --input     FILE   Input transmission pairs TSV produced by
+                         `mitoquest trans-prep`.
+
+Optional options:
+  -o, --output    FILE   JSON output file (default: stdout).
+      --min-vaf   FLOAT  Lower maternal VAF gate, inclusive [0.10].
+      --max-vaf   FLOAT  Upper maternal VAF gate, inclusive [0.90].
+      --min-ne    INT    Smallest Ne value to consider [1].
+      --max-ne    INT    Largest Ne value to consider  [200].
+  -t, --threads     INT    Worker threads for the inner sum [1].
+      --cross-check NAME   Optional secondary estimator alongside the
+                           Beta-Binomial MLE. Supported value: `kimura`,
+                           which computes the Wonnapinij b and the
+                           implied single-generation Ne (Helgason 2024).
+  -h, --help               Print this help message.
+```
+
+### Output JSON
+
+```json
+{
+  "Ne":              12,
+  "CI_95_Low":       9,
+  "CI_95_High":      18,
+  "CI_Low_Clipped":  false,
+  "CI_High_Clipped": false,
+  "Pairs_Used":      147,
+  "Max_LogLik":      -812.34561,
+  "Min_VAF":         0.10,
+  "Max_VAF":         0.90,
+  "Search_Min_Ne":   1,
+  "Search_Max_Ne":   200,
+  "Kimura_Cross_Check": {
+    "b":             0.732,
+    "Ne_Kimura":     3.731,
+    "N_Informative": 145,
+    "Note":          "",
+    "Method":        "Wonnapinij 2008/2010 with sampling-error correction; single-generation Ne = 1 / (1 - b)"
+  }
+}
+```
+
+The `Kimura_Cross_Check` block is only emitted when
+`--cross-check kimura` is passed.
+
+- `CI_Low_Clipped` / `CI_High_Clipped` flag confidence-interval bounds
+  that hit the search boundary (`--min-ne` / `--max-ne`); when either is
+  `true` you should re-run with a wider search range.
+- A leading provenance comment (`#mitoquest_ne_estimate_command=...`) is
+  written before the JSON when the output file is written explicitly.
+
+### Usage example for `trans-prep`
+
+End-to-end pipeline chained with `trans-prep`:
+
+```bash
+mitoquest trans-prep \
+    -v cohort.vcf.gz \
+    -f cohort.fam \
+    -d 500 \
+    -o cohort.transmission_pairs.tsv
+
+mitoquest ne-estimate \
+    -i cohort.transmission_pairs.tsv \
+    --min-vaf 0.10 --max-vaf 0.90 \
+    --min-ne 1 --max-ne 100 \
+    -t 8 \
+    -o cohort.ne.json
+```
+
+### Recommendations
+
+- **Sequencing depth ≥ 500×** on chrM for both mother and child; lower
+  depth widens the per-pair likelihood envelope and inflates the CI.
+- **Restrict to maternal VAF in [0.10, 0.90]** (the default). Sites very
+  close to 0 or 1 carry virtually no information about Ne, while still
+  contributing numerical noise.
+- **At least ~30 informative pairs** are needed for a stable CI; with
+  fewer pairs the CI tends to be wide and to clip the search boundaries.
+- **Verify both `_Clipped` flags are `false`**; if either is `true`,
+  widen `--min-ne` / `--max-ne` and re-run.
 
 ---
 
