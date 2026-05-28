@@ -78,6 +78,7 @@
 
 #include <getopt.h>
 #include <cstddef>
+#include <cstdint>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -105,6 +106,16 @@ public:
         double ne_kimura      = 0.0;   // Ne implied by 1 / (1 - b) for one generation
         size_t n_informative  = 0;     // pairs that contributed to b (per Wonnapinij filter)
         std::string note;              // free-text caveat (e.g. "b clipped to [eps, 1-eps]")
+
+        // ---- Optional non-parametric bootstrap CI on the same pair set ----
+        // Populated only when n_bootstrap > 0 in compute_kimura_check().
+        bool   ci_computed       = false;
+        int    n_bootstrap       = 0;
+        uint64_t bootstrap_seed  = 0;
+        double b_ci_low          = 0.0;     // 2.5 percentile of bootstrap b
+        double b_ci_high         = 0.0;     // 97.5 percentile of bootstrap b
+        double ne_kimura_ci_low  = 0.0;     // 2.5 percentile of 1/(1-b)
+        double ne_kimura_ci_high = 0.0;     // 97.5 percentile of 1/(1-b)
     };
 
     // Final estimate.
@@ -129,6 +140,9 @@ public:
         int         max_ne;          // largest Ne to consider
         int         threads;         // worker threads for log-likelihood
         bool        kimura_check;    // run Wonnapinij cross-check?  (--cross-check kimura)
+        int         kimura_bootstrap;// non-parametric bootstrap iterations for the Kimura CI;
+                                     // 0 disables the CI computation.
+        uint64_t    kimura_seed;     // RNG seed for the Kimura bootstrap
     };
 
     explicit NeEstimator(int argc, char* argv[]);
@@ -189,14 +203,14 @@ public:
 
     /**
      * @brief Compute the Wonnapinij bottleneck parameter `b` from a set
-     *        of M-C pairs.
+     *        of M-C pairs, optionally with a non-parametric bootstrap CI.
      *
      * Uses the maternal point estimate p_m = m_alt / m_dp and child
      * point estimate p_c = c_alt / c_dp, then for each pair:
      *
      *     observed deviation        : d_i  = (p_c - p_m)^2
-     *     sampling-noise correction : s_i  = p_m (1 - p_m) / c_dp
-     *                                       + p_c (1 - p_c) / m_dp
+     *     sampling-noise correction : s_i  = p_m (1 - p_m) / m_dp
+     *                                       + p_c (1 - p_c) / c_dp
      *     numerator                 : Sigma_i (d_i - s_i)
      *     denominator               : Sigma_i p_m_i (1 - p_m_i)
      *     normalised drift variance : V    = numerator / denominator
@@ -208,8 +222,15 @@ public:
      *
      * `b` is clipped to (eps, 1 - eps) to guard against finite-sample
      * outliers; the clipping event is reported in KimuraCheck::note.
+     *
+     * When `n_bootstrap > 0`, this method additionally performs a
+     * non-parametric pair-level bootstrap (sample pairs with replacement,
+     * recompute b on each resample) and returns the 2.5 / 97.5 percentile
+     * confidence interval for both `b` and `Ne_kimura`.
      */
-    static KimuraCheck compute_kimura_check(const std::vector<PairData>& data);
+    static KimuraCheck compute_kimura_check(const std::vector<PairData>& data,
+                                            int n_bootstrap = 0,
+                                            uint64_t seed   = 42);
 
 private:
     NeEstimator(const NeEstimator&)            = delete;
