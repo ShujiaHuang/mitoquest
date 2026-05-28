@@ -788,36 +788,51 @@ Iceland. Their headline number for direct M-C transmissions is
 **Ne ≈ 2.29 (95% CI 1.95–2.62)**; pooling deeper-pedigree relatives
 places it at **Ne ≈ 3** (best fit in the simulated range 2–30).
 
-Methodologically, deCODE uses Wonnapinij's bottleneck parameter `b`
-(based on the Kimura distribution; Wonnapinij 2008/2010) fitted to the
-*variance* of frequency changes between relatives. Our `mitoquest
-ne-estimate` uses the full per-pair Beta-Binomial likelihood. For
-single-generation M-C data **the Beta-Binomial MLE is the exact form
-that the Kimura `b` approach approximates**, and is strictly more
-statistically efficient (Cramér-Rao); for multi-generation pedigrees
-(e.g. cousins, deeper relatives) Wonnapinij/Kimura is the better
-framework because it natively handles `g > 1`.
+Methodologically, deCODE uses the Wonnapinij bottleneck parameter `b`
+(based on the Kimura diffusion; Wonnapinij 2008/2010) fitted to the
+*variance* of frequency changes between relatives.
 
-For sanity, `mitoquest ne-estimate` ships an optional cross-check that
-computes Wonnapinij's `b` (with the 2010 sampling-error correction) and
-the implied single-generation `Ne_kimura = 1 / (1 - b)` alongside the
-primary Beta-Binomial estimate. Pass `--cross-check kimura` to enable
-it. The two numbers should land in the same biological ballpark
-(typically Ne ≈ 1–10 in human cohorts); large disagreement is a signal
-to investigate data quality (NUMT contamination, somatic clones,
-uneven depth) rather than to switch estimators.
+Since v1.8.2, `mitoquest ne-estimate` uses a **continuous Beta-diffusion
+MLE** as the default model.  This models the child's true heteroplasmy
+as a Kimura-diffusion draw:
 
-### Why not Kimura's neutral-drift Fst formula as the primary?
+```
+p_child | p_mother  ~  Beta(p_m × (Ne − 1), (1 − p_m) × (Ne − 1))
+c_alt   | p_child   ~  BetaBinomial(c_dp, p_m × (Ne − 1), (1 − p_m) × (Ne − 1))
+```
 
-Kimura's classical Fst-based bottleneck estimator (and its many
-derivatives) assumes a **drift-only** generation of variance and **clean
-allele frequencies** as input. With short-read sequencing of mtDNA,
-low-VAF heteroplasmy is dominated by **sequencing noise** rather than
-drift, so feeding raw VAFs into Kimura's formula systematically biases
-Ne downward (often by an order of magnitude). The Beta-Binomial model
-used here propagates **per-read sampling uncertainty** through to the
-likelihood, producing properly calibrated estimates from realistic
-NGS depths.
+The continuous MLE and the Wonnapinij/Kimura cross-check are
+**theoretically consistent**: both estimate the same Ne from the same
+Kimura diffusion (Var = p(1−p)/Ne), differing only in statistical
+method — full likelihood (MLE) vs method-of-moments (Kimura).  On
+well-behaved mtDNA data they agree closely (both yielding Ne ≈ 1–10
+in human cohorts, consistent with deCODE).
+
+For multi-generation pedigrees (e.g. cousins, deeper relatives)
+Wonnapinij/Kimura is the better framework because it natively handles
+`g > 1` generations of drift.
+
+### Why two MLE models?
+
+The previous default (v1.8.0–v1.8.1) was the **discrete model**:
+
+```
+k       ~ BetaBinomial(Ne, α, β)
+c_alt   ~ Binomial(c_dp, k/Ne)
+```
+
+This restricts the child's heteroplasmy to the grid {0, 1/Ne, …, 1}.
+At high sequencing depths (DP ≥ 2000), the Binomial likelihood is an
+extremely tight spike, and any mismatch between the child's true VAF
+and the nearest grid point creates an enormous penalty — forcing the
+MLE to inflate Ne upward (systematic ~5–10× bias; see
+`release_v1.8.2.md`).  In contrast, the continuous model allows the
+child's heteroplasmy to be any value in [0, 1], correctly capturing
+post-bottleneck vegetative segregation during cell division.
+
+The discrete model is still available via `--model discrete` for
+specialised use cases (e.g. virus-passage experiments where the
+physical inoculum count is the target).
 
 ### Full parameter reference of `ne-estimate`
 
@@ -830,15 +845,25 @@ Required options:
 
 Optional options:
   -o, --output    FILE   JSON output file (default: stdout).
+      --model     NAME   Likelihood model: `continuous` (default,
+                         recommended for mtDNA) or `discrete`.
       --min-vaf   FLOAT  Lower maternal VAF gate, inclusive [0.10].
       --max-vaf   FLOAT  Upper maternal VAF gate, inclusive [0.90].
       --min-ne    INT    Smallest Ne value to consider [1].
       --max-ne    INT    Largest Ne value to consider  [200].
-  -t, --threads     INT    Worker threads for the inner sum [1].
+  -t, --threads   INT    Worker threads for the inner sum [1].
       --cross-check NAME   Optional secondary estimator alongside the
-                           Beta-Binomial MLE. Supported value: `kimura`,
-                           which computes the Wonnapinij b and the
-                           implied single-generation Ne (Helgason 2024).
+                           MLE. Supported value: `kimura`, which computes
+                           the Wonnapinij b and the implied single-
+                           generation Ne (Helgason 2024).
+      --kimura-bootstrap INT  Non-parametric bootstrap iterations for the
+                              Kimura cross-check 95% CI [1000].
+      --kimura-seed      INT  RNG seed for the Kimura bootstrap [42].
+      --kimura-trim   FLOAT   Fraction of highest-drift pairs to drop
+                              before recomputing b (0.0 disables,
+                              recommended 0.10) [0.0].
+      --top-drift-k     INT   Emit the top-K highest-drift pairs in JSON
+                              for outlier inspection [0].
   -h, --help               Print this help message.
 ```
 
@@ -846,13 +871,14 @@ Optional options:
 
 ```json
 {
-  "Ne":              12,
-  "CI_95_Low":       9,
-  "CI_95_High":      18,
+  "Ne":              3,
+  "CI_95_Low":       2,
+  "CI_95_High":      5,
   "CI_Low_Clipped":  false,
   "CI_High_Clipped": false,
   "Pairs_Used":      147,
   "Max_LogLik":      -812.34561,
+  "Model":           "continuous",
   "Min_VAF":         0.10,
   "Max_VAF":         0.90,
   "Search_Min_Ne":   1,
@@ -860,15 +886,34 @@ Optional options:
   "Kimura_Cross_Check": {
     "b":             0.732,
     "Ne_Kimura":     3.731,
+    "b_CI_95_Low":   0.614,
+    "b_CI_95_High":  0.819,
+    "Ne_Kimura_CI_95_Low":  2.59,
+    "Ne_Kimura_CI_95_High": 5.52,
+    "N_Bootstrap":   1000,
+    "Bootstrap_Seed": 42,
     "N_Informative": 145,
+    "Trimmed_Kimura": {
+      "Trim_Frac":        0.1,
+      "N_After_Trim":     130,
+      "b_Trimmed":        0.753,
+      "Ne_Kimura_Trimmed": 4.05
+    },
+    "Top_Drift_Outliers": [
+      { "Pair_Index": 42, "M_DP": 2000, "M_AD_ALT": 1000,
+        "C_DP": 2000, "C_AD_ALT": 0, "M_VAF": 0.5,
+        "C_VAF": 0.0, "F_i": 0.99 }
+    ],
     "Note":          "",
-    "Method":        "Wonnapinij 2008/2010 with sampling-error correction; single-generation Ne = 1 / (1 - b)"
+    "Method":        "Wonnapinij 2008/2010 with sampling-error correction; single-generation Ne = 1 / (1 - b); 95% CI by non-parametric pair-level bootstrap"
   }
 }
 ```
 
 The `Kimura_Cross_Check` block is only emitted when
-`--cross-check kimura` is passed.
+`--cross-check kimura` is passed.  The `Trimmed_Kimura` and
+`Top_Drift_Outliers` sub-blocks appear only when `--kimura-trim > 0`
+and `--top-drift-k > 0`, respectively.
 
 - `CI_Low_Clipped` / `CI_High_Clipped` flag confidence-interval bounds
   that hit the search boundary (`--min-ne` / `--max-ne`); when either is
@@ -889,6 +934,9 @@ mitoquest trans-prep \
 
 mitoquest ne-estimate \
     -i cohort.transmission_pairs.tsv \
+    --cross-check kimura \
+    --kimura-trim 0.10 \
+    --top-drift-k 20 \
     --min-vaf 0.10 --max-vaf 0.90 \
     --min-ne 1 --max-ne 100 \
     -t 8 \
