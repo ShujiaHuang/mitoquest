@@ -797,7 +797,7 @@ Since v1.8.2, `mitoquest ne-estimate` uses a **continuous Beta-diffusion
 MLE** as the default model.  This models the child's true heteroplasmy
 as a Kimura-diffusion draw:
 
-```
+```txt
 p_child | p_mother  ~  Beta(p_m × (Ne − 1), (1 − p_m) × (Ne − 1))
 c_alt   | p_child   ~  BetaBinomial(c_dp, p_m × (Ne − 1), (1 − p_m) × (Ne − 1))
 ```
@@ -817,7 +817,7 @@ Wonnapinij/Kimura is the better framework because it natively handles
 
 The previous default (v1.8.0–v1.8.1) was the **discrete model**:
 
-```
+```txt
 k       ~ BetaBinomial(Ne, α, β)
 c_alt   ~ Binomial(c_dp, k/Ne)
 ```
@@ -858,7 +858,7 @@ physical inoculum count is the target).
 #### Why Ne_MLE is often smaller than Ne_Kimura
 
 On real mtDNA data it is common to observe `Ne_MLE < Ne_Kimura` (e.g.,
-Ne_MLE ≈ 1.9 vs Ne_Kimura ≈ 2.7).  This is **expected behaviour**, not a
+Ne_MLE ≈ 2.7 vs Ne_Kimura ≈ 3.7).  This is **expected behaviour**, not a
 bug, and the MLE estimate is the more accurate of the two.  The gap arises
 from several statistical effects:
 
