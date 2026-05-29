@@ -5,8 +5,6 @@
  * @author Shujia Huang (hshujia@qq.com)
  * @date 2026-05-28
  */
-#include "trans_prep.h"
-
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
@@ -17,8 +15,7 @@
 #include <sstream>
 #include <stdexcept>
 
-#include <htslib/vcf.h>
-
+#include "trans_prep.h"
 #include "io/utils.h"           // ngslib::is_readable
 
 namespace {
