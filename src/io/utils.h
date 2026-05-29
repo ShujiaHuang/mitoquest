@@ -32,6 +32,10 @@ namespace ngslib {
                                             "-" + std::to_string(end));
             }
         };
+        
+        int size() const {
+            return end - start + 1;
+        }
 
         std::string to_string() const {
             return chrom + ":" + std::to_string(start) + "-" + std::to_string(end);
@@ -120,6 +124,7 @@ namespace ngslib {
         return out_str;
     }
 
+    std::vector<std::string> split(const std::string &in_str, const char *delim);
     void split(const std::string &in_str, std::vector<std::string> &out, const char *delim, bool is_append=false);
     
     // 重载了除 vector<string> 之外的所有其他基础数据类型(string 的操作和它们不同)，包括：int，double，float
@@ -156,6 +161,40 @@ namespace ngslib {
 
         return;
     }
+
+    template<typename T>
+    std::vector<T> split(const std::string &in_str, const char *delim) {
+        std::vector<T> out;
+        
+        // Takes only space separated C++ strings when using 'stringstream'  
+        std::istringstream ss;
+
+        size_t i(0), find_start_idx(0), delim_len(std::strlen(delim)), len;
+        std::string tok;
+        T d;
+
+        while(i != std::string::npos) {
+
+            ss.clear();  // clear the stringstream pipe first
+
+            i = in_str.find(delim, find_start_idx);
+            len = (i==std::string::npos) ? in_str.length() - find_start_idx : i - find_start_idx;
+            tok = in_str.substr(find_start_idx, len); 
+
+            if (!tok.empty()) {
+                ss.str(tok);
+                ss >> d;
+                out.push_back(d);
+            } else {
+                out.push_back(0);  // Empty value set to be 0. [int, double, float]
+            }
+
+            find_start_idx = i + delim_len;  // skip 'delim' character and set to find next 'delim' string
+        }
+
+        return out;
+    }
+
 
     // Template function to slice a vector from range X to Y
     template <typename T>

@@ -138,4 +138,22 @@ namespace ngslib {
         return;
     }
 
+    std::vector<std::string> split(const std::string &in_str, const char *delim) {
+        std::vector<std::string> out;
+        size_t i(0), find_start_idx(0), delim_len(std::strlen(delim)), len;
+        std::string item;
+        while(i != std::string::npos) {
+
+            i = in_str.find(delim, find_start_idx);
+            len = (i==std::string::npos) ? in_str.length() - find_start_idx : i - find_start_idx;
+            
+            item = in_str.substr(find_start_idx, len);
+            out.push_back(item);
+
+            find_start_idx = i + delim_len;  // skip 'delim' character and set to find next 'delim' string
+        }
+
+        return out;
+    }
+
 }  // namespae ngslib
