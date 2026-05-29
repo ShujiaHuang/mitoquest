@@ -5,8 +5,6 @@
  * @author Shujia Huang (hshujia@qq.com)
  * @date 2026-05-28
  */
-#include "ne_estimate.h"
-
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -22,6 +20,7 @@
 #include <stdexcept>
 #include <thread>
 
+#include "ne_estimate.h"
 #include "external/thread_pool.h"
 #include "io/utils.h"           // ngslib::is_readable
 
@@ -424,17 +423,6 @@ int col_index(const std::vector<std::string>& cols, const std::string& name) {
     throw std::runtime_error("[ne-estimate] Required column missing in TSV: " + name);
 }
 
-std::vector<std::string> split_tab(const std::string& s) {
-    std::vector<std::string> out;
-    std::string cur;
-    for (char c : s) {
-        if (c == '\t') { out.push_back(cur); cur.clear(); }
-        else cur.push_back(c);
-    }
-    out.push_back(cur);
-    return out;
-}
-
 }  // namespace
 
 std::vector<NeEstimator::PairData>
@@ -452,7 +440,7 @@ NeEstimator::load_pairs(const std::string& tsv_path,
         if (!line.empty() && line.back() == '\r') line.pop_back();
         if (line.empty()) continue;
         if (line[0] == '#') continue;        // comment line written by `trans-prep`
-        header_cols = split_tab(line);
+        header_cols = ngslib::split(line, "\t");
         break;
     }
     if (header_cols.empty()) {
@@ -471,7 +459,7 @@ NeEstimator::load_pairs(const std::string& tsv_path,
         if (!line.empty() && line.back() == '\r') line.pop_back();
         if (line.empty()) continue;
         if (line[0] == '#') continue;
-        std::vector<std::string> tk = split_tab(line);
+        std::vector<std::string> tk = ngslib::split(line, "\t");
         if (static_cast<int>(tk.size()) <= idx_qc) continue;
         if (tk[idx_qc] != "PASS") continue;
 
