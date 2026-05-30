@@ -236,8 +236,9 @@ double NeEstimator::compute_global_ll_continuous(
 static double golden_section_max(
     double a, double b, double tol,
     const std::vector<NeEstimator::PairData>& data,
-    const NeEstimator::LogFactorial& lf, int threads) {
-    constexpr double phi = 0.6180339887498949;  // (sqrt(5)-1)/2
+    const NeEstimator::LogFactorial& lf, int threads) 
+{
+    constexpr double phi = 0.6180339887498949;  // 黄金分割点：(sqrt(5)-1)/2
     double x1 = b - phi * (b - a);
     double x2 = a + phi * (b - a);
     double f1 = NeEstimator::compute_global_ll_continuous(x1, data, lf, threads);
@@ -261,8 +262,10 @@ static double golden_section_max(
 }
 
 double NeEstimator::find_optimal_ne_continuous(
-    const std::vector<PairData>& data, const LogFactorial& lf,
-    int min_ne, int max_ne, int threads) {
+    const std::vector<PairData>& data, 
+    const LogFactorial& lf,
+    int min_ne, int max_ne, int threads) 
+{
     if (min_ne < 1) min_ne = 1;
     if (max_ne < min_ne) max_ne = min_ne;
 
@@ -288,7 +291,8 @@ double NeEstimator::find_optimal_ne_continuous(
 }
 
 NeEstimator::Result NeEstimator::estimate_continuous(
-    const std::vector<PairData>& data, int min_ne, int max_ne, int threads) {
+    const std::vector<PairData>& data, int min_ne, int max_ne, int threads) 
+{
     Result r;
     r.n_pairs = data.size();
     if (data.empty()) {
@@ -426,8 +430,7 @@ int col_index(const std::vector<std::string>& cols, const std::string& name) {
 }  // namespace
 
 std::vector<NeEstimator::PairData>
-NeEstimator::load_pairs(const std::string& tsv_path,
-                        double min_vaf, double max_vaf) {
+NeEstimator::load_pairs(const std::string& tsv_path, double min_vaf, double max_vaf) {
     std::ifstream in_file(tsv_path);
     if (!in_file.is_open()) {
         throw std::runtime_error("[ne-estimate] Failed to open input TSV: " + tsv_path);
@@ -863,6 +866,107 @@ NeEstimator::compute_bin_simulation(const std::vector<PairData>& data,
 }
 
 // ---------------------------------------------------------------------
+// Ne-profile scan (compare MLE vs Kimura preferences across Ne)
+// ---------------------------------------------------------------------
+//
+// For each candidate Ne in [min_ne, max_ne] (step `step`) compute two
+// independent goodness-of-fit metrics on the *same* informative pair set:
+//
+//   mle_log_lik(Ne)  =  global log-likelihood under the configured model
+//                       (continuous Beta-diffusion or discrete Beta-
+//                       Binomial).  Maximised at the fitted Ne_MLE.
+//   kimura_ssr(Ne)   =  Sigma_i ( (d_i - s_i) - p_m_i (1 - p_m_i) / Ne )^2
+//                       Per-pair least-squares fit of the one-generation
+//                       Wright-Fisher prediction.  Minimised at the
+//                       analytic best Ne_kimura_ssr = Sigma w^2 / Sigma rw.
+//
+// The Kimura SSR is the deCODE-style "distribution fitting" metric in
+// closed form: the deCODE 2024 Cell paper picked Ne ~~ 3 by minimising
+// the deviation between observed allele-frequency drift and the Kimura
+// distribution prediction; SSR is the same idea reduced to a per-pair
+// quadratic.  We report both profiles so the user can see whether the
+// two estimators agree on the location of the best Ne.
+std::vector<NeEstimator::NeProfileRow>
+NeEstimator::compute_ne_profile(const std::vector<PairData>& data,
+                                const LogFactorial& lf,
+                                double min_ne, double max_ne, double step,
+                                int threads, bool continuous) {
+    if (step <= 0.0)         step = 0.1;
+    if (min_ne < 1.0)        min_ne = 1.0;
+    if (max_ne < min_ne)     max_ne = min_ne;
+
+    // Pre-compute (w_i, r_i) for every informative pair so the inner
+    // Kimura-SSR loop is O(n) regardless of how dense the Ne grid is.
+    const std::vector<PairContribution> contribs = prepare_pair_contributions(data);
+
+    std::vector<NeProfileRow> profile;
+    const size_t n_steps = static_cast<size_t>(
+        std::floor((max_ne - min_ne) / step + 0.5)) + 1;
+    profile.reserve(n_steps + 1);
+
+    double max_ll  = -std::numeric_limits<double>::infinity();
+    double min_ssr =  std::numeric_limits<double>::infinity();
+
+    // Half-step tolerance so the rightmost grid point is included even
+    // when (max_ne - min_ne) is not an exact multiple of step.
+    const double half_step = 0.5 * step;
+    for (double ne = min_ne; ne <= max_ne + half_step; ne += step) {
+        NeProfileRow row;
+        row.ne_candidate = ne;
+
+        // MLE log-likelihood at this Ne.  For the discrete model the
+        // likelihood is only defined at integer Ne, so round to the
+        // nearest integer and use the fast parallel path.
+        if (continuous) {
+            row.mle_log_lik = compute_global_ll_continuous(ne, data, lf, threads);
+        } else {
+            const int ne_int = static_cast<int>(std::round(ne));
+            row.mle_log_lik = compute_global_ll_parallel(
+                std::max(1, ne_int), data, lf, threads, false);
+        }
+        if (row.mle_log_lik > max_ll) max_ll = row.mle_log_lik;
+
+        // Kimura SSR: Sigma_i (r_i - w_i / Ne)^2 over informative pairs.
+        const double inv_ne = 1.0 / ne;
+        double ssr = 0.0;
+        for (const auto& c : contribs) {
+            if (!c.informative) continue;
+            const double resid = c.r - c.w * inv_ne;
+            ssr += resid * resid;
+        }
+        row.kimura_ssr = ssr;
+        if (ssr < min_ssr) min_ssr = ssr;
+
+        profile.push_back(row);
+    }
+
+    // Post-process: normalise both metrics so they are on comparable
+    // "distance from best fit" scales for plotting.
+    for (auto& row : profile) {
+        row.mle_delta_2ll   = -2.0 * (row.mle_log_lik - max_ll);
+        row.kimura_norm_ssr = (min_ssr > 0.0) ? row.kimura_ssr / min_ssr : 1.0;
+    }
+    return profile;
+}
+
+double NeEstimator::kimura_ssr_best_ne(const std::vector<PairData>& data) {
+    // Closed-form least-squares estimator for Ne under the prediction
+    //     E[d_i - s_i]  =  p_m_i (1 - p_m_i) / Ne.
+    // Setting d/dNe Sigma (r_i - w_i / Ne)^2  =  0 and solving:
+    //     Ne_best  =  Sigma w_i^2  /  Sigma r_i w_i.
+    const std::vector<PairContribution> contribs = prepare_pair_contributions(data);
+    double sum_w_sq    = 0.0;
+    double sum_r_w     = 0.0;
+    for (const auto& c : contribs) {
+        if (!c.informative) continue;
+        sum_w_sq += c.w * c.w;
+        sum_r_w  += c.r * c.w;
+    }
+    if (!(sum_r_w > 0.0)) return std::numeric_limits<double>::quiet_NaN();
+    return sum_w_sq / sum_r_w;
+}
+
+// ---------------------------------------------------------------------
 // Constructors / CLI
 // ---------------------------------------------------------------------
 
@@ -881,6 +985,7 @@ NeEstimator::NeEstimator(Config config) : _config(std::move(config)) {
     if (_config.kimura_trim < 0.0 || _config.kimura_trim >= 1.0) _config.kimura_trim = 0.0;
     if (_config.top_drift_k < 0)  _config.top_drift_k = 0;
     if (_config.bin_simulation_n_bins < 1) _config.bin_simulation_n_bins = 1;
+    if (_config.ne_profile_step <= 0.0)    _config.ne_profile_step = 0.1;
     if (_config.model.empty())    _config.model = "continuous";
     // kimura_check defaults to false; callers may flip it explicitly.
 }
@@ -937,6 +1042,14 @@ void NeEstimator::usage() {
                  "                              [--min-vaf, --max-vaf].\n"
                  "      --bin-simulation-bins INT  Number of equal-width maternal-VAF bins\n"
                  "                                 for --bin-simulation [10].\n"
+                 "      --ne-profile     FILE   Emit a TSV that scores every candidate Ne\n"
+                 "                              under both the MLE log-likelihood and the\n"
+                 "                              Kimura per-pair SSR metric.  Useful to\n"
+                 "                              visually compare which Ne each estimator\n"
+                 "                              prefers (deCODE-style distribution fit).\n"
+                 "                              Grid range = [--min-ne, --max-ne].\n"
+                 "      --ne-profile-step FLOAT Grid step on the Ne axis for --ne-profile\n"
+                 "                              [0.1].\n"
                  "  -h, --help               Print this help message.\n\n"
                  "Notes:\n"
                  "  * Sites with maternal VAF near 0 or 1 carry virtually no information\n"
@@ -961,7 +1074,7 @@ void NeEstimator::_parse_args(int argc, char* argv[]) {
     _config.min_vaf          = 0.10;
     _config.max_vaf          = 0.90;
     _config.min_ne           = 1;
-    _config.max_ne           = 200;
+    _config.max_ne           = 100;
     _config.threads          = 1;
     _config.model            = "continuous";
     _config.kimura_check     = false;
@@ -971,6 +1084,8 @@ void NeEstimator::_parse_args(int argc, char* argv[]) {
     _config.top_drift_k      = 0;
     _config.bin_simulation_file.clear();
     _config.bin_simulation_n_bins = 10;
+    _config.ne_profile_file.clear();
+    _config.ne_profile_step       = 0.1;
 
     _cmdline_string = "#mitoquest_ne_estimate_command=";
     for (int i = 0; i < argc; ++i) {
@@ -992,6 +1107,8 @@ void NeEstimator::_parse_args(int argc, char* argv[]) {
         {"top-drift-k",      required_argument, 0,  9 },
         {"bin-simulation",       required_argument, 0, 11 },
         {"bin-simulation-bins",  required_argument, 0, 12 },
+        {"ne-profile",           required_argument, 0, 13 },
+        {"ne-profile-step",      required_argument, 0, 14 },
         {"threads",          required_argument, 0, 't'},
         {"help",             no_argument,       0, 'h'},
         {0, 0, 0, 0}
@@ -1039,6 +1156,8 @@ void NeEstimator::_parse_args(int argc, char* argv[]) {
             }
             case 11 : _config.bin_simulation_file   = optarg;          break;
             case 12 : _config.bin_simulation_n_bins = std::stoi(optarg); break;
+            case 13 : _config.ne_profile_file       = optarg;          break;
+            case 14 : _config.ne_profile_step       = std::stod(optarg); break;
             case 't': _config.threads     = std::stoi(optarg); break;
             case 'h': usage(); std::exit(EXIT_SUCCESS);
             case '?':
@@ -1069,6 +1188,9 @@ void NeEstimator::_parse_args(int argc, char* argv[]) {
     }
     if (_config.top_drift_k < 0) _config.top_drift_k = 0;
     if (_config.bin_simulation_n_bins < 1) _config.bin_simulation_n_bins = 1;
+    if (_config.ne_profile_step <= 0.0) {
+        throw std::runtime_error("[ne-estimate] --ne-profile-step must be > 0.");
+    }
 }
 
 void NeEstimator::_write_json(const Result& r, std::ostream& out) const {
@@ -1119,7 +1241,7 @@ void NeEstimator::_write_json(const Result& r, std::ostream& out) const {
             };
             out << "    \"b_CI_95_Low\":         "; emit_num(r.kimura.b_ci_low);          out << ",\n"
                 << "    \"b_CI_95_High\":        "; emit_num(r.kimura.b_ci_high);         out << ",\n"
-                << "    \"Ne_Kimura_CI_95_Low\": "; emit_num(r.kimura.ne_kimura_ci_low);  out << ",\n"
+                << "    \"Ne_Kimura_CI_95_Low\" :"; emit_num(r.kimura.ne_kimura_ci_low);  out << ",\n"
                 << "    \"Ne_Kimura_CI_95_High\":"; emit_num(r.kimura.ne_kimura_ci_high); out << ",\n"
                 << "    \"N_Bootstrap\":         " << r.kimura.n_bootstrap     << ",\n"
                 << "    \"Bootstrap_Seed\":      " << r.kimura.bootstrap_seed  << ",\n";
@@ -1286,6 +1408,94 @@ NeEstimator::Result NeEstimator::run() {
         std::cerr << "[ne-estimate] Wrote bin-simulation TSV ("
                   << bins.size() << " bins) to "
                   << _config.bin_simulation_file << "\n";
+    }
+
+    // ---------------------------------------------------------------
+    // Optional: Ne-profile TSV (deCODE-style "best-fit Ne" exercise).
+    // For each Ne candidate on a fine grid, score it under both the MLE
+    // log-likelihood and the Kimura per-pair SSR.  This lets the user
+    // see which Ne each of the two estimators in the program prefers,
+    // similar to how deCODE arrived at Ne ~~ 3 by minimising the
+    // Kimura distribution-fit deviation across 137 variants in 53,041
+    // mother-child pairs.
+    // ---------------------------------------------------------------
+    if (!_config.ne_profile_file.empty()) {
+        const int cache_size = required_cache_size(data, _config.max_ne);
+        LogFactorial lf(cache_size);
+        const bool continuous = (_config.model == "continuous");
+        const std::vector<NeProfileRow> profile = compute_ne_profile(
+            data, lf,
+            static_cast<double>(_config.min_ne),
+            static_cast<double>(_config.max_ne),
+            _config.ne_profile_step,
+            _config.threads, continuous);
+
+        // Locate the best Ne under each metric (already encoded in the
+        // normalised columns, but we surface them in metadata for the
+        // plotting script).
+        double best_ne_mle    = profile.empty() ? r.ne : profile.front().ne_candidate;
+        double best_ne_kimura = profile.empty() ? std::numeric_limits<double>::quiet_NaN()
+                                                 : profile.front().ne_candidate;
+        double best_ll        = -std::numeric_limits<double>::infinity();
+        double best_ssr       =  std::numeric_limits<double>::infinity();
+        for (const auto& row : profile) {
+            if (row.mle_log_lik > best_ll)  { best_ll  = row.mle_log_lik; best_ne_mle    = row.ne_candidate; }
+            if (row.kimura_ssr  < best_ssr) { best_ssr = row.kimura_ssr;  best_ne_kimura = row.ne_candidate; }
+        }
+        const double best_ne_kimura_analytic = kimura_ssr_best_ne(data);
+
+        std::ofstream prof_out(_config.ne_profile_file);
+        if (!prof_out.is_open()) {
+            throw std::runtime_error(
+                "[ne-estimate] Failed to open --ne-profile output: "
+                + _config.ne_profile_file);
+        }
+
+        if (!_cmdline_string.empty()) prof_out << _cmdline_string << "\n";
+        prof_out << "#mitoquest_version="      << MITOQUEST_VERSION   << "\n"
+                 << "#model="                  << _config.model       << "\n"
+                 << "#min_vaf="                << _config.min_vaf     << "\n"
+                 << "#max_vaf="                << _config.max_vaf     << "\n"
+                 << "#n_pairs_used="           << r.n_pairs           << "\n"
+                 << "#profile_min_ne="         << _config.min_ne      << "\n"
+                 << "#profile_max_ne="         << _config.max_ne      << "\n"
+                 << "#profile_step="           << _config.ne_profile_step << "\n"
+                 << "#fitted_ne_mle="          << std::setprecision(8) << r.ne      << "\n"
+                 << "#fitted_ne_mle_ci_low="   << std::setprecision(8) << r.ci_low  << "\n"
+                 << "#fitted_ne_mle_ci_high="  << std::setprecision(8) << r.ci_high << "\n"
+                 << "#max_log_lik="            << std::setprecision(8) << r.max_log_lik << "\n"
+                 << "#best_ne_mle_on_grid="    << std::setprecision(8) << best_ne_mle    << "\n"
+                 << "#best_ne_kimura_on_grid=" << std::setprecision(8) << best_ne_kimura << "\n"
+                 << "#best_ne_kimura_analytic="<< std::setprecision(8) << best_ne_kimura_analytic << "\n";
+        if (r.kimura.computed) {
+            prof_out << "#kimura_b="            << std::setprecision(8) << r.kimura.b         << "\n"
+                     << "#kimura_ne_moments="   << std::setprecision(8) << r.kimura.ne_kimura << "\n";
+            if (r.kimura.ci_computed) {
+                prof_out << "#kimura_ne_ci_low="  << std::setprecision(8) << r.kimura.ne_kimura_ci_low  << "\n"
+                         << "#kimura_ne_ci_high=" << std::setprecision(8) << r.kimura.ne_kimura_ci_high << "\n";
+            }
+        }
+
+        prof_out << "ne_candidate\tmle_log_lik\tmle_delta_2ll"
+                    "\tkimura_ssr\tkimura_norm_ssr\n";
+        prof_out << std::setprecision(8);
+        for (const auto& row : profile) {
+            prof_out << row.ne_candidate    << "\t"
+                     << row.mle_log_lik     << "\t"
+                     << row.mle_delta_2ll   << "\t"
+                     << row.kimura_ssr      << "\t"
+                     << row.kimura_norm_ssr << "\n";
+        }
+        std::cerr << "[ne-estimate] Wrote Ne-profile TSV ("
+                  << profile.size() << " grid points) to "
+                  << _config.ne_profile_file << "\n";
+        std::cerr << "[ne-estimate]   Best Ne on grid: MLE = "
+                  << best_ne_mle
+                  << ", Kimura SSR = " << best_ne_kimura;
+        if (std::isfinite(best_ne_kimura_analytic)) {
+            std::cerr << " (analytic = " << best_ne_kimura_analytic << ")";
+        }
+        std::cerr << "\n";
     }
 
     std::ofstream out_file;

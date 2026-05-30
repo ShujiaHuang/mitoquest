@@ -182,6 +182,14 @@ public:
                                          // the fitted Ne and its 95% CI).
         int         bin_simulation_n_bins; // number of equal-width bins to use
                                            // when --bin-simulation is set.
+        std::string ne_profile_file;     // when non-empty, write an Ne-profile
+                                         // TSV that scores every candidate Ne
+                                         // under both the MLE and Kimura
+                                         // models (analog of the deCODE
+                                         // "best-fit Ne = 3" distribution-
+                                         // fitting exercise).
+        double      ne_profile_step;     // grid step on the Ne axis for
+                                         // --ne-profile (default 0.1).
     };
 
     /// One row of the per-bin observed-vs-simulated drift summary used
@@ -203,6 +211,30 @@ public:
         double obs_F         = 0.0;   // empirical mean of F_i = (d_i - s_i) / w_i
                                       //   (= bin estimate of 1 - b)
         double obs_F_se      = 0.0;   // standard error of mean F_i in bin
+    };
+
+    /// One row of the Ne-profile scoring scan.  For each candidate Ne we
+    /// report two independent goodness-of-fit metrics so the user can see
+    /// which Ne each of the two estimators in the program prefers:
+    ///
+    ///   * `mle_log_lik`  -- global log-likelihood under the configured
+    ///                       model (continuous Beta-diffusion or discrete
+    ///                       Beta-Binomial).  Maximised at the fitted
+    ///                       Ne_MLE.
+    ///   * `kimura_ssr`   -- sum-of-squared per-pair residuals under the
+    ///                       one-generation Wright-Fisher prediction
+    ///                           E[d_i - s_i]  =  p_m_i (1 - p_m_i) / Ne.
+    ///                       Minimised at the analytic Kimura-SSR best
+    ///                       Ne =  Sigma w_i^2  /  Sigma r_i w_i.
+    ///
+    /// Both metrics are normalised in post-processing so the plotting
+    /// script can render comparable curves on linear or log axes.
+    struct NeProfileRow {
+        double ne_candidate    = 0.0;
+        double mle_log_lik     = 0.0;
+        double mle_delta_2ll   = 0.0;   // -2 (LL - LL_max); 0 at fitted Ne_MLE
+        double kimura_ssr      = 0.0;   // Sigma_i (r_i - w_i / Ne)^2
+        double kimura_norm_ssr = 0.0;   // ssr / ssr_min (>= 1, =1 at best fit)
     };
 
     explicit NeEstimator(int argc, char* argv[]);
@@ -347,6 +379,37 @@ public:
     static std::vector<BinSimulationRow>
     compute_bin_simulation(const std::vector<PairData>& data,
                            double vaf_low, double vaf_high, int n_bins);
+
+    /**
+     * @brief Score every candidate Ne in [min_ne, max_ne] (step `step`)
+     *        under both the MLE log-likelihood and the Kimura sum-of-
+     *        squared-residuals metric.
+     *
+     * The MLE column uses the continuous Beta-diffusion log-likelihood
+     * when `continuous == true` and the discrete Beta-Binomial
+     * log-likelihood otherwise.  The Kimura column is independent of the
+     * model selection: for every informative pair we compute
+     *
+     *     residual_i(Ne)  =  (d_i - s_i)  -  p_m_i (1 - p_m_i) / Ne
+     *     ssr(Ne)         =  Sigma_i residual_i(Ne)^2
+     *
+     * After the scan we normalise: `mle_delta_2ll = -2 (LL - LL_max)` and
+     * `kimura_norm_ssr = ssr / ssr_min`.  The grid is clamped so that
+     * `step > 0` and `min_ne >= 1`.
+     */
+    static std::vector<NeProfileRow>
+    compute_ne_profile(const std::vector<PairData>& data,
+                       const LogFactorial& lf,
+                       double min_ne, double max_ne, double step,
+                       int threads, bool continuous);
+
+    /// Closed-form Kimura-SSR best-fit Ne under the one-generation
+    /// Wright-Fisher prediction:  Ne_best  =  Sigma w_i^2 / Sigma r_i w_i.
+    /// Returns NaN when the denominator is non-positive (corrected drift
+    /// summed across pairs goes the "wrong" direction; i.e. sampling
+    /// correction overshoots and the data are statistically
+    /// indistinguishable from no drift).
+    static double kimura_ssr_best_ne(const std::vector<PairData>& data);
 
 private:
     NeEstimator(const NeEstimator&)            = delete;

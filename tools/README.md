@@ -118,3 +118,79 @@ Key options: `--dpi` (default 300), `--figsize W,H` (default `13,5.2`),
   model is misspecified — likely candidates are deep pedigrees (`g > 1`),
   NUMT contamination, or strongly heterogeneous Ne across sites.
 
+
+#### plot_ne_profile.py
+##### 1. Purpose
+Reproduces the deCODE 2024 *Cell* paper's "best-fit Ne" exercise: the
+paper scanned candidate Ne values, simulated the Kimura distribution at
+each one, and chose the Ne that best fits the observed allele-frequency
+change distribution (Ne ≈ 3 across 137 variants × 53,041 mother-child
+pairs).  This script renders the equivalent diagnostic for the cohort
+fed to `mitoquest ne-estimate`.
+
+For every candidate Ne in `[--min-ne, --max-ne]` (step `--ne-profile-step`)
+the upstream C++ command scores two **independent** goodness-of-fit
+metrics on the *same* informative pair set:
+
+* **MLE log-likelihood** under the configured model (continuous
+  Beta-diffusion or discrete Beta-Binomial).  Maximised at the fitted
+  `Ne_MLE`.
+* **Kimura per-pair SSR** = Σᵢ ((dᵢ − sᵢ) − p_mᵢ (1 − p_mᵢ) / Ne)².
+  Minimised at the analytic
+      `Ne_Kimura_SSR = Σ w² / Σ rw`,
+  which is the closed-form least-squares fit of the one-generation
+  Wright-Fisher prediction.
+
+The figure has two panels (MLE on the left, Kimura on the right) so the
+user can directly see whether the two estimators agree on the location
+of the best Ne, or whether the data are pulling them in different
+directions (a strong indicator of high-drift outliers).
+
+##### 2. Upstream input — generate the TSV with `mitoquest ne-estimate`
+```bash
+mitoquest ne-estimate \
+    -i cohort.transmission_pairs.tsv \
+    --cross-check kimura --kimura-bootstrap 200 \
+    --ne-profile cohort.ne_profile.tsv --ne-profile-step 0.1 \
+    --max-ne 30 \
+    -o cohort.ne.json
+```
+The TSV starts with `#key=value` provenance lines (fitted Ne, model,
+VAF window, Wonnapinij b/Ne, Kimura bootstrap CI, …) followed by a
+standard 5-column body:
+```
+ne_candidate  mle_log_lik  mle_delta_2ll  kimura_ssr  kimura_norm_ssr
+```
+
+##### 3. Plot it
+```bash
+python tools/plot_ne_profile.py \
+    -i  cohort.ne_profile.tsv \
+    -o  cohort.ne_profile.png
+```
+Key options: `--dpi` (default 150), `--figsize W,H` (default `13,5.2`),
+`--title` (optional super-title).
+
+##### 4. How to read it
+* The **left (red) panel** shows the standard `−2(logL − logL_max)`
+  profile-likelihood curve.  The fitted `Ne_MLE` sits at the global
+  minimum (= 0); the dashed horizontal line at 3.841 is the χ² (1 df,
+  0.95) threshold whose intercepts define the 95% CI bracket.
+* The **right (blue) panel** shows the Kimura per-pair SSR normalised
+  by its minimum.  The solid vertical line marks `Ne_Kimura_SSR`
+  (least-squares best fit), the dashed line marks the
+  Wonnapinij/method-of-moments `Ne_Kimura = 1 / (1 − b)`, the shaded
+  band is the bootstrap 95% CI for the Wonnapinij Ne, and the green
+  dotted line at Ne = 3 is the deCODE 2024 reference.
+* **Both panels agree** ⇒ the data are well-described by the
+  single-generation Wright-Fisher model and either estimator is fine.
+* **MLE bowl is far to the left of the Kimura bowl** (e.g. Ne_MLE ≈
+  2.6 vs Ne_Kimura ≈ 4.8 in the demo cohort) ⇒ the cohort contains
+  high-drift outlier pairs that pull the variance-of-moments Kimura
+  upward but do not hurt the MLE.  Re-run `mitoquest ne-estimate` with
+  `--kimura-trim 0.10 --top-drift-k 20` to identify and inspect them.
+* The **Ne = 1 grid point is dropped** automatically: under the
+  continuous Beta-diffusion model Ne = 1 is a degenerate point
+  (complete drift to fixation) and gives `−∞` log-likelihood for any
+  pair whose child VAF is strictly inside (0, 1).
+
