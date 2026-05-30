@@ -255,7 +255,7 @@ def parse_ne_json(json_path: Path) -> EstimatorResult:
         ci_low      = j.get("CI_95_Low"),
         ci_high     = j.get("CI_95_High"),
         pairs_used  = j.get("Pairs_Used"),
-        max_loglik  = j.get("Max_LogLik"),
+        max_loglik  = j.get("Max_Marginal_LogLik", j.get("Max_LogLik")),
     )
     k = j.get("Kimura_Cross_Check") or {}
     r.kimura_ne            = k.get("Ne_Kimura")

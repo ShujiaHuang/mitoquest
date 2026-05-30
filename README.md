@@ -27,7 +27,7 @@ Commands:
   subsam       Extract mitochondrial variants for specified samples from VCF files and output a new VCF file.
   copynum      Estimate per-chromosome (incl. mtDNA) relative copy number from a BAM/CRAM file.
   trans-prep   Extract mother-child mtDNA allele transmission pairs from a multi-sample VCF + FAM file.
-  ne-estimate  Estimate the mtDNA bottleneck size (Ne) from transmission pairs via Beta-Binomial MLE.
+  ne-estimate  Estimate the mtDNA bottleneck size (Ne) from transmission pairs via Beta-Binomial MMLE (Maximum Marginal Likelihood).
 
 ```
 
@@ -248,7 +248,7 @@ Commands:
   trans-prep   Extract mother-child mtDNA allele transmission pairs from a
                multi-sample VCF + a PLINK FAM file.
   ne-estimate  Estimate the mtDNA bottleneck size (Ne) from transmission
-               pairs via Beta-Binomial maximum likelihood.
+               pairs via the Beta-Binomial Maximum Marginal Likelihood Estimator (MMLE).
 ```
 
 ---
@@ -725,11 +725,18 @@ sample disagree (which prevents an unambiguous GT-aligned AD lookup).
 
 ---
 
-## `mitoquest ne-estimate` — Bottleneck size (Ne) maximum-likelihood estimation
+## `mitoquest ne-estimate` — Bottleneck size (Ne) Maximum Marginal Likelihood Estimation (MMLE)
 
 `mitoquest ne-estimate` fits the mitochondrial **transmission bottleneck
 size** Ne from the per-allele TSV produced by `mitoquest trans-prep`,
-using a Beta-Binomial maximum-likelihood model.
+using a Beta-Binomial **Maximum Marginal Likelihood Estimator (MMLE)**.
+The latent maternal / child true allele frequencies are analytically
+integrated out (Beta-Binomial conjugacy), and pairs are treated as
+independent (composite / pseudo-likelihood), so the global objective is
+the sum of per-pair *marginal* log-likelihoods that depends only on Ne
+and the observed counts.  We label the resulting estimator **MMLE** in
+the code, output, and documentation to keep the assumptions explicit
+(rather than the looser "MLE" used in v1.8.5 and earlier).
 
 ### Statistical model
 
@@ -794,7 +801,7 @@ Methodologically, deCODE uses the Wonnapinij bottleneck parameter `b`
 *variance* of frequency changes between relatives.
 
 Since v1.8.2, `mitoquest ne-estimate` uses a **continuous Beta-diffusion
-MLE** as the default model.  This models the child's true heteroplasmy
+MMLE** as the default model.  This models the child's true heteroplasmy
 as a Kimura-diffusion draw:
 
 ```txt
@@ -802,10 +809,10 @@ p_child | p_mother  ~  Beta(p_m × (Ne − 1), (1 − p_m) × (Ne − 1))
 c_alt   | p_child   ~  BetaBinomial(c_dp, p_m × (Ne − 1), (1 − p_m) × (Ne − 1))
 ```
 
-The continuous MLE and the Wonnapinij/Kimura cross-check are
+The continuous MMLE and the Wonnapinij/Kimura cross-check are
 **theoretically consistent**: both estimate the same Ne from the same
 Kimura diffusion (Var = p(1−p)/Ne), differing only in statistical
-method — full likelihood (MLE) vs method-of-moments (Kimura).  On
+method — full marginal likelihood (MMLE) vs method-of-moments (Kimura).  On
 well-behaved mtDNA data they agree closely (both yielding Ne ≈ 1–10
 in human cohorts, consistent with deCODE).
 
@@ -813,7 +820,7 @@ For multi-generation pedigrees (e.g. cousins, deeper relatives)
 Wonnapinij/Kimura is the better framework because it natively handles
 `g > 1` generations of drift.
 
-### Why two MLE models?
+### Why two MMLE models?
 
 The previous default (v1.8.0–v1.8.1) was the **discrete model**:
 
@@ -826,7 +833,7 @@ This restricts the child's heteroplasmy to the grid {0, 1/Ne, …, 1}.
 At high sequencing depths (DP ≥ 2000), the Binomial likelihood is an
 extremely tight spike, and any mismatch between the child's true VAF
 and the nearest grid point creates an enormous penalty — forcing the
-MLE to inflate Ne upward (systematic ~5–10× bias; see
+MMLE to inflate Ne upward (systematic ~5–10× bias; see
 `release_v1.8.2.md`).  In contrast, the continuous model allows the
 child's heteroplasmy to be any value in [0, 1], correctly capturing
 post-bottleneck vegetative segregation during cell division.
@@ -839,27 +846,27 @@ physical inoculum count is the target).
 
 | Estimator | Role | Strengths | Limitations |
 |-----------|------|-----------|-------------|
-| **Continuous MLE** (default) | Primary | Real-valued Ne, Cramér-Rao efficient, tighter CI, handles per-read sampling uncertainty, robust to moderate outliers | Assumes single-generation bottleneck (`g = 1`) |
+| **Continuous MMLE** (default) | Primary | Real-valued Ne, Cramér-Rao efficient, tighter CI, handles per-read sampling uncertainty, robust to moderate outliers | Assumes single-generation bottleneck (`g = 1`) |
 | **Kimura cross-check** (`--cross-check kimura`) | Secondary validator | Method-of-moments (fast), independent confirmation, natively supports multi-generational pedigrees (`g > 1`) | Wider CI, sensitive to outliers without `--kimura-trim` |
-| **Discrete MLE** (`--model discrete`) | Specialised | Exact for virus-passage / fixed-inoculum experiments | Systematic upward bias on mtDNA at high DP; integer-only grid |
+| **Discrete MMLE** (`--model discrete`) | Specialised | Exact for virus-passage / fixed-inoculum experiments | Systematic upward bias on mtDNA at high DP; integer-only grid |
 
 **Decision rule:**
 
-1. Use the **continuous MLE** as the reported Ne (default behaviour).
+1. Use the **continuous MMLE** as the reported Ne (default behaviour).
 2. Run `--cross-check kimura --kimura-trim 0.10` as a sanity check.
 3. When the two agree (CI overlap), confidence is high.
-4. When they disagree (MLE >> Kimura), inspect outlier pairs with
+4. When they disagree (MMLE >> Kimura), inspect outlier pairs with
    `--top-drift-k 20` — a handful of high-drift pairs (NUMTs /
    sequencing errors) can collapse the variance-based Kimura estimate
-   while the likelihood-based MLE is robust.
+   while the marginal-likelihood-based MMLE is robust.
 5. For multi-generation pedigree data (`g > 1`), prefer the Kimura
    framework which supports generation-adjusted Ne.
 
-#### Why Ne_MLE is often smaller than Ne_Kimura
+#### Why Ne_MMLE is often smaller than Ne_Kimura
 
-On real mtDNA data it is common to observe `Ne_MLE < Ne_Kimura` (e.g.,
-Ne_MLE ≈ 2.7 vs Ne_Kimura ≈ 3.7).  This is **expected behaviour**, not a
-bug, and the MLE estimate is the more accurate of the two.  The gap arises
+On real mtDNA data it is common to observe `Ne_MMLE < Ne_Kimura` (e.g.,
+Ne_MMLE ≈ 2.7 vs Ne_Kimura ≈ 3.7).  This is **expected behaviour**, not a
+bug, and the MMLE estimate is the more accurate of the two.  The gap arises
 from several statistical effects:
 
 1. **Jensen's inequality bias in the Kimura ratio estimator.**
@@ -870,38 +877,38 @@ from several statistical effects:
    systematic upward bias in Ne_Kimura.
 
 2. **Full distribution vs. second moment only.**
-   The MLE fits the entire BetaBinomial shape (all moments), while the
+   The MMLE fits the entire BetaBinomial shape (all moments), while the
    Kimura estimator uses only the second central moment (variance).  At
    small Ne the Beta distribution is highly non-Gaussian (often U-shaped),
-   so the higher-order information captured by the MLE carries real signal
+   so the higher-order information captured by the MMLE carries real signal
    that the variance-only Kimura discards.
 
 3. **Information-optimal weighting.**
-   The MLE weights each pair by its Fisher information (how much that
+   The MMLE weights each pair by its Fisher information (how much that
    pair's specific depths and counts reveal about Ne).  The Kimura method
    weights pairs only by `p_m(1 − p_m)`, ignoring how informative the
    child observation actually is.
 
 4. **Plug-in sampling correction noise.**
    The Kimura correction term `s_i = p̂_m(1−p̂_m)/m_dp + p̂_c(1−p̂_c)/c_dp`
-   uses noisy point estimates; the MLE avoids this by marginalising the
+   uses noisy point estimates; the MMLE avoids this by marginalising the
    read-sampling process analytically via the BetaBinomial.
 
-**Is it always MLE < Kimura?**  No — when high-drift outliers (NUMTs,
+**Is it always MMLE < Kimura?**  No — when high-drift outliers (NUMTs,
 sequencing errors) dominate, they inflate V and collapse Ne_Kimura *below*
-Ne_MLE.  The direction depends on the data:
+Ne_MMLE.  The direction depends on the data:
 
 | Scenario | Typical relationship |
 | :----------: | :---------------------: |
-| Clean cohort, large N, small Ne | Ne_MLE ≲ Ne_Kimura (Jensen's bias dominates) |
-| High-drift outliers present | Ne_MLE > Ne_Kimura (outliers collapse Kimura) |
-| Perfect synthetic data | Ne_MLE ≈ Ne_Kimura within ~10–20% |
+| Clean cohort, large N, small Ne | Ne_MMLE ≲ Ne_Kimura (Jensen's bias dominates) |
+| High-drift outliers present | Ne_MMLE > Ne_Kimura (outliers collapse Kimura) |
+| Perfect synthetic data | Ne_MMLE ≈ Ne_Kimura within ~10–20% |
 
-**Bottom line:** Trust the continuous MLE as the primary Ne estimate; treat
+**Bottom line:** Trust the continuous MMLE as the primary Ne estimate; treat
 Ne_Kimura as a qualitative confirmation that Ne is in the same order of
-magnitude.  Non-overlapping CIs between the two estimators (with the MLE
+magnitude.  Non-overlapping CIs between the two estimators (with the MMLE
 lower) is a well-understood property of method-of-moments vs.
-likelihood estimators, not a sign of data problems.
+marginal-likelihood estimators, not a sign of data problems.
 
 ### Full parameter reference of `ne-estimate`
 
@@ -922,7 +929,7 @@ Optional options:
       --max-ne    INT    Largest Ne value to consider  [200].
   -t, --threads   INT    Worker threads for the inner sum [1].
       --cross-check NAME   Optional secondary estimator alongside the
-                           MLE. Supported value: `kimura`, which computes
+                           MMLE. Supported value: `kimura`, which computes
                            the Wonnapinij b and the implied single-
                            generation Ne (Helgason 2024).
       --kimura-bootstrap INT  Non-parametric bootstrap iterations for the
@@ -946,7 +953,8 @@ Optional options:
   "CI_Low_Clipped":  false,
   "CI_High_Clipped": false,
   "Pairs_Used":      147,
-  "Max_LogLik":      -812.34561,
+  "Estimator":       "MMLE (composite marginal likelihood)",
+  "Max_Marginal_LogLik": -812.34561,
   "Model":           "continuous",
   "Min_VAF":         0.10,
   "Max_VAF":         0.90,

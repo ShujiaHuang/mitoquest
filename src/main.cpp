@@ -29,7 +29,7 @@ static int usage() {
                  "  subsam       Extract mitochondrial variants for specified samples from VCF files and output a new VCF file.\n"
                  "  copynum      Estimate per-chromosome (incl. mtDNA) relative copy number from a BAM/CRAM file.\n"
                  "  trans-prep   Extract mother-child mtDNA allele transmission pairs from a multi-sample VCF + FAM file.\n"
-                 "  ne-estimate  Estimate the mtDNA bottleneck size (Ne) from transmission pairs via Beta-Binomial MLE.\n"
+                 "  ne-estimate  Estimate the mtDNA bottleneck size (Ne) from transmission pairs via Beta-Binomial MMLE.\n"
               << "\n" << std::endl;
     return 1;
 }

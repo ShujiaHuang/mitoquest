@@ -3,8 +3,8 @@
 
 #define MITOQUEST_VERSION_MAJOR "1"
 #define MITOQUEST_VERSION_MINOR "8"
-#define MITOQUEST_VERSION_PATCH "5"
-#define MITOQUEST_VERSION "1.8.5"
+#define MITOQUEST_VERSION_PATCH "6"
+#define MITOQUEST_VERSION "1.8.6"
 #define MITOQUEST_AUTHOR "Shujia Huang"
 #define MITOQUEST_AUTHOR_EMAIL "hshujia@qq.com"
 #define MITOQUEST_DESCRIPTION "mitoquest: Human Mitochondrial sequencing data Analysis Toolkit"

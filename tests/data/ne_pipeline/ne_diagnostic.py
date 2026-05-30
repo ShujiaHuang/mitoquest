@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Diagnostic: Show the grid-alignment bias of the discrete BB + Bin MLE
+Diagnostic: Show the grid-alignment bias of the discrete BB + Bin MMLE
 at high read depth, and verify the diffusion (continuous Beta) likelihood
 has no such bias.
 """
@@ -94,7 +94,7 @@ def kimura_ne(pairs):
     b = max(1e-9, min(1-1e-9, 1-V))
     return 1/(1-b), b
 
-print(f"{'true_Ne':>8} {'depth':>8} {'pairs':>6} {'MLE_disc':>9} {'MLE_cont':>9} {'Kimura':>8}")
+print(f"{'true_Ne':>8} {'depth':>8} {'pairs':>6} {'MMLE_disc':>9} {'MMLE_cont':>9} {'Kimura':>8}")
 for true_ne in [5, 10, 20, 50]:
     for m_dp, c_dp in [(500, 500), (2000, 2000)]:
         pairs = simulate(200, true_ne, m_dp, c_dp, 0.10, 0.90, seed=42)
@@ -145,7 +145,7 @@ def kimura_trimmed(pairs, trim_frac=0.10):
 
 print()
 print('--- user-scale: 442 pairs, depth 2000, varying true Ne and outlier rate ---')
-print(f"{'true_Ne':>8} {'outl%':>6} {'MLE_disc':>9} {'Kimura':>8} {'Kim_t10':>8} {'Kim_t20':>8}")
+print(f"{'true_Ne':>8} {'outl%':>6} {'MMLE_disc':>9} {'Kimura':>8} {'Kim_t10':>8} {'Kim_t20':>8}")
 for true_ne in [20, 30, 50]:
     for outl in [0.0, 0.10, 0.20]:
         pairs = simulate_with_outliers(442, true_ne, 2000, 2000,
@@ -180,7 +180,7 @@ def simulate_realistic(n_pairs, true_ne, m_dp, c_dp,
         pairs.append((m_alt, m_dp - m_alt, c_alt, c_dp))
     return pairs
 
-print(f"{'true_Ne':>8} {'loss%':>6} {'kept':>5} {'MLE_disc':>9} {'Kimura':>8} {'Kim_t10':>8} {'Kim_t20':>8}")
+print(f"{'true_Ne':>8} {'loss%':>6} {'kept':>5} {'MMLE_disc':>9} {'Kimura':>8} {'Kim_t10':>8} {'Kim_t20':>8}")
 for true_ne in [30]:
     for loss in [0.0, 0.10, 0.20]:
         pairs = simulate_realistic(800, true_ne, 2000, 2000, loss, seed=2026)

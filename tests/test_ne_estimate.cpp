@@ -219,7 +219,7 @@ TEST(NeEstFindOptimal, RecoversTrueNeOnSyntheticCohort) {
     const int est = NeEstimator::find_optimal_ne(data, lf,
                                                  /*min_ne=*/1,
                                                  /*max_ne=*/80);
-    // The Beta-Binomial MLE is consistent but for finite cohorts a
+    // The Beta-Binomial MMLE is consistent but for finite cohorts a
     // 30% relative band around the truth is the expected regime.
     EXPECT_GE(est, 7);
     EXPECT_LE(est, 14);
@@ -353,7 +353,7 @@ TEST(NeEstContinuous, SinglePairLLIsFinite) {
 
 TEST(NeEstContinuous, NearKimuraOnCleanData) {
     // On clean WF-generated data (no post-bottleneck noise),
-    // continuous MLE and Kimura should agree within ~50%.
+    // continuous MMLE and Kimura should agree within ~50%.
     constexpr int true_ne = 10;
     auto data = simulate_pairs(true_ne,
                                /*n_pairs=*/600,
@@ -457,7 +457,7 @@ TEST(NeEstContinuous, RealValuedOptimum) {
                                           /*seed=*/2024u);
     auto r = NeEstimator::estimate(data, 1, 100, 1, /*continuous=*/true);
 
-    // The real-valued MLE should be fractional (not exactly integer).
+    // The real-valued MMLE should be fractional (not exactly integer).
     double frac_part = r.ne - std::floor(r.ne);
     // With 800 pairs there's enough power: fractional part should be
     // noticeably away from 0 or 1 (i.e. the optimizer actually refined).
@@ -473,7 +473,7 @@ TEST(NeEstContinuous, RealValuedOptimum) {
 }
 
 TEST(NeEstContinuous, RealValuedAgreesWithKimura) {
-    // On clean continuous-model data, the real-valued MLE and Kimura
+    // On clean continuous-model data, the real-valued MMLE and Kimura
     // should agree within 20% (much tighter than the old 50% tolerance).
     constexpr double true_ne = 8.0;
     auto data = simulate_pairs_continuous(true_ne,
@@ -488,7 +488,7 @@ TEST(NeEstContinuous, RealValuedAgreesWithKimura) {
 
     EXPECT_NEAR(r.ne, true_ne, true_ne * 0.25);
     EXPECT_NEAR(k.ne_kimura, true_ne, true_ne * 0.25);
-    // MLE and Kimura should agree within 20%.
+    // MMLE and Kimura should agree within 20%.
     double ratio = r.ne / k.ne_kimura;
     EXPECT_GT(ratio, 0.80);
     EXPECT_LT(ratio, 1.20);
@@ -537,9 +537,9 @@ TEST(NeEstKimuraTrimmed, NotPopulatedWhenTrimFracZero) {
     EXPECT_FALSE(k.trimmed_computed);
 }
 
-TEST(NeEstKimuraTrimmed, TrimmedCloserToMLEWhenOutliersPresent) {
+TEST(NeEstKimuraTrimmed, TrimmedCloserToMMLEWhenOutliersPresent) {
     // Inject ~20% outlier pairs: child VAF far from mother.
-    // MLE is robust; untrimmed Kimura is pulled down; trimmed should
+    // MMLE is robust; untrimmed Kimura is pulled down; trimmed should
     // recover a value closer to the truth than the untrimmed Kimura.
     constexpr int true_ne = 20;
     auto data = simulate_pairs(true_ne,

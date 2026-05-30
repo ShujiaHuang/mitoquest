@@ -1,5 +1,18 @@
 # MitoQuest Changelog
 
+## [1.8.6] - 2026-05-30
+
+- 术语精修：将 `mitoquest ne-estimate` 模块输出与文档中所有 `MLE` / `Likelihood` 字样统一改为 `MMLE`（Maximum Marginal Likelihood Estimator）
+- 该估计量并非朴素的 MLE：母/子潜在等位基因频率被解析积分掉（Beta-Binomial 共轭 / Beta-diffusion），各 mother-child pair 视为独立（composite / pseudo-likelihood），全局目标是各对 *边际* log-likelihood 的求和；最大化该复合边际似然得到的 Ne 即为 MMLE
+- 算法、模型与数值结果完全保持不变；本版本只修改输出标签、文档与代码里的命名
+- **Breaking**：JSON 输出键 `Max_LogLik` → `Max_Marginal_LogLik`，并新增 `Estimator: "MMLE (composite marginal likelihood)"` 字段
+- **Breaking**：`--ne-profile` TSV 列名 `mle_log_lik` → `mmle_log_lik`、`mle_delta_2ll` → `mmle_delta_2ll`；header 元数据键 `#fitted_ne_mle*` / `#max_log_lik` / `#best_ne_mle_on_grid` 统一改名为 `mmle` 变体
+- **Breaking**：`--bin-simulation` TSV 元数据 `#max_log_lik=` → `#max_marginal_log_lik=`
+- **Breaking**：C++ 头文件 `NeProfileRow` 字段 `mle_log_lik` / `mle_delta_2ll` 改名为 `mmle_log_lik` / `mmle_delta_2ll`
+- `tools/plot_ne_profile.py` 既能读取新格式也能向后兼容 v1.8.5 旧 TSV / 旧 metadata，平滑过渡
+- 同步更新 `README.md`、`tools/README.md`、`src/main.cpp` 顶层 `usage()`、`tests/test_ne_estimate.cpp`、`tests/data/ne_pipeline/*.py` 与 23 个已提交的 JSON fixture
+- 新增 `release_v1.8.6.md` 详细发版说明
+
 ## [1.7.1] - 2026-05-22
 
 - `mitoquest copynum` 新增 `-L/--regions` 命令行参数，可以将某条染色体（典型用法是 chrM）的拷贝数计算限制在用户指定的一组区间内

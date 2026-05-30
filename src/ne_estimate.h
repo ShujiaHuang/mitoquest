@@ -1,11 +1,11 @@
 /**
  * @file ne_estimate.h
  * @brief Estimate the mtDNA bottleneck size (Ne) from mother-child
- *        transmission pairs via maximum likelihood, with an optional
- *        Wonnapinij/Kimura cross-check.
+ *        transmission pairs via Maximum Marginal Likelihood Estimation
+ *        (MMLE), with an optional Wonnapinij/Kimura cross-check.
  *
  * ====================================================================
- * Statistical model (primary estimator: continuous Beta-diffusion MLE)
+ * Statistical model (primary estimator: continuous Beta-diffusion MMLE)
  * ====================================================================
  *
  * For each independent mother-child (M-C) transmission pair the child's
@@ -18,10 +18,18 @@
  *
  *   c_alt | p_child     ~  Binomial(c_dp, p_child)
  *
- * After marginalising out p_child:
+ * After analytically marginalising out the latent p_child:
  *
  *   c_alt | p_mother    ~  BetaBinomial(c_dp, p_mother * (Ne - 1),
  *                                             (1 - p_mother) * (Ne - 1))
+ *
+ * yielding the per-pair *marginal* likelihood that depends only on Ne
+ * and the observed counts.  Because the M-C pairs are treated as
+ * independent, the global objective is the sum of per-pair marginal
+ * log-likelihoods (a composite / pseudo-likelihood that is consistent
+ * for Ne under the standard Wright-Fisher / Kimura assumptions).
+ * Maximising this composite marginal likelihood over Ne yields the
+ * Maximum Marginal Likelihood Estimator (MMLE) reported by this tool.
  *
  * The maternal p_mother is taken as the point estimate m_alt / m_dp
  * (at typical mtDNA depths >= 100 this is virtually identical to the
@@ -36,7 +44,7 @@
  * The previous discrete model (k ~ BetaBin, c ~ Bin(c_dp, k/Ne))
  * restricted child heteroplasmy to the coarse grid {0, 1/Ne, ..., 1}
  * and suffered from systematic upward bias at high sequencing depths:
- * the tight Binomial likelihood forced the MLE to inflate Ne to obtain
+ * the tight Binomial likelihood forced the MMLE to inflate Ne to obtain
  * a fine enough grid, giving answers ~5-10x above the deCODE / Kimura
  * consensus.  See release_v1.8.2.md for details.
  *
@@ -58,7 +66,7 @@
  * method-of-moments estimator (Wonnapinij et al., 2008/2010; Helgason
  * et al., 2024 Cell), then convert to a single-generation Ne via
  *   Ne_kimura = 1 / (1 - b).
- * On well-behaved data the continuous MLE and Wonnapinij b should
+ * On well-behaved data the continuous MMLE and Wonnapinij b should
  * agree closely.  Residual discrepancies indicate either heavy-tailed
  * outliers (use `--kimura-trim`) or model misspecification.
  *
@@ -184,7 +192,7 @@ public:
                                            // when --bin-simulation is set.
         std::string ne_profile_file;     // when non-empty, write an Ne-profile
                                          // TSV that scores every candidate Ne
-                                         // under both the MLE and Kimura
+                                         // under both the MMLE and Kimura
                                          // models (analog of the deCODE
                                          // "best-fit Ne = 3" distribution-
                                          // fitting exercise).
@@ -195,7 +203,7 @@ public:
     /// One row of the per-bin observed-vs-simulated drift summary used
     /// to reproduce the deCODE 2024 Cell Figure 5 ("Observed and simulated
     /// means for bottleneck parameter, b").  All quantities are computed
-    /// on the same pair set the MLE / Kimura cross-check was fit on.
+    /// on the same pair set the MMLE / Kimura cross-check was fit on.
     struct BinSimulationRow {
         int    bin_idx       = 0;
         double bin_low       = 0.0;   // maternal-VAF bin lower edge (inclusive)
@@ -217,10 +225,10 @@ public:
     /// report two independent goodness-of-fit metrics so the user can see
     /// which Ne each of the two estimators in the program prefers:
     ///
-    ///   * `mle_log_lik`  -- global log-likelihood under the configured
+    ///   * `mmle_log_lik` -- global marginal log-likelihood under the configured
     ///                       model (continuous Beta-diffusion or discrete
     ///                       Beta-Binomial).  Maximised at the fitted
-    ///                       Ne_MLE.
+    ///                       Ne_MMLE.
     ///   * `kimura_ssr`   -- sum-of-squared per-pair residuals under the
     ///                       one-generation Wright-Fisher prediction
     ///                           E[d_i - s_i]  =  p_m_i (1 - p_m_i) / Ne.
@@ -231,8 +239,8 @@ public:
     /// script can render comparable curves on linear or log axes.
     struct NeProfileRow {
         double ne_candidate    = 0.0;
-        double mle_log_lik     = 0.0;
-        double mle_delta_2ll   = 0.0;   // -2 (LL - LL_max); 0 at fitted Ne_MLE
+        double mmle_log_lik    = 0.0;
+        double mmle_delta_2ll  = 0.0;   // -2 (LL - LL_max); 0 at fitted Ne_MMLE
         double kimura_ssr      = 0.0;   // Sigma_i (r_i - w_i / Ne)^2
         double kimura_norm_ssr = 0.0;   // ssr / ssr_min (>= 1, =1 at best fit)
     };
@@ -382,18 +390,18 @@ public:
 
     /**
      * @brief Score every candidate Ne in [min_ne, max_ne] (step `step`)
-     *        under both the MLE log-likelihood and the Kimura sum-of-
-     *        squared-residuals metric.
+     *        under both the MMLE marginal log-likelihood and the Kimura
+     *        sum-of-squared-residuals metric.
      *
-     * The MLE column uses the continuous Beta-diffusion log-likelihood
-     * when `continuous == true` and the discrete Beta-Binomial
-     * log-likelihood otherwise.  The Kimura column is independent of the
-     * model selection: for every informative pair we compute
+     * The MMLE column uses the continuous Beta-diffusion marginal log-
+     * likelihood when `continuous == true` and the discrete Beta-Binomial
+     * marginal log-likelihood otherwise.  The Kimura column is independent
+     * of the model selection: for every informative pair we compute
      *
      *     residual_i(Ne)  =  (d_i - s_i)  -  p_m_i (1 - p_m_i) / Ne
      *     ssr(Ne)         =  Sigma_i residual_i(Ne)^2
      *
-     * After the scan we normalise: `mle_delta_2ll = -2 (LL - LL_max)` and
+     * After the scan we normalise: `mmle_delta_2ll = -2 (LL - LL_max)` and
      * `kimura_norm_ssr = ssr / ssr_min`.  The grid is clamped so that
      * `step > 0` and `min_ne >= 1`.
      */
