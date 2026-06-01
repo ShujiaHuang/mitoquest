@@ -15,7 +15,6 @@
 #include <tuple>
 #include <stdexcept>
 #include <cstring>
-#include <htslib/vcf.h>
 
 // =====================================================================
 // Static member definitions
@@ -120,8 +119,9 @@ void VariantQC::_parse_args(int argc, char* argv[]) {
         }
     }
     if (_config.input_vcf.empty()) {
+        std::cerr << "Error: Input VCF (-i/--input-vcf) is required.\n";
         usage();
-        throw std::runtime_error("Input VCF (-i) is required.");
+        std::exit(EXIT_FAILURE);
     }
 }
 
@@ -683,6 +683,13 @@ std::vector<double> VariantQC::_fetch_background_error_rates(
         if (si.dp < _config.dp_threshold) continue;
         if (si.pre_filtered) continue;
 
+        // Exclude samples with low allele quality (HQ) - matches Python behavior
+        bool hq_ok = true;
+        for (int q : si.aq) {
+            if (q < _config.hq_threshold) { hq_ok = false; break; }
+        }
+        if (!hq_ok) continue;
+
         // Exclude samples with extreme FS or SOR (NUMT indicators)
         bool skip = false;
         for (double f : si.fs) {
@@ -886,6 +893,7 @@ void VariantQC::_iterative_fit_and_call(
         }
 
         // Re-collect VAFs from is_mutation=True records for re-fitting
+        // Use original_gt (not modified gt) to match Python behavior: all non-ref alleles are included
         std::vector<double> new_vafs;
         std::vector<int> new_k, new_n;
         for (const auto& r : results) {
@@ -894,8 +902,8 @@ void VariantQC::_iterative_fit_and_call(
             for (int ad : r.allele_depths) {
                 if (ad >= 0) total_d += ad;
             }
-            for (size_t j = 0; j < r.gt.size() && j < r.allele_depths.size(); ++j) {
-                if (r.gt[j] > 0 && r.allele_depths[j] > 0 && total_d > 0) {
+            for (size_t j = 0; j < r.original_gt.size() && j < r.allele_depths.size(); ++j) {
+                if (r.original_gt[j] > 0 && r.allele_depths[j] > 0 && total_d > 0) {
                     double vaf = static_cast<double>(r.allele_depths[j]) / total_d;
                     if (vaf > 0.0 && vaf < 1.0) {
                         new_vafs.push_back(vaf);
@@ -1025,6 +1033,7 @@ void VariantQC::_process() {
                 rr.alt.push_back(".");
             }
             rr.gt = si.gt;
+            rr.original_gt = si.gt;  // Preserve original GT for VAF re-collection during iteration
             rr.allele_depths = si.ad;
             rr.allele_srf = si.srf;
             rr.allele_aq = si.aq;

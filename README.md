@@ -19,7 +19,7 @@ clinical workflow to population-level cohorts with thousands of samples.
 
 ```bash
 mitoquest: Human Mitochondrial sequencing data Analysis Toolkit
-Version: 1.8.3
+Version: 1.9.1
 
 Usage: mitoquest <command> [options]
 Commands:
@@ -28,14 +28,14 @@ Commands:
   copynum      Estimate per-chromosome (incl. mtDNA) relative copy number from a BAM/CRAM file.
   trans-prep   Extract mother-child mtDNA allele transmission pairs from a multi-sample VCF + FAM file.
   ne-estimate  Estimate the mtDNA bottleneck size (Ne) from transmission pairs via Beta-Binomial MMLE (Maximum Marginal Likelihood).
+  variant-qc   Bayesian quality control for mtDNA variants from VCF files.
 
 ```
 
 In addition to the main `mitoquest` binary, the project ships:
 
 - `tools/` — a suite of Python helper scripts for VCF QC, annotation,
-  pipeline assembly, and a built-in **VQSR**-style variant recalibrator
-  (`tools/vqsr/`).
+  pipeline assembly, and downstream analysis.
 - `data/` — curated reference resources (population databases, in-silico
   predictors, RNA/protein domain annotations, blacklist, Phylotree
   variants, …) used by the annotation and QC tools.
@@ -249,6 +249,7 @@ Commands:
                multi-sample VCF + a PLINK FAM file.
   ne-estimate  Estimate the mtDNA bottleneck size (Ne) from transmission
                pairs via the Beta-Binomial Maximum Marginal Likelihood Estimator (MMLE).
+  variant-qc   Bayesian quality control for mtDNA variants from VCF files.
 ```
 
 ---
@@ -648,7 +649,7 @@ it before downstream analysis.
 
 - **Garbage in, garbage out**: the QC of the upstream variant calls
   fundamentally determines the quality of the Ne estimate. Always run
-  this on a high-quality, filtered VCF (e.g. after VQSR).
+  this on a high-quality, filtered VCF (e.g. after `mitoquest variant-qc`).
 - **AD interpretation is GT-aligned**: see "FORMAT/AD layout" below.
   Any `Number=` declaration is accepted; AD is always decoded
   per-sample using `FORMAT/GT`.
@@ -1034,6 +1035,90 @@ mitoquest ne-estimate \
 
 ---
 
+## `mitoquest variant-qc` — Bayesian quality control for mtDNA variants
+
+`mitoquest variant-qc` performs per-site, per-sample quality control on a
+multi-sample mtDNA VCF (typically produced by `mitoquest caller`) to
+distinguish true heteroplasmic mutations from sequencing artefacts.
+
+### Statistical model
+
+The module implements **Bayesian hypothesis testing** with
+**Beta-Binomial** likelihood models:
+
+```txt
+  H0 (background noise):  alt_count ~ BetaBinomial(D, q_alpha, q_beta)
+  H1 (true mutation):     alt_count ~ BetaBinomial(D, alpha_h1, beta_h1)
+```
+
+- Per-site background noise parameters `(q_alpha, q_beta)` are estimated
+  via Beta-MLE from homozygous-reference samples at each site.
+- Global true-mutation parameters `(alpha_h1, beta_h1)` are estimated via
+  Beta-Binomial MLE from high-confidence variant observations.
+- The posterior probability `P(H1 | data)` is computed via Bayes' theorem
+  with a prior `pi` and quality penalties (strand-bias SRF and allele
+  quality HQ sigmoid).
+- An EM-style iterative refinement loop (fit → call → refit) repeats
+  until mutation calls converge.
+
+The output VCF gains `FORMAT/PP` (posterior probability) and
+`FORMAT/GOOD_CALL` (True/False) per sample, plus site-level `FILTER`
+flags (`PASS`, `LOW_QUALITY`, `BLACKLISTED_SITE`).
+
+### Full parameter reference of `variant-qc`
+
+```bash
+Usage: mitoquest variant-qc [options]
+
+Required:
+  -i, --input-vcf FILE       Input indexed VCF/BCF file
+  -o, --output-vcf FILE      Output filtered VCF file
+  -t, --output-tsv FILE      Output tabular report (TSV)
+
+Optional:
+  --max-alt-alleles INT      Max ALT alleles per site [2]
+  --dp-threshold INT         Min DP for pre-filter [100]
+  --hq-threshold INT         Min allele quality [20]
+  --bins INT                 Histogram bins for KL div [100]
+  --pi FLOAT                 Prior prob of mutation [5e-8*16569]
+  --threshold FLOAT          Posterior threshold [0.9]
+  --max-iter INT             Max EM iterations [20]
+  --convergence-eps FLOAT    Convergence threshold [0.001]
+  -h, --help                 Show this help
+```
+
+### Usage examples for `variant-qc`
+
+**Basic quality control on a cohort VCF:**
+
+```bash
+mitoquest variant-qc \
+    -i cohort.raw.vcf.gz \
+    -o cohort.qc.vcf.gz \
+    -t cohort.qc.report.tsv
+```
+
+**Stricter QC (higher depth and quality thresholds):**
+
+```bash
+mitoquest variant-qc \
+    -i cohort.raw.vcf.gz \
+    -o cohort.qc.vcf.gz \
+    -t cohort.qc.report.tsv \
+    --dp-threshold 200 --hq-threshold 30 \
+    --threshold 0.95
+```
+
+### Recommendations
+
+- **Input VCF must be indexed** (`.tbi` or `.csi`).
+- **Higher depth is better**: the Beta-Binomial model benefits from
+  high coverage (≥ 500× on chrM) for accurate background estimation.
+- The TSV report contains one row per (sample, site) flagged as a
+  mutation, with posterior probability and fitted Beta parameters.
+
+---
+
 ## Auxiliary Python tools (`tools/`)
 
 The `tools/` directory ships a set of Python helper scripts that complement
@@ -1043,7 +1128,7 @@ the C++ binaries:
 | ------------------------------- | ---------------------------------------------------------------------------------------- |
 | `tools/mito_annotate.py`        | Annotate a `mitoquest caller` VCF with population, in-silico, and disease databases.     |
 | `tools/parse_annotatedVCF.py`   | Convert an annotated VCF into a tidy table for downstream statistics.                    |
-| `tools/mtDNA_variant_QC.py`     | Per-site / per-sample QC metrics (HF distribution, AD filters, …).                       |
+| `tools/mtDNA_variant_QC.py`     | Python QC prototype (superseded by `mitoquest variant-qc`).                              |
 | `tools/mtDNA_vcf_to_table.py`   | Flatten a multi-sample VCF into long-format TSV (one row per sample × site).             |
 | `tools/parse_vcf.py`            | Generic VCF parsing helper (used by other tools).                                        |
 | `tools/filter_mergedVCF.py`     | Apply hard filters on a merged mtDNA VCF.                                                |
@@ -1053,11 +1138,8 @@ the C++ binaries:
 | `tools/create_join_seq.py`      | Build the joined coding-region / non-coding-region reference for re-alignment.           |
 | `tools/detect_NUMT_by_mtCN.py`  | Flag potential NUMT contamination using mtCN ratios per sample.                          |
 | `tools/vcf_format_validator.py` | Sanity-check a VCF for downstream compatibility.                                         |
-| `tools/vqsr/`                   | A VQSR-style variant recalibrator (GMM-based) for mtDNA VCFs. See `tools/README.md`.     |
 
-Each script supports `-h / --help`. See [tools/README.md](tools/README.md) for
-the original Chinese documentation of `tools/vqsr/` (formerly
-`mito_classifier.py`).
+Each script supports `-h / --help`.
 
 ### A typical end-to-end workflow
 
@@ -1076,10 +1158,12 @@ python tools/mito_annotate.py \
     -o cohort.annotated.vcf.gz \
     --resource-dir data
 
-# 3. (Optional) GMM-based variant recalibration
-python tools/vqsr/vqsr.py \
-    -i cohort.annotated.vcf.gz \
-    -o cohort.recal.vcf.gz
+# 3. Bayesian quality control (filter true mutations from artefacts)
+mitoquest variant-qc \
+    -i cohort.raw.vcf.gz \
+    -o cohort.qc.vcf.gz \
+    -t cohort.qc.report.tsv \
+    --dp-threshold 200 --hq-threshold 30
 
 # 4. mtDNA copy-number estimation per sample
 while IFS= read -r bam; do
@@ -1088,7 +1172,7 @@ done < bamfile.list > cohort.mtCN.tsv
 
 # 5. Convert to a long-format table for analysis in R/Python
 python tools/mtDNA_vcf_to_table.py \
-    -i cohort.recal.vcf.gz \
+    -i cohort.qc.vcf.gz \
     -o cohort.long.tsv
 ```
 

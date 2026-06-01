@@ -93,6 +93,7 @@ public:
         std::string ref;
         std::vector<std::string> alt;  // alleles corresponding to GT
         std::vector<int>    gt;        // original or updated GT
+        std::vector<int>    original_gt; // GT as read from VCF (never modified during iteration)
         int    ploidy;
         double q_alpha;                // background noise Beta alpha at this site
         double q_beta;                 // background noise Beta beta at this site
