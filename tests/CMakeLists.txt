@@ -8,6 +8,8 @@ add_library(mitoquest_lib STATIC
     ${CMAKE_SOURCE_DIR}/src/mt_copynum.cpp
     ${CMAKE_SOURCE_DIR}/src/trans_prep.cpp
     ${CMAKE_SOURCE_DIR}/src/ne_estimate.cpp
+    ${CMAKE_SOURCE_DIR}/src/mt_utils.cpp
+    ${CMAKE_SOURCE_DIR}/src/variant_qc.cpp
 
     ${CMAKE_SOURCE_DIR}/src/io/utils.cpp
     ${CMAKE_SOURCE_DIR}/src/io/bam.cpp
@@ -43,6 +45,7 @@ add_executable(mitoquest_tests
     mt_copynum_test.cpp
     test_trans_prep.cpp
     test_ne_estimate.cpp
+    test_variant_qc.cpp
 
     io/bam_test.cpp
     io/iobgzf_test.cpp

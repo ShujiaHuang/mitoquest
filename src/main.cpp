@@ -19,6 +19,7 @@
 #include "mt_copynum.h"
 #include "trans_prep.h"
 #include "ne_estimate.h"
+#include "variant_qc.h"
 
 static int usage() {
     std::cout << MITOQUEST_DESCRIPTION << "\n"
@@ -30,6 +31,7 @@ static int usage() {
                  "  copynum      Estimate per-chromosome (incl. mtDNA) relative copy number from a BAM/CRAM file.\n"
                  "  trans-prep   Extract mother-child mtDNA allele transmission pairs from a multi-sample VCF + FAM file.\n"
                  "  ne-estimate  Estimate the mtDNA bottleneck size (Ne) from transmission pairs via Beta-Binomial MMLE.\n"
+                 "  variant-qc   Bayesian quality control for mtDNA variants from VCF files.\n"
               << "\n" << std::endl;
     return 1;
 }
@@ -93,6 +95,15 @@ int main(int argc, char* argv[]) {
         try {
             NeEstimator ne(argc-1, argv+1);
             ne.run();
+        } catch (const std::exception& e) {
+            std::cerr << "Error: " << e.what() << '\n';
+            return 1;
+        }
+
+    } else if (cmd == "variant-qc") {
+        try {
+            VariantQC vqc(argc-1, argv+1);
+            vqc.run();
         } catch (const std::exception& e) {
             std::cerr << "Error: " << e.what() << '\n';
             return 1;
