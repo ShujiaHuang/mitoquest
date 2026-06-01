@@ -1316,6 +1316,25 @@ NeEstimator::Result NeEstimator::run() {
               << " pairs (maternal VAF in [" << _config.min_vaf
               << ", " << _config.max_vaf << "], model=" << _config.model << ").\n";
 
+    // Warn when Kimura-specific options are set without --cross-check kimura.
+    if (!_config.kimura_check) {
+        if (_config.kimura_trim > 0.0) {
+            std::cerr << "[ne-estimate] WARNING: --kimura-trim "
+                      << _config.kimura_trim
+                      << " is ignored without --cross-check kimura.\n";
+        }
+        if (_config.top_drift_k > 0) {
+            std::cerr << "[ne-estimate] WARNING: --top-drift-k "
+                      << _config.top_drift_k
+                      << " is ignored without --cross-check kimura.\n";
+        }
+        if (_config.kimura_bootstrap != 1000) {
+            std::cerr << "[ne-estimate] WARNING: --kimura-bootstrap "
+                      << _config.kimura_bootstrap
+                      << " is ignored without --cross-check kimura.\n";
+        }
+    }
+
     Result r = estimate(data, _config.min_ne, _config.max_ne, _config.threads,
                         _config.model == "continuous");
 
@@ -1535,28 +1554,90 @@ NeEstimator::Result NeEstimator::run() {
                       << r.kimura.ne_kimura_ci_high
                       << " via " << r.kimura.n_bootstrap << " bootstraps]";
         }
-        if (r.kimura.trimmed_computed && std::isfinite(r.kimura.ne_kimura_trimmed)) {
-            std::cerr << "\n[ne-estimate] Trimmed Kimura (trim "
-                      << r.kimura.trim_frac * 100.0 << "%%): Ne_kimura_trimmed = "
-                      << r.kimura.ne_kimura_trimmed
-                      << " on " << r.kimura.n_after_trim << " pairs";
-        }
         if (!r.kimura.note.empty()) std::cerr << "  [" << r.kimura.note << "]";
         std::cerr << "\n";
 
+        // Print trimmed Kimura result on its own line (after the main Kimura line).
+        if (r.kimura.trimmed_computed) {
+            if (std::isfinite(r.kimura.ne_kimura_trimmed)) {
+                std::cerr << "[ne-estimate] Trimmed Kimura (trim "
+                          << r.kimura.trim_frac * 100.0 << "%%): b_trimmed = "
+                          << r.kimura.b_trimmed
+                          << ", Ne_kimura_trimmed = "
+                          << r.kimura.ne_kimura_trimmed
+                          << " on " << r.kimura.n_after_trim << " pairs\n";
+            } else {
+                std::cerr << "[ne-estimate] Trimmed Kimura (trim "
+                          << r.kimura.trim_frac * 100.0
+                          << "%%): not computable (too few informative pairs after trim)\n";
+            }
+        }
+
+        // Print top-K drift outlier diagnostic to stderr for quick inspection.
+        if (!r.kimura.top_drift_outliers.empty()) {
+            std::cerr << "[ne-estimate] Top-" << r.kimura.top_drift_outliers.size()
+                      << " drift outlier pairs (by F_i descending):\n";
+            for (size_t oi = 0; oi < r.kimura.top_drift_outliers.size(); ++oi) {
+                const auto& d = r.kimura.top_drift_outliers[oi];
+                std::cerr << "  #" << (oi + 1)
+                          << "  pair_index=" << d.pair_index
+                          << "  M_VAF=" << d.m_vaf
+                          << "  C_VAF=" << d.c_vaf
+                          << "  F_i=" << d.f_i
+                          << "\n";
+            }
+        }
+
         // Warn when MMLE and Kimura disagree by more than 3x.
-        if (r.kimura.ne_kimura > 0 && std::isfinite(r.kimura.ne_kimura)) {
-            const double ratio = r.ne / r.kimura.ne_kimura;
+        // When trimmed Kimura is available, compare MMLE against the trimmed
+        // value (which is the robust estimator); otherwise compare against
+        // the untrimmed value and recommend trimming.
+        const double ne_kimura_ref = (r.kimura.trimmed_computed &&
+                                      std::isfinite(r.kimura.ne_kimura_trimmed))
+                                     ? r.kimura.ne_kimura_trimmed
+                                     : r.kimura.ne_kimura;
+        const bool   has_trim      = r.kimura.trimmed_computed &&
+                                     std::isfinite(r.kimura.ne_kimura_trimmed);
+        if (ne_kimura_ref > 0 && std::isfinite(ne_kimura_ref)) {
+            const double ratio = r.ne / ne_kimura_ref;
             if (ratio > 3.0 || ratio < 1.0/3.0) {
-                std::cerr << "\n*** WARNING *** Ne_MMLE (" << r.ne
-                          << ") and Ne_Kimura (" << r.kimura.ne_kimura
-                          << ") disagree by >3x.\n"
-                          << "    This usually indicates the data contain high-drift outlier pairs\n"
-                          << "    (NUMTs / sequencing errors / mixed populations) that collapse the\n"
-                          << "    variance-of-moments Kimura estimator but do not affect the MMLE.\n"
-                          << "    Recommendation: re-run with --kimura-trim 0.10 --top-drift-k 20\n"
-                          << "    to inspect the outlier pairs and compare the trimmed Ne_Kimura\n"
-                          << "    against the MMLE.\n\n";
+                if (has_trim) {
+                    // Trimmed Kimura still disagrees with MMLE.
+                    std::cerr << "\n*** WARNING *** Ne_MMLE (" << r.ne
+                              << ") and Ne_Kimura_trimmed (" << ne_kimura_ref
+                              << ") still disagree by >3x even after trimming "
+                              << r.kimura.trim_frac * 100.0 << "%% of high-drift pairs.\n"
+                              << "    The untrimmed Ne_Kimura was " << r.kimura.ne_kimura
+                              << ".\n"
+                              << "    Consider increasing --kimura-trim or inspecting the top drift\n"
+                              << "    outliers (--top-drift-k 20) for NUMTs / sequencing errors /\n"
+                              << "    mixed populations.\n\n";
+                } else {
+                    std::cerr << "\n*** WARNING *** Ne_MMLE (" << r.ne
+                              << ") and Ne_Kimura (" << r.kimura.ne_kimura
+                              << ") disagree by >3x.\n"
+                              << "    This usually indicates the data contain high-drift outlier pairs\n"
+                              << "    (NUMTs / sequencing errors / mixed populations) that collapse the\n"
+                              << "    variance-of-moments Kimura estimator but do not affect the MMLE.\n"
+                              << "    Recommendation: re-run with --kimura-trim 0.10 --top-drift-k 20\n"
+                              << "    to inspect the outlier pairs and compare the trimmed Ne_Kimura\n"
+                              << "    against the MMLE.\n\n";
+                }
+            }
+        }
+
+        // When trim was applied and trimmed agrees with MMLE but untrimmed
+        // did not, print a reconciliation note.
+        if (has_trim && r.kimura.ne_kimura > 0 && std::isfinite(r.kimura.ne_kimura)) {
+            const double ratio_untrimmed = r.ne / r.kimura.ne_kimura;
+            const double ratio_trimmed   = r.ne / ne_kimura_ref;
+            if ((ratio_untrimmed > 3.0 || ratio_untrimmed < 1.0/3.0) &&
+                ratio_trimmed <= 3.0 && ratio_trimmed >= 1.0/3.0) {
+                std::cerr << "[ne-estimate] NOTE: trimming "
+                          << r.kimura.trim_frac * 100.0
+                          << "%% of high-drift pairs reconciled Ne_Kimura_trimmed ("
+                          << ne_kimura_ref << ") with Ne_MMLE (" << r.ne
+                          << ").\n";
             }
         }
     }
