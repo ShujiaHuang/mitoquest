@@ -118,6 +118,205 @@ double NeEstimator::compute_ll_single_continuous(const PairData& pd, double ne,
                                 pm * ne1, (1.0 - pm) * ne1);
 }
 
+// -----------------------------------------------------------------
+// Three-generation G-M-C trio marginal log-likelihood (closed form).
+// -----------------------------------------------------------------
+//
+// The grandmother's observed VAF p_hat_G = g_ad_alt / g_dp serves as
+// the "founder" allele frequency.  The mother's latent heteroplasmy
+// p_M is drawn from the Kimura diffusion:
+//
+//   p_M | p_hat_G  ~  Beta(alpha_G, beta_G)
+//     with alpha_G = p_hat_G * (Ne-1),  beta_G = (1 - p_hat_G) * (Ne-1)
+//
+// Given p_M, the mother's observed reads and the child's reads are
+// conditionally independent:
+//
+//   k_M | p_M  ~  Binomial(d_M, p_M)
+//   k_C | p_M  ~  BetaBinomial(d_C, p_M*(Ne-1), (1-p_M)*(Ne-1))
+//
+// The marginal likelihood (integrating out p_M) has the closed form:
+//
+//   I(Ne) = C(d_M, k_M) * C(d_C, k_C)
+//           * B(alpha_G + k_M + k_C,
+//               beta_G  + (d_M - k_M) + (d_C - k_C))
+//           / B(alpha_G, beta_G)
+//
+// which in log-space becomes:
+//   log I = log C(d_M, k_M) + log C(d_C, k_C)
+//         + lgamma(A) + lgamma(B) - lgamma(A+B)
+//         - lgamma(alpha_G) - lgamma(beta_G) + lgamma(alpha_G+beta_G)
+//
+// Self-consistency checks:
+//   * has_g == 0  ->  falls back to compute_ll_single_continuous (2-gen).
+//   * p_hat_G in {0,1} (homoplasmic grandmother)  ->  returns 0.0 (Ne-
+//     independent constant; row carries no information about Ne).
+//   * ne <= 1  ->  discrete fallback (diffusion degenerates at Ne=1).
+double NeEstimator::compute_ll_trio_continuous(const PairData& pd, double ne,
+                                                const LogFactorial& lf) {
+    // Two-generation rows: standard MC likelihood.
+    if (pd.has_g == 0) return compute_ll_single_continuous(pd, ne, lf);
+
+    // Discrete fallback at Ne = 1 (diffusion degenerates).
+    if (ne <= 1.0) return compute_ll_single(pd, 1, lf);
+
+    // Grandmother point estimate.
+    const double pg = static_cast<double>(pd.g_ad_alt)
+                    / static_cast<double>(pd.g_dp);
+    // Homoplasmic grandmother: non-informative for Ne.
+    if (pg <= 0.0 || pg >= 1.0) return 0.0;
+
+    const double ne1    = ne - 1.0;
+    const double alpha_G = pg       * ne1;
+    const double beta_G  = (1.0-pg) * ne1;
+
+    const int    k_M  = pd.m_ad_alt;
+    const int    d_M  = pd.m_dp;
+    const int    k_C  = pd.c_ad_alt;
+    const int    d_C  = pd.c_dp;
+
+    const double A = alpha_G + static_cast<double>(k_M + k_C);
+    const double B = beta_G  + static_cast<double>((d_M - k_M) + (d_C - k_C));
+
+    // log B(A,B)/B(alpha_G,beta_G)
+    const double log_beta_ratio =
+          std::lgamma(A) + std::lgamma(B) - std::lgamma(A + B)
+        - std::lgamma(alpha_G) - std::lgamma(beta_G)
+        + std::lgamma(alpha_G + beta_G);
+
+    // log C(d_M, k_M) + log C(d_C, k_C)
+    const double log_binom =
+          lf.log_comb(d_M, k_M) + lf.log_comb(d_C, k_C);
+
+    return log_beta_ratio + log_binom;
+}
+
+// -----------------------------------------------------------------
+// Gauss-Legendre quadrature for the trio marginal likelihood.
+//
+// Used by the unit tests to validate the closed-form formula above;
+// not the default path in the optimiser.
+//
+// The integral over p_M in [0,1] is:
+//   int Beta(p_M | alpha_G, beta_G)
+//       * Bin(k_M | d_M, p_M)
+//       * BetaBin(k_C | d_C, p_M*(Ne-1), (1-p_M)*(Ne-1))
+//       dp_M
+//
+// We map t in [-1,1] to p_M = (1+t)/2 using standard GL nodes/weights.
+// -----------------------------------------------------------------
+double NeEstimator::compute_ll_trio_quadrature(const PairData& pd, double ne,
+                                                const LogFactorial& lf,
+                                                int n_nodes) {
+    if (pd.has_g == 0) return compute_ll_single_continuous(pd, ne, lf);
+    if (ne <= 1.0) return compute_ll_single(pd, 1, lf);
+
+    const double pg = static_cast<double>(pd.g_ad_alt)
+                    / static_cast<double>(pd.g_dp);
+    if (pg <= 0.0 || pg >= 1.0) return 0.0;
+
+    const double ne1    = ne - 1.0;
+    const double alpha_G = pg       * ne1;
+    const double beta_G  = (1.0-pg) * ne1;
+
+    // Compute GL nodes and weights on [-1, 1] (Golub-Welsch / Newton).
+    std::vector<double> nodes(static_cast<size_t>(n_nodes));
+    std::vector<double> weights(static_cast<size_t>(n_nodes));
+    const int m = (n_nodes + 1) / 2;
+    for (int i = 0; i < m; ++i) {
+        double z = std::cos(M_PI * (static_cast<double>(i) + 0.75)
+                            / (static_cast<double>(n_nodes) + 0.5));
+        for (int iter = 0; iter < 100; ++iter) {
+            // Evaluate P_n(z) via three-term recurrence.
+            double pjm1 = 1.0, pj = z;
+            for (int j = 1; j < n_nodes; ++j) {
+                const double pjp1 =
+                    ((2.0*j + 1.0)*z*pj - static_cast<double>(j)*pjm1)
+                    / static_cast<double>(j + 1);
+                pjm1 = pj; pj = pjp1;
+            }
+            // pj = P_n(z), pjm1 = P_{n-1}(z)
+            const double deriv = static_cast<double>(n_nodes)
+                                 * (z * pj - pjm1) / (z * z - 1.0);
+            const double dz = pj / deriv;
+            z -= dz;
+            if (std::abs(dz) < 1e-15) break;
+        }
+        // Recompute P_{n-1}(z) at the converged root for the weight.
+        double pjm1 = 1.0, pj = z;
+        for (int j = 1; j < n_nodes; ++j) {
+            const double pjp1 =
+                ((2.0*j + 1.0)*z*pj - static_cast<double>(j)*pjm1)
+                / static_cast<double>(j + 1);
+            pjm1 = pj; pj = pjp1;
+        }
+        const double deriv = static_cast<double>(n_nodes)
+                             * (z * pj - pjm1) / (z * z - 1.0);
+        nodes[static_cast<size_t>(i)]                       = -z;
+        nodes[static_cast<size_t>(n_nodes - 1 - i)]         =  z;
+        const double w = 2.0 / ((1.0 - z * z) * deriv * deriv);
+        weights[static_cast<size_t>(i)]                     = w;
+        weights[static_cast<size_t>(n_nodes - 1 - i)]       = w;
+    }
+
+    // Accumulate the integrand at each node.
+    // The integrand is the unnormalised product:
+    //   p_M^(alpha_G-1) * (1-p_M)^(beta_G-1)
+    //   * p_M^k_M * (1-p_M)^(d_M-k_M)
+    //   * BetaBin(k_C | d_C, p_M*(Ne-1), (1-p_M)*(Ne-1))
+    // divided by B(alpha_G, beta_G) to make it a proper Beta prior.
+    // We work in log-space and factor out a scale for numerical stability.
+    const int k_M = pd.m_ad_alt, d_M = pd.m_dp;
+    const int k_C = pd.c_ad_alt, d_C = pd.c_dp;
+
+    // Precompute the log-normalisation of the Beta prior.
+    const double log_beta_norm =
+          std::lgamma(alpha_G) + std::lgamma(beta_G)
+        - std::lgamma(alpha_G + beta_G);
+
+    // Evaluate log-integrand at each node and track max for log-sum-exp.
+    std::vector<double> log_vals(static_cast<size_t>(n_nodes));
+    double max_log = -std::numeric_limits<double>::infinity();
+    for (int i = 0; i < n_nodes; ++i) {
+        const double t  = nodes[static_cast<size_t>(i)];
+        const double pM = 0.5 * (1.0 + t);
+        if (pM <= 0.0 || pM >= 1.0) {
+            log_vals[static_cast<size_t>(i)] =
+                -std::numeric_limits<double>::infinity();
+            continue;
+        }
+        const double log_prior_pdf =
+              (alpha_G - 1.0) * std::log(pM)
+            + (beta_G  - 1.0) * std::log(1.0 - pM)
+            - log_beta_norm;
+        const double log_binom_m =
+              static_cast<double>(k_M) * std::log(pM)
+            + static_cast<double>(d_M - k_M) * std::log(1.0 - pM);
+        const double log_betabin_c =
+            lf.log_betabinom_pmf(d_C, k_C, pM * ne1, (1.0 - pM) * ne1);
+        // Jacobian dp_M/dt = 0.5; we add log(0.5) = -log(2) at the end.
+        log_vals[static_cast<size_t>(i)] =
+            log_prior_pdf + log_binom_m + log_betabin_c;
+        if (log_vals[static_cast<size_t>(i)] > max_log)
+            max_log = log_vals[static_cast<size_t>(i)];
+    }
+
+    // Weighted sum via log-sum-exp for stability.
+    double sum_exp = 0.0;
+    for (int i = 0; i < n_nodes; ++i) {
+        if (!std::isfinite(log_vals[static_cast<size_t>(i)])) continue;
+        sum_exp += weights[static_cast<size_t>(i)]
+                   * std::exp(log_vals[static_cast<size_t>(i)] - max_log);
+    }
+    if (sum_exp <= 0.0) return -std::numeric_limits<double>::infinity();
+
+    // log C(d_M, k_M) (binomial coeff for the mother's read sampling)
+    const double log_binom_m_coeff = lf.log_comb(d_M, k_M);
+
+    return log_binom_m_coeff + max_log + std::log(sum_exp)
+           - std::log(2.0);  // Jacobian dp_M/dt = 0.5
+}
+
 double NeEstimator::compute_global_ll(int ne,
                                       const std::vector<PairData>& data,
                                       const LogFactorial& lf,
@@ -203,10 +402,19 @@ static constexpr double kProfileLLThresholdDelta = 1.92;
 double NeEstimator::compute_global_ll_continuous(
     double ne, const std::vector<PairData>& data,
     const LogFactorial& lf, int threads) {
+    // Per-row dispatch: trio rows (has_g == 1) use the three-generation
+    // closed-form marginal likelihood; all others use the standard two-
+    // generation continuous model.
+    auto row_ll = [&](const PairData& pd) {
+        return (pd.has_g == 1)
+            ? compute_ll_trio_continuous(pd, ne, lf)
+            : compute_ll_single_continuous(pd, ne, lf);
+    };
+
     if (threads <= 1 || data.size() < 64) {
         double total = 0.0;
         for (const PairData& pd : data) {
-            total += compute_ll_single_continuous(pd, ne, lf);
+            total += row_ll(pd);
         }
         return total;
     }
@@ -220,7 +428,9 @@ double NeEstimator::compute_global_ll_continuous(
         futures.emplace_back(pool.submit([&, start, end, ne]() {
             double s = 0.0;
             for (size_t i = start; i < end; ++i) {
-                s += compute_ll_single_continuous(data[i], ne, lf);
+                s += (data[i].has_g == 1)
+                    ? compute_ll_trio_continuous(data[i], ne, lf)
+                    : compute_ll_single_continuous(data[i], ne, lf);
             }
             return s;
         }));
@@ -457,6 +667,18 @@ NeEstimator::load_pairs(const std::string& tsv_path, double min_vaf, double max_
     const int idx_c_ad_alt = col_index(header_cols, "CHILD_AD_ALT");
     const int idx_qc       = col_index(header_cols, "QC");
 
+    // Optional trio columns (backward-compatible with legacy 16-col TSVs).
+    // When HAS_G == 1 the row is a G-M-C trio; the grandmother's DP and
+    // AD_ALT are read from GRANDMOTHER_DP / GRANDMOTHER_AD_ALT.
+    auto opt_col = [&](const std::string& name) -> int {
+        for (size_t i = 0; i < header_cols.size(); ++i)
+            if (header_cols[i] == name) return static_cast<int>(i);
+        return -1;
+    };
+    const int idx_has_g    = opt_col("HAS_G");
+    const int idx_g_dp     = opt_col("GRANDMOTHER_DP");
+    const int idx_g_ad_alt = opt_col("GRANDMOTHER_AD_ALT");
+
     std::vector<PairData> data;
     while (std::getline(in_file, line)) {
         if (!line.empty() && line.back() == '\r') line.pop_back();
@@ -483,6 +705,22 @@ NeEstimator::load_pairs(const std::string& tsv_path, double min_vaf, double max_
             if (pd.m_dp <= 0 || pd.c_dp <= 0) continue;
             if (pd.m_ad_alt < 0 || pd.m_ad_alt > pd.m_dp) continue;
             if (pd.c_ad_alt < 0 || pd.c_ad_alt > pd.c_dp) continue;
+
+            // Trio fields: only populated when all three optional columns
+            // are present and HAS_G == 1 for this row.
+            if (idx_has_g >= 0 && idx_g_dp >= 0 && idx_g_ad_alt >= 0) {
+                const int hg = std::stoi(tk[idx_has_g]);
+                if (hg == 1) {
+                    const int gdp  = std::stoi(tk[idx_g_dp]);
+                    const int galt = std::stoi(tk[idx_g_ad_alt]);
+                    if (gdp > 0 && galt >= 0 && galt <= gdp) {
+                        pd.g_dp     = gdp;
+                        pd.g_ad_alt = galt;
+                        pd.has_g    = 1;
+                    }
+                }
+            }
+
             data.push_back(pd);
         } catch (const std::exception&) {
             continue;

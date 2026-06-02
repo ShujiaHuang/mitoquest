@@ -91,12 +91,20 @@ public:
     /// Type alias to the shared LogFactorial utility (in src/log_factorial.h).
     using LogFactorial = ::mitoquest::LogFactorial;
 
-    // One transmission pair, after upstream QC.
+    // One transmission pair, after upstream QC.  For two-generation rows
+    // (produced without a GM FAM) has_g == 0 and the g_* fields are zero.
+    // For three-generation G-M-C trios (HAS_G = 1 in the TSV) g_dp /
+    // g_ad_alt carry the grandmother's counts and the row-level
+    // log-likelihood switches to the trio marginal formula in the
+    // continuous model (see compute_ll_trio_continuous()).
     struct PairData {
         int m_dp;      // mother total depth
         int m_ad_alt;  // mother ALT-supporting reads
         int c_dp;      // child  total depth
         int c_ad_alt;  // child  ALT-supporting reads
+        int g_dp     = 0;   // grandmother total depth (HAS_G=1 rows only)
+        int g_ad_alt = 0;   // grandmother ALT reads  (HAS_G=1 rows only)
+        int has_g    = 0;   // 1 iff this row is a G-M-C trio; 0 if MC pair
     };
 
     /// Optional Wonnapinij/Kimura cross-check output.
@@ -277,6 +285,38 @@ public:
     // Per-pair log-likelihood (continuous model, real-valued Ne).
     static double compute_ll_single_continuous(const PairData& pd, double ne,
                                                const LogFactorial& lf);
+
+    // Per-row marginal log-likelihood for a three-generation G-M-C trio
+    // under the continuous Beta-diffusion model.  The mother's latent
+    // heteroplasmy p_M is integrated out analytically:
+    //
+    //   I(Ne) = int_0^1 Beta(p_M | alpha_G, beta_G)
+    //                  * Bin(k_M | d_M, p_M)
+    //                  * BetaBin(k_C | d_C, p_M (Ne-1), (1-p_M)(Ne-1))
+    //           dp_M
+    //
+    // where alpha_G = p_hat_G * (Ne - 1) and beta_G = (1 - p_hat_G) * (Ne - 1)
+    // with p_hat_G = g_ad_alt / g_dp.  The closed form is:
+    //
+    //   I(Ne) = C(d_M, k_M) C(d_C, k_C)
+    //           * B(alpha_G + k_M + k_C,
+    //               beta_G  + (d_M - k_M) + (d_C - k_C))
+    //           / B(alpha_G, beta_G)
+    //
+    // When pd.has_g == 0 (i.e. the row is a two-generation MC pair), this
+    // function falls back to the standard two-generation continuous
+    // likelihood (compute_ll_single_continuous).  When the grandmother is
+    // homoplasmic (p_hat_G in {0, 1}) the row is non-informative for Ne
+    // and the function returns 0.0 (a Ne-independent constant).
+    static double compute_ll_trio_continuous(const PairData& pd, double ne,
+                                             const LogFactorial& lf);
+
+    // Gauss-Legendre quadrature fallback for the trio marginal likelihood.
+    // Used by the unit tests to validate the closed-form formula; not the
+    // default path in the optimiser.
+    static double compute_ll_trio_quadrature(const PairData& pd, double ne,
+                                             const LogFactorial& lf,
+                                             int n_nodes = 64);
 
     // Global log-likelihood (single-threaded).
     static double compute_global_ll(int ne,

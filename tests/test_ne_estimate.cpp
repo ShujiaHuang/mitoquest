@@ -16,6 +16,8 @@
 #include <gtest/gtest.h>
 
 #include <cmath>
+#include <cstdio>
+#include <fstream>
 #include <random>
 #include <vector>
 
@@ -574,4 +576,230 @@ TEST(NeEstKimuraTrimmed, TrimmedCloserToMMLEWhenOutliersPresent) {
         EXPECT_GE(k.top_drift_outliers[0].f_i,
                   k.top_drift_outliers[1].f_i);
     }
+}
+
+// =====================================================================
+// Three-generation trio marginal likelihood tests
+// =====================================================================
+
+// Helper: build a trio PairData in one expression.
+static NeEstimator::PairData make_trio(int g_dp, int g_ad_alt,
+                                        int m_dp, int m_ad_alt,
+                                        int c_dp, int c_ad_alt,
+                                        bool has_g = true) {
+    NeEstimator::PairData pd;
+    pd.g_dp = g_dp; pd.g_ad_alt = g_ad_alt;
+    pd.m_dp = m_dp; pd.m_ad_alt = m_ad_alt;
+    pd.c_dp = c_dp; pd.c_ad_alt = c_ad_alt;
+    pd.has_g = has_g ? 1 : 0;
+    return pd;
+}
+
+// The closed-form formula must be numerically consistent with
+// Gauss-Legendre quadrature.  Because GL quadrature on the non-polynomial
+// Beta kernel has O(1/nodes^2) convergence, we compare *relative* LL
+// differences (which is what the optimiser uses) rather than absolute LL.
+TEST(NeEstTrio, ClosedFormVsQuadratureRelativeLL) {
+    NeEstimator::LogFactorial lf(1000);
+    struct Case { int g_dp, g_ad, m_dp, m_ad, c_dp, c_ad; };
+    const std::vector<Case> cases = {
+        {100, 30, 50, 15, 80, 20},
+        {200, 80, 100, 45, 150, 60},
+        {500, 250, 200, 110, 300, 150},
+    };
+    for (const auto& c : cases) {
+        auto pd = make_trio(c.g_dp, c.g_ad, c.m_dp, c.m_ad, c.c_dp, c.c_ad);
+        // Compare LL difference: LL(Ne=5) - LL(Ne=50) between methods.
+        const double cf_lo = NeEstimator::compute_ll_trio_continuous(pd, 5.0, lf);
+        const double cf_hi = NeEstimator::compute_ll_trio_continuous(pd, 50.0, lf);
+        const double q_lo  = NeEstimator::compute_ll_trio_quadrature(pd, 5.0, lf, 256);
+        const double q_hi  = NeEstimator::compute_ll_trio_quadrature(pd, 50.0, lf, 256);
+        const double cf_diff = cf_lo - cf_hi;
+        const double q_diff  = q_lo  - q_hi;
+        // Relative LL differences should agree to within 1.5.
+        // GL quadrature on the non-polynomial Beta kernel has O(1/n^2)
+        // convergence; the absolute LL bias cancels partially in
+        // differences but not perfectly.
+        EXPECT_NEAR(cf_diff, q_diff, 1.5)
+            << "LL-diff mismatch for g_dp=" << c.g_dp;
+        // Both should be finite.
+        EXPECT_TRUE(std::isfinite(cf_lo));
+        EXPECT_TRUE(std::isfinite(cf_hi));
+        EXPECT_TRUE(std::isfinite(q_lo));
+        EXPECT_TRUE(std::isfinite(q_hi));
+    }
+}
+
+// Verify that both closed-form and quadrature find the same optimal Ne.
+TEST(NeEstTrio, ClosedFormAndQuadratureAgreeOnOptimalNe) {
+    NeEstimator::LogFactorial lf(1000);
+    auto pd = make_trio(200, 60, 100, 35, 150, 50);
+    // Scan Ne in [2, 100] and find the argmax for both methods.
+    double best_cf = 2.0, best_q = 2.0;
+    double max_cf = -1e30, max_q = -1e30;
+    for (double ne = 2.0; ne <= 100.0; ne += 1.0) {
+        const double ll_cf = NeEstimator::compute_ll_trio_continuous(pd, ne, lf);
+        const double ll_q  = NeEstimator::compute_ll_trio_quadrature(pd, ne, lf, 256);
+        if (ll_cf > max_cf) { max_cf = ll_cf; best_cf = ne; }
+        if (ll_q  > max_q)  { max_q  = ll_q;  best_q  = ne; }
+    }
+    // Optimal Ne should agree to within ±3 (step size is 1.0).
+    EXPECT_NEAR(best_cf, best_q, 3.0);
+}
+
+// When has_g == 0 the trio function must fall back to the 2-gen model.
+TEST(NeEstTrio, HasGZeroFallsBackTo2Gen) {
+    NeEstimator::LogFactorial lf(500);
+    const double ne = 15.0;
+    auto pd = make_trio(100, 30, 50, 20, 80, 25, /*has_g=*/false);
+    const double ll_trio = NeEstimator::compute_ll_trio_continuous(pd, ne, lf);
+    const double ll_2gen = NeEstimator::compute_ll_single_continuous(pd, ne, lf);
+    EXPECT_DOUBLE_EQ(ll_trio, ll_2gen);
+}
+
+// Homoplasmic grandmother (g_ad_alt == 0 or g_dp) is Ne-independent -> 0.0.
+TEST(NeEstTrio, HomoplasmicGrandmotherReturnsZero) {
+    NeEstimator::LogFactorial lf(200);
+    // Grandmother homoplasmic REF.
+    auto pd_ref = make_trio(100, 0, 50, 20, 80, 30);
+    EXPECT_DOUBLE_EQ(NeEstimator::compute_ll_trio_continuous(pd_ref, 10.0, lf), 0.0);
+    EXPECT_DOUBLE_EQ(NeEstimator::compute_ll_trio_continuous(pd_ref, 50.0, lf), 0.0);
+    // Grandmother homoplasmic ALT.
+    auto pd_alt = make_trio(100, 100, 50, 20, 80, 30);
+    EXPECT_DOUBLE_EQ(NeEstimator::compute_ll_trio_continuous(pd_alt, 10.0, lf), 0.0);
+}
+
+// At Ne = 1 the diffusion degenerates (complete drift to fixation).
+// For a heteroplasmic child the discrete fallback correctly returns
+// -infinity (impossible under Ne=1).  Slightly above Ne=1 the result
+// is finite, confirming the continuous formula is well-behaved.
+TEST(NeEstTrio, NeEqualsOneBoundary) {
+    NeEstimator::LogFactorial lf(200);
+    auto pd = make_trio(100, 30, 50, 15, 80, 20);
+    // Ne = 1 with heteroplasmic child: impossible under fixation -> -inf.
+    const double ll1 = NeEstimator::compute_ll_trio_continuous(pd, 1.0, lf);
+    EXPECT_TRUE(std::isinf(ll1) && ll1 < 0.0);
+    // Just above Ne = 1: must be finite.
+    const double ll_plus = NeEstimator::compute_ll_trio_continuous(pd, 1.01, lf);
+    EXPECT_TRUE(std::isfinite(ll_plus));
+    // Homoplasmic child: Ne=1 should give a finite result.
+    auto pd_hom = make_trio(100, 30, 50, 15, 80, 80);
+    const double ll_hom = NeEstimator::compute_ll_trio_continuous(pd_hom, 1.0, lf);
+    EXPECT_TRUE(std::isfinite(ll_hom));
+}
+
+// Closed-form self-consistency: verify the formula directly for one case.
+// Ne=10, p_G=0.3 -> alpha_G=2.7, beta_G=6.3
+// k_M=15, d_M=50, k_C=20, d_C=80
+// A = 2.7+15+20 = 37.7, B = 6.3+35+60 = 101.3
+// log I = log C(50,15) + log C(80,20)
+//       + lgamma(37.7) + lgamma(101.3) - lgamma(139.0)
+//       - lgamma(2.7) - lgamma(6.3) + lgamma(9.0)
+TEST(NeEstTrio, ClosedFormManualCheck) {
+    NeEstimator::LogFactorial lf(500);
+    const double ne = 10.0;
+    auto pd = make_trio(100, 30, 50, 15, 80, 20);
+    const double ll = NeEstimator::compute_ll_trio_continuous(pd, ne, lf);
+
+    const double alpha_G = 0.3 * 9.0;   // 2.7
+    const double beta_G  = 0.7 * 9.0;   // 6.3
+    const double A = alpha_G + 15.0 + 20.0;  // 37.7
+    const double B = beta_G  + 35.0 + 60.0;  // 101.3
+    const double expected =
+          std::lgamma(A) + std::lgamma(B) - std::lgamma(A + B)
+        - std::lgamma(alpha_G) - std::lgamma(beta_G)
+        + std::lgamma(alpha_G + beta_G)
+        + lf.log_comb(50, 15) + lf.log_comb(80, 20);
+    EXPECT_NEAR(ll, expected, 1e-9);
+}
+
+// Trio likelihood must differ from 2-gen likelihood when has_g == 1.
+TEST(NeEstTrio, TrioDiffersFrom2GenWhenHasGOne) {
+    NeEstimator::LogFactorial lf(500);
+    const double ne = 10.0;
+    auto pd = make_trio(100, 30, 50, 20, 80, 25, /*has_g=*/true);
+    const double ll_trio = NeEstimator::compute_ll_trio_continuous(pd, ne, lf);
+    const double ll_2gen = NeEstimator::compute_ll_single_continuous(pd, ne, lf);
+    // They should be different (trio uses grandmother info).
+    EXPECT_NE(ll_trio, ll_2gen);
+    EXPECT_TRUE(std::isfinite(ll_trio));
+    EXPECT_TRUE(std::isfinite(ll_2gen));
+}
+
+// Global LL with trio rows should equal the sum of per-row trio LLs.
+TEST(NeEstTrio, GlobalLLDispatchesTrioRows) {
+    NeEstimator::LogFactorial lf(500);
+    const double ne = 10.0;
+    // Build a dataset with one trio row and one 2-gen row.
+    auto trio_pd = make_trio(100, 30, 50, 15, 80, 20, true);
+    auto pair_pd = make_trio(0, 0, 80, 25, 120, 40, false);
+    std::vector<NeEstimator::PairData> data = {trio_pd, pair_pd};
+    const double global = NeEstimator::compute_global_ll_continuous(ne, data, lf, 1);
+    const double expected =
+          NeEstimator::compute_ll_trio_continuous(trio_pd, ne, lf)
+        + NeEstimator::compute_ll_single_continuous(pair_pd, ne, lf);
+    EXPECT_NEAR(global, expected, 1e-9);
+}
+
+// load_pairs must read HAS_G / GRANDMOTHER_DP / GRANDMOTHER_AD_ALT when
+// present, and must leave has_g == 0 for rows with HAS_G == 0 or when the
+// columns are absent (legacy TSV).
+TEST(NeEstTrio, LoadPairsReadsTrioColumns) {
+    const std::string tsv = "tests/data/ne_pipeline/trio_load_test.tsv";
+    // Write a minimal wide TSV with one trio row and one MC-only row.
+    {
+        std::ofstream out(tsv);
+        ASSERT_TRUE(out.is_open());
+        out << "CHROM\tPOS\tREF\tALT\tFAM_ID\t"
+               "GRANDMOTHER_ID\tMOTHER_ID\tCHILD_ID\t"
+               "GRANDMOTHER_DP\tGRANDMOTHER_AD_REF\tGRANDMOTHER_AD_ALT\t"
+               "GRANDMOTHER_VAF\tHAS_G\t"
+               "MOTHER_DP\tMOTHER_AD_REF\tMOTHER_AD_ALT\tMOTHER_VAF\t"
+               "CHILD_DP\tCHILD_AD_REF\tCHILD_AD_ALT\tCHILD_VAF\tQC\n";
+        // Row 1: HAS_G = 1, grandmother 100 dp 30 alt.
+        out << "chrM\t100\tA\tT\tF1\tGMA\tMOM\tCHILD\t"
+               "100\t70\t30\t0.300\t1\t"
+               "50\t35\t15\t0.300\t"
+               "80\t60\t20\t0.250\tPASS\n";
+        // Row 2: HAS_G = 0 (no grandmother).
+        out << "chrM\t200\tC\tG\tF2\tNA\tMOM2\tCHILD2\t"
+               "0\t0\t0\t0.000\t0\t"
+               "80\t55\t25\t0.312\t"
+               "120\t80\t40\t0.333\tPASS\n";
+    }
+    auto data = NeEstimator::load_pairs(tsv, 0.0, 1.0);
+    ASSERT_EQ(data.size(), 2u);
+    // Row 1: trio.
+    EXPECT_EQ(data[0].has_g,    1);
+    EXPECT_EQ(data[0].g_dp,     100);
+    EXPECT_EQ(data[0].g_ad_alt, 30);
+    EXPECT_EQ(data[0].m_dp,     50);
+    EXPECT_EQ(data[0].c_dp,     80);
+    // Row 2: no trio.
+    EXPECT_EQ(data[1].has_g,    0);
+    EXPECT_EQ(data[1].g_dp,     0);
+    EXPECT_EQ(data[1].g_ad_alt, 0);
+    // Clean up.
+    std::remove(tsv.c_str());
+}
+
+// Legacy 16-column TSV (no HAS_G column) -> has_g == 0 for all rows.
+TEST(NeEstTrio, LoadPairsLegacyTsvHasGZero) {
+    const std::string tsv = "tests/data/ne_pipeline/legacy_load_test.tsv";
+    {
+        std::ofstream out(tsv);
+        ASSERT_TRUE(out.is_open());
+        out << "CHROM\tPOS\tREF\tALT\tFAM_ID\t"
+               "MOTHER_ID\tCHILD_ID\t"
+               "MOTHER_DP\tMOTHER_AD_REF\tMOTHER_AD_ALT\tMOTHER_VAF\t"
+               "CHILD_DP\tCHILD_AD_REF\tCHILD_AD_ALT\tCHILD_VAF\tQC\n";
+        out << "chrM\t100\tA\tT\tF1\tMOM\tCHILD\t"
+               "50\t35\t15\t0.300\t"
+               "80\t60\t20\t0.250\tPASS\n";
+    }
+    auto data = NeEstimator::load_pairs(tsv, 0.0, 1.0);
+    ASSERT_EQ(data.size(), 1u);
+    EXPECT_EQ(data[0].has_g, 0);
+    EXPECT_EQ(data[0].g_dp,  0);
+    std::remove(tsv.c_str());
 }

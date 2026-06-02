@@ -578,6 +578,13 @@ Optional options:
       --no-require-pass    Disable the FILTER=PASS gate.
       --snv-only           Restrict to SNV records (default: enabled).
       --no-snv-only        Disable the SNV-only gate (also keeps indels).
+  -g, --gm-fam      FILE   Optional GM FAM file describing grandmother–
+                           mother relationships (same 6-column PLINK
+                           format).  When set, each MC trio is looked up
+                           as a child in the GM FAM; if the MC mother is
+                           found as a child with a defined mother there,
+                           the row is tagged HAS_G=1 and grandmother
+                           genotype columns are emitted.
   -h, --help               Print this help message.
 ```
 
@@ -599,7 +606,9 @@ FAM_ID  CHILD_ID  FATHER_ID  MOTHER_ID  SEX  PHENOTYPE
 ### Output TSV columns
 
 One row is emitted per (transmission-pair, ALT allele) combination.
-Multi-allelic sites produce one row per ALT.
+Multi-allelic sites produce one row per ALT.  When `--gm-fam` is
+specified the output switches to a wide 22-column format that includes
+grandmother genotype fields and a `HAS_G` flag.
 
 | Column         | Type   | Description                                          |
 | -------------- | ------ | ---------------------------------------------------- |
@@ -608,8 +617,14 @@ Multi-allelic sites produce one row per ALT.
 | `REF`          | string | Reference allele.                                    |
 | `ALT`          | string | One ALT allele.                                      |
 | `FAMILY_ID`    | string | FAM family ID.                                       |
+| `GRANDMOTHER_ID` | string | Grandmother sample ID (`NA` when `HAS_G=0`).  |
 | `MOTHER_ID`    | string | Mother sample ID (must match VCF sample column).     |
 | `CHILD_ID`     | string | Child sample ID (must match VCF sample column).      |
+| `GRANDMOTHER_DP` | int  | Grandmother total depth (0 when `HAS_G=0`).         |
+| `GRANDMOTHER_AD_REF` | int | Grandmother REF reads (0 when `HAS_G=0`).      |
+| `GRANDMOTHER_AD_ALT` | int | Grandmother ALT reads (0 when `HAS_G=0`).      |
+| `GRANDMOTHER_VAF` | float | `GRANDMOTHER_AD_ALT / GRANDMOTHER_DP` (0 when `HAS_G=0`). |
+| `HAS_G`        | int    | 1 = G-M-C trio (3-gen); 0 = MC pair (2-gen).        |
 | `MOTHER_DP`    | int    | Mother total depth at this site.                     |
 | `MOTHER_AD_REF`| int    | Mother reads supporting REF.                         |
 | `MOTHER_AD_ALT`| int    | Mother reads supporting ALT.                         |
@@ -620,6 +635,9 @@ Multi-allelic sites produce one row per ALT.
 | `CHILD_VAF`    | float  | `CHILD_AD_ALT / CHILD_DP`.                           |
 | `QC`           | string | `PASS`, `LOW_DEPTH`, or other failure reason.        |
 
+The `GRANDMOTHER_*` columns and `HAS_G` are present only when `--gm-fam`
+is used; legacy 16-column TSVs (without `--gm-fam`) are still read
+correctly by `ne-estimate`.
 A leading provenance comment line (`#mitoquest_trans_prep_command=...`)
 records the exact CLI invocation for reproducibility.
 
@@ -766,6 +784,59 @@ fitted `Ne = k * true_Ne` aligns with the observed VAF grid and
 produces secondary local maxima, so golden-section search is unsafe);
 the 95% confidence interval is the contiguous range of `Ne` where
 `logL >= logL_max - 1.92` (profile likelihood, `chi2_{1, 0.95} / 2`).
+
+### Three-generation G-M-C trios (`--gm-fam`)
+
+When `mitoquest trans-prep` is run with `--gm-fam`, the output TSV
+carries a `HAS_G` column: `HAS_G = 1` rows are grandmother–mother–
+child (G-M-C) trios and `HAS_G = 0` rows are standard mother–child
+(MC) pairs. `mitoquest ne-estimate` auto-detects the `HAS_G`,
+`GRANDMOTHER_DP`, and `GRANDMOTHER_AD_ALT` columns by name and
+switches each trio row to a three-generation marginal likelihood.
+
+For a G-M-C trio the grandmother’s observed VAF
+`p̂_G = g_ad_alt / g_dp` serves as the founder allele frequency.
+The mother’s latent heteroplasmy `p_M` is drawn from the Kimura
+diffusion `Beta(p̂_G·(Ne−1), (1−p̂_G)·(Ne−1))`. Given `p_M`, the
+mother’s read count `k_M ~ Bin(d_M, p_M)` and the child’s read
+count `k_C ~ BetaBin(d_C, p_M·(Ne−1), (1−p_M)·(Ne−1))` are
+conditionally independent. The mother’s latent `p_M` is
+analytically marginalised, giving the closed-form trio marginal
+likelihood:
+
+```txt
+I_trio(Ne) = C(d_M, k_M) · C(d_C, k_C)
+           · B(α_G + k_M + k_C, β_G + (d_M − k_M) + (d_C − k_C))
+           / B(α_G, β_G)
+
+where  α_G = p̂_G · (Ne − 1),   β_G = (1 − p̂_G) · (Ne − 1)
+```
+
+The composite log-likelihood sums the per-row contributions:
+trio rows use `log I_trio`, pair rows use the standard 2-gen
+Beta-Binomial log-likelihood. Homoplasmic grandmothers
+(`p̂_G ∈ {0, 1}`) contribute 0 (Ne-independent constant). The
+mixed-pedigree MMLE is consistent for Ne under the standard
+Kimura assumptions and reduces exactly to the 2-gen MMLE when
+no trio rows are present.
+
+Example:
+
+```bash
+# MC FAM: mother-child pairs
+mitoquest trans-prep \
+    -v cohort.vcf.gz \
+    -f mc_pairs.fam \
+    -g gm_pairs.fam \        # grandmother-mother FAM
+    -o trio_pairs.tsv
+
+# ne-estimate auto-detects HAS_G and dispatches accordingly
+mitoquest ne-estimate \
+    -i trio_pairs.tsv \
+    --min-ne 2 --max-ne 100 \
+    --model continuous \
+    -o ne_result.json
+```
 
 ### Why DP/AD instead of the VCF AF field?
 

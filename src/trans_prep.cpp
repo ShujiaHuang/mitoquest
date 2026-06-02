@@ -14,6 +14,7 @@
 #include <iostream>
 #include <sstream>
 #include <stdexcept>
+#include <unordered_map>
 
 #include "trans_prep.h"
 #include "io/utils.h"           // ngslib::is_readable
@@ -68,7 +69,9 @@ TransmissionPrep::TransmissionPrep(Config config) : _config(std::move(config)) {
 // ---------------------------------------------------------------------
 
 const char* TransmissionPrep::tsv_header() {
-    return "CHROM\tPOS\tREF\tALT\tFAM_ID\tMOTHER_ID\tCHILD_ID\t"
+    return "CHROM\tPOS\tREF\tALT\tFAM_ID\tGRANDMOTHER_ID\tMOTHER_ID\tCHILD_ID\t"
+           "GRANDMOTHER_DP\tGRANDMOTHER_AD_REF\tGRANDMOTHER_AD_ALT\tGRANDMOTHER_VAF\t"
+           "HAS_G\t"
            "MOTHER_DP\tMOTHER_AD_REF\tMOTHER_AD_ALT\tMOTHER_VAF\t"
            "CHILD_DP\tCHILD_AD_REF\tCHILD_AD_ALT\tCHILD_VAF\tQC";
 }
@@ -76,7 +79,11 @@ const char* TransmissionPrep::tsv_header() {
 std::string TransmissionPrep::format_row(const PairRecord& r) {
     std::ostringstream oss;
     oss << r.chrom    << "\t" << r.pos       << "\t" << r.ref       << "\t" << r.alt       << "\t"
-        << r.fam_id   << "\t" << r.mother_id << "\t" << r.child_id  << "\t"
+        << r.fam_id   << "\t"
+        << (r.grandmother_id.empty() ? "NA" : r.grandmother_id) << "\t"
+        << r.mother_id << "\t" << r.child_id << "\t"
+        << r.g_dp     << "\t" << r.g_ad_ref  << "\t" << r.g_ad_alt  << "\t" << fmt_double(r.g_vaf) << "\t"
+        << r.has_g    << "\t"
         << r.m_dp     << "\t" << r.m_ad_ref  << "\t" << r.m_ad_alt  << "\t" << fmt_double(r.m_vaf) << "\t"
         << r.c_dp     << "\t" << r.c_ad_ref  << "\t" << r.c_ad_alt  << "\t" << fmt_double(r.c_vaf) << "\t"
         << r.qc;
@@ -131,6 +138,80 @@ TransmissionPrep::parse_fam(const std::string& fam_path,
     return valid_trios;
 }
 
+std::vector<TransmissionPrep::Trio>
+TransmissionPrep::parse_gm_fam(const std::string& fam_path,
+                               const ngslib::VCFHeader& hdr,
+                               MatchingStats& stats) {
+    // Same structure as parse_fam but updates the gm_* counters.
+    std::vector<Trio> valid;
+    std::ifstream fam_file(fam_path);
+    if (!fam_file.is_open()) {
+        throw std::runtime_error("[trans-prep] Failed to open GM FAM file: " + fam_path);
+    }
+
+    std::string line;
+    while (std::getline(fam_file, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (line.empty() || line[0] == '#') continue;
+
+        std::istringstream iss(line);
+        Trio t;
+        if (!(iss >> t.fam_id >> t.child_id >> t.father_id >> t.mother_id)) {
+            std::cerr << "[trans-prep][Warning] Malformed GM FAM line, skipping: "
+                      << line << "\n";
+            continue;
+        }
+        stats.gm_total_fam_lines++;
+
+        if (is_missing_id(t.mother_id)) {
+            stats.gm_ignored_no_mother++;
+            continue;
+        }
+
+        t.child_idx  = hdr.sample_index(t.child_id);   // this is the MC-mother
+        t.mother_idx = hdr.sample_index(t.mother_id);  // this is the grandmother
+
+        const bool child_in_vcf  = (t.child_idx  >= 0);
+        const bool mother_in_vcf = (t.mother_idx >= 0);
+
+        if (child_in_vcf && mother_in_vcf) {
+            valid.push_back(t);
+        } else {
+            if (!child_in_vcf)  stats.gm_ignored_missing_child++;
+            if (!mother_in_vcf) stats.gm_ignored_missing_mother++;
+        }
+    }
+    return valid;
+}
+
+void TransmissionPrep::resolve_gm_for_trios(std::vector<Trio>& trios,
+                                            const std::vector<Trio>& gm_trios,
+                                            MatchingStats& stats) {
+    if (gm_trios.empty()) return;
+
+    // Build a lookup: mc_mother_id -> (grandmother_id, grandmother_idx).
+    // When several GM FAM lines refer to the same MC-mother, keep the first
+    // valid one (the GM FAM is expected to be 1:1 per mother).
+    std::unordered_map<std::string, std::pair<std::string, int>> gm_by_mother;
+    gm_by_mother.reserve(gm_trios.size());
+    for (const auto& gm : gm_trios) {
+        auto it = gm_by_mother.find(gm.child_id);
+        if (it == gm_by_mother.end()) {
+            gm_by_mother.emplace(gm.child_id,
+                                 std::make_pair(gm.mother_id, gm.mother_idx));
+        }
+    }
+
+    for (auto& t : trios) {
+        auto it = gm_by_mother.find(t.mother_id);
+        if (it != gm_by_mother.end()) {
+            t.grandmother_id  = it->second.first;
+            t.grandmother_idx = it->second.second;
+            ++stats.gm_matched_trios;
+        }
+    }
+}
+
 void TransmissionPrep::_validate_vcf_format(const ngslib::VCFHeader& hdr) {
     bcf_hdr_t* h = hdr.hts_header();
     if (!h) throw std::runtime_error("[trans-prep] Invalid VCF header.");
@@ -170,12 +251,27 @@ void TransmissionPrep::usage() {
                  "  retained; fathers are ignored (mtDNA is maternally inherited).\n"
                  "\n"
                  "  The TSV emitted here is the input of `mitoquest ne-estimate`.\n"
+                 "\n"
+                 "  When the optional --gm-fam file is provided, each MC pair's mother\n"
+                 "  is looked up as the CHILD in that FAM; if found, the corresponding\n"
+                 "  MOTHER is the pedigree grandmother, and the output row gains the\n"
+                 "  GRANDMOTHER_* columns and HAS_G = 1 (a 3-generation G-M-C trio).\n"
+                 "  Pairs without a matched grandmother are emitted with HAS_G = 0\n"
+                 "  and NA/0 fills, so the downstream `ne-estimate` module can fit\n"
+                 "  Ne from a mixed cohort of 2-gen and 3-gen pedigrees.\n"
                  "\nRequired options:\n"
                  "  -v, --vcf       FILE   Input multi-sample VCF/BCF.\n"
                  "  -f, --fam       FILE   PLINK FAM file (whitespace-delimited):\n"
                  "                         Family_ID Child_ID Father_ID Mother_ID Sex Phenotype\n"
                  "                         Missing parents may be encoded as 0 / . / -9.\n"
                  "\nOptional options:\n"
+                 "  -g, --gm-fam    FILE   Second PLINK FAM file describing\n"
+                 "                         grandmother -> mother transmissions.  Its\n"
+                 "                         CHILD_ID must equal an MC FAM's MOTHER_ID\n"
+                 "                         for the corresponding pair to gain trio\n"
+                 "                         columns.  When absent, every row has\n"
+                 "                         HAS_G = 0 and the GRANDMOTHER_* columns\n"
+                 "                         are filled with NA / 0.\n"
                  "  -o, --output    FILE   Output TSV file (default: stdout).\n"
                  "  -d, --min-depth INT    Minimum read depth (DP) required for BOTH the\n"
                  "                         mother and the child at a site.  Sites failing\n"
@@ -206,6 +302,7 @@ void TransmissionPrep::_parse_args(int argc, char* argv[]) {
     // Defaults
     _config.vcf_path.clear();
     _config.fam_path.clear();
+    _config.gm_fam_path.clear();
     _config.output_file.clear();
     _config.min_depth    = 500;
     _config.require_pass = true;
@@ -219,6 +316,7 @@ void TransmissionPrep::_parse_args(int argc, char* argv[]) {
     static const struct option long_options[] = {
         {"vcf",              required_argument, 0, 'v'},
         {"fam",              required_argument, 0, 'f'},
+        {"gm-fam",           required_argument, 0, 'g'},
         {"output",           required_argument, 0, 'o'},
         {"min-depth",        required_argument, 0, 'd'},
         {"require-pass",     no_argument,       0,  1 },
@@ -232,10 +330,11 @@ void TransmissionPrep::_parse_args(int argc, char* argv[]) {
     int option_index = 0;
     int c;
     optind = 1;
-    while ((c = getopt_long(argc, argv, "v:f:o:d:h", long_options, &option_index)) != -1) {
+    while ((c = getopt_long(argc, argv, "v:f:g:o:d:h", long_options, &option_index)) != -1) {
         switch (c) {
             case 'v': _config.vcf_path     = optarg;            break;
             case 'f': _config.fam_path     = optarg;            break;
+            case 'g': _config.gm_fam_path  = optarg;            break;
             case 'o': _config.output_file  = optarg;            break;
             case 'd': _config.min_depth    = std::stoi(optarg); break;
             case 1:   _config.require_pass = true;              break;
@@ -259,6 +358,10 @@ void TransmissionPrep::_parse_args(int argc, char* argv[]) {
     if (!ngslib::is_readable(_config.fam_path.c_str())) {
         throw std::runtime_error("[trans-prep] FAM file not readable: " + _config.fam_path);
     }
+    if (!_config.gm_fam_path.empty() &&
+        !ngslib::is_readable(_config.gm_fam_path.c_str())) {
+        throw std::runtime_error("[trans-prep] GM FAM file not readable: " + _config.gm_fam_path);
+    }
     if (_config.min_depth < 0) {
         throw std::runtime_error("[trans-prep] --min-depth must be >= 0.");
     }
@@ -267,13 +370,22 @@ void TransmissionPrep::_parse_args(int argc, char* argv[]) {
 void TransmissionPrep::_print_matching_report(std::ostream& os) const {
     os << "\n========== mitoquest trans-prep matching report ==========\n"
        << "Total samples in VCF header        : " << _stats.total_vcf_samples         << "\n"
-       << "Total valid lines in FAM file      : " << _stats.total_fam_lines           << "\n"
+       << "Total valid lines in MC FAM file   : " << _stats.total_fam_lines           << "\n"
        << "----------------------------------------------------------\n"
        << "Successfully matched mother-child  : " << _stats.valid_mother_child_pairs  << "\n"
        << "Ignored (child missing in VCF)     : " << _stats.ignored_missing_child     << "\n"
        << "Ignored (mother missing in VCF)    : " << _stats.ignored_missing_mother    << "\n"
-       << "Ignored (no mother defined in FAM) : " << _stats.ignored_no_mother_in_fam  << "\n"
-       << "==========================================================\n\n";
+       << "Ignored (no mother defined in FAM) : " << _stats.ignored_no_mother_in_fam  << "\n";
+    if (!_config.gm_fam_path.empty()) {
+        os << "----------------------------------------------------------\n"
+           << "GM FAM file                        : " << _config.gm_fam_path          << "\n"
+           << "Total valid lines in GM FAM file   : " << _stats.gm_total_fam_lines      << "\n"
+           << "MC pairs matched to a grandmother  : " << _stats.gm_matched_trios        << "\n"
+           << "Ignored (no grandmother in GM FAM) : " << _stats.gm_ignored_no_mother    << "\n"
+           << "Ignored (MC-mother missing in VCF) : " << _stats.gm_ignored_missing_child<< "\n"
+           << "Ignored (grandmother missing in VCF): " << _stats.gm_ignored_missing_mother << "\n";
+    }
+    os << "==========================================================\n\n";
 }
 
 // ---------------------------------------------------------------------
@@ -289,6 +401,17 @@ long long TransmissionPrep::run() {
     _validate_vcf_format(hdr);
 
     std::vector<Trio> trios = parse_fam(_config.fam_path, hdr, _stats);
+
+    // Optional 3-gen extension: parse the GM FAM and resolve each MC trio's
+    // mother against it.  Tries whose mother appears as a CHILD in the GM FAM
+    // gain a matched grandmother (grandmother_idx >= 0) and are emitted with
+    // HAS_G = 1 plus the GRANDMOTHER_* columns populated from the VCF.
+    std::vector<Trio> gm_trios;
+    if (!_config.gm_fam_path.empty()) {
+        gm_trios = parse_gm_fam(_config.gm_fam_path, hdr, _stats);
+        resolve_gm_for_trios(trios, gm_trios, _stats);
+    }
+
     _print_matching_report(std::cerr);
 
     if (trios.empty()) {
@@ -424,6 +547,7 @@ long long TransmissionPrep::run() {
             for (const Trio& t : trios) {
                 const int m_idx = t.mother_idx;
                 const int c_idx = t.child_idx;
+                const int g_idx = t.grandmother_idx;
 
                 const int32_t m_dp = dp_all[m_idx];
                 const int32_t c_dp = dp_all[c_idx];
@@ -458,6 +582,26 @@ long long TransmissionPrep::run() {
                 row.c_ad_alt  = c_alt;
                 row.m_vaf     = (m_dp > 0) ? static_cast<double>(m_alt) / m_dp : 0.0;
                 row.c_vaf     = (c_dp > 0) ? static_cast<double>(c_alt) / c_dp : 0.0;
+
+                // Trio columns.  HAS_G = 1 requires both the pedigree link AND
+                // a usable DP / AD / GT at the grandmother sample; otherwise
+                // we fall back to HAS_G = 0 with NA / 0 fills so the row is
+                // still valid as a 2-gen MC observation.
+                if (g_idx >= 0) {
+                    const int32_t g_dp  = dp_all[g_idx];
+                    const int32_t g_ref = sample_allele_depth(g_idx, 0);
+                    const int32_t g_alt = sample_allele_depth(g_idx, alt_idx);
+                    if (g_dp  != bcf_int32_missing && g_dp > 0 &&
+                        g_ref != bcf_int32_missing &&
+                        g_alt != bcf_int32_missing) {
+                        row.grandmother_id = t.grandmother_id;
+                        row.g_dp      = g_dp;
+                        row.g_ad_ref  = g_ref;
+                        row.g_ad_alt  = g_alt;
+                        row.g_vaf     = static_cast<double>(g_alt) / g_dp;
+                        row.has_g     = 1;
+                    }
+                }
 
                 const bool low_depth = (m_dp < _config.min_depth) ||
                                        (c_dp < _config.min_depth);

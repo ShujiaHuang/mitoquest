@@ -15,6 +15,7 @@
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "io/vcf.h"
@@ -116,34 +117,50 @@ namespace {
 // Read a TSV file written by trans-prep.run() and skip provenance/header.
 struct TsvRow {
     std::string chrom, alt, qc;
-    int pos, m_dp, c_dp, m_ad_alt, c_ad_alt;
+    std::string grandmother_id, mother_id, child_id;
+    int pos, g_dp, g_ad_alt, m_dp, c_dp, m_ad_alt, c_ad_alt, has_g;
 };
+
+// Build a header index: column name -> 0-based index.
+std::vector<std::string> split_tabs(const std::string& s) {
+    std::vector<std::string> tk;
+    std::string cur;
+    for (char c : s) {
+        if (c == '\t') { tk.push_back(cur); cur.clear(); }
+        else cur.push_back(c);
+    }
+    tk.push_back(cur);
+    return tk;
+}
 
 std::vector<TsvRow> read_pairs_tsv(const std::string& path) {
     std::ifstream f(path);
     std::string line;
-    std::vector<std::string> headers;
+    std::unordered_map<std::string, int> idx;
     std::vector<TsvRow> rows;
     while (std::getline(f, line)) {
         if (line.empty()) continue;
         if (line[0] == '#') continue;          // provenance
-        std::vector<std::string> tk;
-        std::string cur;
-        for (char c : line) {
-            if (c == '\t') { tk.push_back(cur); cur.clear(); }
-            else cur.push_back(c);
+        std::vector<std::string> tk = split_tabs(line);
+        if (idx.empty()) {
+            for (int i = 0; i < (int)tk.size(); ++i) idx[tk[i]] = i;
+            continue;
         }
-        tk.push_back(cur);
-        if (headers.empty()) { headers = tk; continue; }
         TsvRow r;
-        r.chrom    = tk[0];
-        r.pos      = std::stoi(tk[1]);
-        r.alt      = tk[3];
-        r.m_dp     = std::stoi(tk[7]);
-        r.m_ad_alt = std::stoi(tk[9]);
-        r.c_dp     = std::stoi(tk[11]);
-        r.c_ad_alt = std::stoi(tk[13]);
-        r.qc       = tk[15];
+        r.chrom          = tk[idx.at("CHROM")];
+        r.pos            = std::stoi(tk[idx.at("POS")]);
+        r.alt            = tk[idx.at("ALT")];
+        r.grandmother_id = tk[idx.at("GRANDMOTHER_ID")];
+        r.mother_id      = tk[idx.at("MOTHER_ID")];
+        r.child_id       = tk[idx.at("CHILD_ID")];
+        r.g_dp           = std::stoi(tk[idx.at("GRANDMOTHER_DP")]);
+        r.g_ad_alt       = std::stoi(tk[idx.at("GRANDMOTHER_AD_ALT")]);
+        r.has_g          = std::stoi(tk[idx.at("HAS_G")]);
+        r.m_dp           = std::stoi(tk[idx.at("MOTHER_DP")]);
+        r.m_ad_alt       = std::stoi(tk[idx.at("MOTHER_AD_ALT")]);
+        r.c_dp           = std::stoi(tk[idx.at("CHILD_DP")]);
+        r.c_ad_alt       = std::stoi(tk[idx.at("CHILD_AD_ALT")]);
+        r.qc             = tk[idx.at("QC")];
         rows.push_back(r);
     }
     return rows;
@@ -426,4 +443,170 @@ TEST(TransPrepFormatRow, Roundtrip) {
     EXPECT_NE(s.find("PASS"), std::string::npos);
     // Maternal VAF must serialise as "0.8" (no trailing zeros).
     EXPECT_NE(s.find("\t0.8\t"), std::string::npos);
+    // When grandmother_id is empty, the row must write NA and HAS_G = 0.
+    EXPECT_NE(s.find("\tNA\t"), std::string::npos);
+    EXPECT_NE(s.find("\t0\t"), std::string::npos);   // HAS_G column
 }
+
+// ---------------------------------------------------------------------
+// 3-generation (grandmother-mother-child) extension
+// ---------------------------------------------------------------------
+
+// VCF with 4 samples: gma_a (grandmother), mom_a (mother), child_a (child),
+// and unrelated.  Two heterozygous SNV sites for all three generations.
+const char* TEST_VCF_3GEN = R"(##fileformat=VCFv4.2
+##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
+##FORMAT=<ID=DP,Number=1,Type=Integer,Description="Total depth">
+##FORMAT=<ID=AD,Number=.,Type=Integer,Description="Allele depths in GT order">
+##contig=<ID=chrM,length=16569>
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	gma_a	mom_a	child_a	unrelated
+chrM	100	.	A	G	30	PASS	.	GT:DP:AD	0/1:1000:200,800	0/1:1000:300,700	0/1:900:400,500	0:1100:1100
+chrM	200	.	C	T	30	PASS	.	GT:DP:AD	0/1:1000:250,750	0/1:1000:350,650	0/1:900:450,450	0:1100:1100
+)";
+
+// MC FAM: mom_a -> child_a.
+const char* TEST_MC_FAM =
+    "FAM1 child_a 0 mom_a 2 -9\n";
+
+// GM FAM: gma_a -> mom_a.  The GM FAM's CHILD_ID is the MC-FAM's MOTHER_ID,
+// so trans-prep should resolve mom_a as the MC-mother and gma_a as the
+// grandmother of child_a.
+const char* TEST_GM_FAM =
+    "FAM1 mom_a 0 gma_a 2 -9\n";
+
+TEST(TransPrepThreeGen, ResolvesGrandmotherAndEmitsHasGOne) {
+    const std::string vcf_path = "tp_3gen.vcf";
+    const std::string mc_path  = "tp_3gen_mc.fam";
+    const std::string gm_path  = "tp_3gen_gm.fam";
+    const std::string out_path = "tp_3gen.tsv";
+    write_tmp(vcf_path, TEST_VCF_3GEN);
+    write_tmp(mc_path,  TEST_MC_FAM);
+    write_tmp(gm_path,  TEST_GM_FAM);
+
+    TransmissionPrep::Config cfg;
+    cfg.vcf_path     = vcf_path;
+    cfg.fam_path     = mc_path;
+    cfg.gm_fam_path  = gm_path;
+    cfg.output_file  = out_path;
+    cfg.min_depth    = 0;
+    cfg.require_pass = true;
+    cfg.snv_only     = true;
+
+    TransmissionPrep tp(cfg);
+    long long pass_rows = tp.run();
+
+    auto rows = read_pairs_tsv(out_path);
+    EXPECT_EQ(pass_rows, 2);
+    ASSERT_EQ(rows.size(), 2u);
+
+    for (const auto& r : rows) {
+        EXPECT_EQ(r.has_g, 1);
+        EXPECT_EQ(r.grandmother_id, "gma_a");
+        EXPECT_EQ(r.mother_id,      "mom_a");
+        EXPECT_EQ(r.child_id,       "child_a");
+    }
+    // POS=100: gma AD=(200,800), mom AD=(300,700), child AD=(400,500).
+    const TsvRow* r100 = nullptr;
+    const TsvRow* r200 = nullptr;
+    for (const auto& r : rows) {
+        if (r.pos == 100) r100 = &r;
+        if (r.pos == 200) r200 = &r;
+    }
+    ASSERT_NE(r100, nullptr);
+    ASSERT_NE(r200, nullptr);
+    EXPECT_EQ(r100->g_dp,     1000);
+    EXPECT_EQ(r100->g_ad_alt, 800);
+    EXPECT_EQ(r100->m_ad_alt, 700);
+    EXPECT_EQ(r100->c_ad_alt, 500);
+    EXPECT_EQ(r200->g_ad_alt, 750);
+
+    // GM matching stats: 1 MC pair matched to a grandmother.
+    EXPECT_EQ(tp.matching_stats().gm_matched_trios,   1);
+    EXPECT_EQ(tp.matching_stats().gm_total_fam_lines, 1);
+
+    std::remove(vcf_path.c_str());
+    std::remove(mc_path.c_str());
+    std::remove(gm_path.c_str());
+    std::remove(out_path.c_str());
+}
+
+TEST(TransPrepThreeGen, NoGmFamYieldsHasGZero) {
+    // Without --gm-fam every row should still have the wide format (so the
+    // header includes GRANDMOTHER_* and HAS_G columns) but HAS_G == 0 and
+    // GRANDMOTHER_ID == "NA" for every row.
+    const std::string vcf_path = "tp_no_gm.vcf";
+    const std::string mc_path  = "tp_no_gm_mc.fam";
+    const std::string out_path = "tp_no_gm.tsv";
+    write_tmp(vcf_path, TEST_VCF_3GEN);
+    write_tmp(mc_path,  TEST_MC_FAM);
+
+    TransmissionPrep::Config cfg;
+    cfg.vcf_path     = vcf_path;
+    cfg.fam_path     = mc_path;
+    cfg.gm_fam_path.clear();
+    cfg.output_file  = out_path;
+    cfg.min_depth    = 0;
+    cfg.require_pass = true;
+    cfg.snv_only     = true;
+
+    TransmissionPrep tp(cfg);
+    tp.run();
+
+    auto rows = read_pairs_tsv(out_path);
+    ASSERT_EQ(rows.size(), 2u);
+    for (const auto& r : rows) {
+        EXPECT_EQ(r.has_g, 0);
+        EXPECT_EQ(r.grandmother_id, "NA");
+        EXPECT_EQ(r.g_dp, 0);
+        EXPECT_EQ(r.g_ad_alt, 0);
+    }
+    // GM counters must all be zero when --gm-fam was not given.
+    EXPECT_EQ(tp.matching_stats().gm_total_fam_lines, 0);
+    EXPECT_EQ(tp.matching_stats().gm_matched_trios,   0);
+
+    std::remove(vcf_path.c_str());
+    std::remove(mc_path.c_str());
+    std::remove(out_path.c_str());
+}
+
+TEST(TransPrepThreeGen, GmMotherNotInVcfFallsBackToHasGZero) {
+    // GM FAM's MOTHER_ID (the pedigree grandmother) is not in the VCF, so
+    // the GM parse drops that line and the MC pair stays HAS_G = 0.
+    const char* gm_missing =
+        "FAM1 mom_a 0 gma_xxx 2 -9\n";   // gma_xxx not in VCF
+
+    const std::string vcf_path = "tp_gm_miss.vcf";
+    const std::string mc_path  = "tp_gm_miss_mc.fam";
+    const std::string gm_path  = "tp_gm_miss_gm.fam";
+    const std::string out_path = "tp_gm_miss.tsv";
+    write_tmp(vcf_path, TEST_VCF_3GEN);
+    write_tmp(mc_path,  TEST_MC_FAM);
+    write_tmp(gm_path,  gm_missing);
+
+    TransmissionPrep::Config cfg;
+    cfg.vcf_path     = vcf_path;
+    cfg.fam_path     = mc_path;
+    cfg.gm_fam_path  = gm_path;
+    cfg.output_file  = out_path;
+    cfg.min_depth    = 0;
+    cfg.require_pass = true;
+    cfg.snv_only     = true;
+
+    TransmissionPrep tp(cfg);
+    tp.run();
+
+    auto rows = read_pairs_tsv(out_path);
+    ASSERT_EQ(rows.size(), 2u);
+    for (const auto& r : rows) {
+        EXPECT_EQ(r.has_g, 0);
+        EXPECT_EQ(r.grandmother_id, "NA");
+    }
+    EXPECT_EQ(tp.matching_stats().gm_ignored_missing_mother, 1);
+    EXPECT_EQ(tp.matching_stats().gm_matched_trios,          0);
+
+    std::remove(vcf_path.c_str());
+    std::remove(mc_path.c_str());
+    std::remove(gm_path.c_str());
+    std::remove(out_path.c_str());
+}
+
