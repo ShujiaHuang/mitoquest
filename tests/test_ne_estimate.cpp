@@ -745,7 +745,7 @@ TEST(NeEstTrio, GlobalLLDispatchesTrioRows) {
 // present, and must leave has_g == 0 for rows with HAS_G == 0 or when the
 // columns are absent (legacy TSV).
 TEST(NeEstTrio, LoadPairsReadsTrioColumns) {
-    const std::string tsv = "tests/data/ne_pipeline/trio_load_test.tsv";
+    const std::string tsv = "/tmp/mitoquest_trio_load_test.tsv";
     // Write a minimal wide TSV with one trio row and one MC-only row.
     {
         std::ofstream out(tsv);
@@ -785,7 +785,7 @@ TEST(NeEstTrio, LoadPairsReadsTrioColumns) {
 
 // Legacy 16-column TSV (no HAS_G column) -> has_g == 0 for all rows.
 TEST(NeEstTrio, LoadPairsLegacyTsvHasGZero) {
-    const std::string tsv = "tests/data/ne_pipeline/legacy_load_test.tsv";
+    const std::string tsv = "/tmp/mitoquest_legacy_load_test.tsv";
     {
         std::ofstream out(tsv);
         ASSERT_TRUE(out.is_open());
