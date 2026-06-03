@@ -19,7 +19,7 @@ clinical workflow to population-level cohorts with thousands of samples.
 
 ```bash
 mitoquest: Human Mitochondrial sequencing data Analysis Toolkit
-Version: 1.9.1
+Version: 1.10.0
 
 Usage: mitoquest <command> [options]
 Commands:
@@ -1012,6 +1012,21 @@ Optional options:
                               recommended 0.10) [0.0].
       --top-drift-k     INT   Emit the top-K highest-drift pairs in JSON
                               for outlier inspection [0].
+      --bin-simulation FILE   Emit a deCODE-style "Figure 5" TSV: per
+                              maternal-VAF bin observed mean drift vs
+                              theoretical p_m(1 - p_m) / Ne under the
+                              fitted Ne (and its 95% CI).  Bin range =
+                              [--min-vaf, --max-vaf].
+      --bin-simulation-bins INT  Number of equal-width maternal-VAF bins
+                                 for --bin-simulation [10].
+      --ne-profile     FILE   Emit a TSV that scores every candidate Ne
+                              under both the MMLE marginal log-likelihood
+                              and the Kimura per-pair SSR metric.  Useful
+                              to visually compare which Ne each estimator
+                              prefers (deCODE-style distribution fit).
+                              Grid range = [--min-ne, --max-ne].
+      --ne-profile-step FLOAT Grid step on the Ne axis for --ne-profile
+                              [0.1].
   -h, --help               Print this help message.
 ```
 
@@ -1091,6 +1106,36 @@ mitoquest ne-estimate \
     -t 8 \
     -o cohort.ne.json
 ```
+
+### DeCODE-style diagnostic outputs
+
+Two optional TSV outputs reproduce the figures used in Helgason et al.
+(2024, *Cell*) and let you visually compare the MMLE and Kimura fits:
+
+| Flag                        | Purpose                                                                                       |
+| --------------------------- | --------------------------------------------------------------------------------------------- |
+| `--bin-simulation FILE`     | Per maternal-VAF bin observed drift vs. the theoretical `p_m(1 − p_m) / Ne` curve (Figure 5). |
+| `--bin-simulation-bins INT` | Number of equal-width bins across `[--min-vaf, --max-vaf]` (default: 10).                      |
+| `--ne-profile FILE`         | Per-candidate-Ne grid of MMLE marginal log-likelihood and Kimura SSR — lets you plot both objectives on the same axis and see which Ne each prefers. |
+| `--ne-profile-step FLOAT`   | Grid step on the Ne axis (default: 0.1).                                                       |
+
+```bash
+# Emit both diagnostic TSVs alongside the JSON estimate.
+mitoquest ne-estimate \
+    -i cohort.transmission_pairs.tsv \
+    --cross-check kimura \
+    --min-ne 1 --max-ne 30 \
+    --bin-simulation cohort.bin_sim.tsv \
+    --bin-simulation-bins 10 \
+    --ne-profile cohort.ne_profile.tsv \
+    --ne-profile-step 0.1 \
+    -o cohort.ne.json
+```
+
+Both TSVs start with `#`-prefixed metadata comments that record the
+fitted `Ne`, its 95% CI, and the exact CLI invocation, so downstream
+plotting scripts (e.g., `tools/plot_bottleneck_simulation.py`) can
+reproduce the figure without re-parsing the JSON.
 
 ### Recommendations
 
@@ -1208,6 +1253,8 @@ the C++ binaries:
 | `tools/shift_fasta.py`          | Produce a circularly shifted FASTA (used by the join-region pipeline).                   |
 | `tools/create_join_seq.py`      | Build the joined coding-region / non-coding-region reference for re-alignment.           |
 | `tools/detect_NUMT_by_mtCN.py`  | Flag potential NUMT contamination using mtCN ratios per sample.                          |
+| `tools/plot_bottleneck_simulation.py` | Plot per-bin observed drift vs. `p_m(1−p_m)/Ne` (deCODE Figure 5) from `ne-estimate --bin-simulation`. |
+| `tools/plot_ne_profile.py`      | Plot the MMLE and Kimura objective curves over Ne from `ne-estimate --ne-profile`.        |
 | `tools/vcf_format_validator.py` | Sanity-check a VCF for downstream compatibility.                                         |
 
 Each script supports `-h / --help`.
