@@ -31,7 +31,7 @@ static int usage() {
                  "  copynum      Estimate per-chromosome (incl. mtDNA) relative copy number from a BAM/CRAM file.\n"
                  "  trans-prep   Extract mother-child mtDNA allele transmission pairs from a multi-sample VCF + FAM file.\n"
                  "  ne-estimate  Estimate the mtDNA bottleneck size (Ne) from transmission pairs via Beta-Binomial MMLE.\n"
-                 "  variant-qc   Bayesian quality control for mtDNA variants from VCF files.\n"
+                //  "  variant-qc   Bayesian quality control for mtDNA variants from VCF files.\n"
               << "\n" << std::endl;
     return 1;
 }
