@@ -1350,7 +1350,7 @@ TEST(NeEstFamily, LoadPairsLegacyNoFamilyColumns) {
 
 TEST(NeEstFamily, EndToEndValidationTsv) {
     // Load the synthetic validation TSV file.
-    const std::string tsv = "tests/data/ne_pipeline/per_family_validation.tsv";
+    const std::string tsv = "data/ne_pipeline/per_family_validation.tsv";
     auto data = NeEstimator::load_pairs(tsv, 0.05, 0.95);
     ASSERT_GT(data.size(), 0u);
 
@@ -1398,7 +1398,7 @@ TEST(NeEstFamily, EndToEndValidationTsv) {
 
 TEST(NeEstFamily, EndToEndWithKimura) {
     // End-to-end with Kimura cross-check enabled.
-    const std::string tsv = "tests/data/ne_pipeline/per_family_validation.tsv";
+    const std::string tsv = "data/ne_pipeline/per_family_validation.tsv";
     auto data = NeEstimator::load_pairs(tsv, 0.05, 0.95);
     auto families = NeEstimator::group_into_families(data);
     auto results = NeEstimator::estimate_all_families(families, 1, 100, 3, 1);

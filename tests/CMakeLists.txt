@@ -67,4 +67,4 @@ target_link_libraries(mitoquest_tests PRIVATE
 )
 
 # Register tests
-add_test(NAME AllTests COMMAND mitoquest_tests WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+add_test(NAME AllTests COMMAND mitoquest_tests)
