@@ -105,6 +105,11 @@ public:
         int g_dp     = 0;   // grandmother total depth (HAS_G=1 rows only)
         int g_ad_alt = 0;   // grandmother ALT reads  (HAS_G=1 rows only)
         int has_g    = 0;   // 1 iff this row is a G-M-C trio; 0 if MC pair
+        // Family identifiers (read from TSV FAM_ID/MOTHER_ID/CHILD_ID columns;
+        // used by per-family mode; empty strings for legacy TSVs without these).
+        std::string fam_id;
+        std::string mother_id;
+        std::string child_id;
     };
 
     /// Optional Wonnapinij/Kimura cross-check output.
@@ -159,6 +164,34 @@ public:
         std::vector<DriftOutlier> top_drift_outliers;
     };
 
+    // One family's worth of transmission data (grouped by FAM_ID + MOTHER_ID).
+    struct FamilyData {
+        std::string fam_id;
+        std::string mother_id;
+        std::vector<std::string> child_ids;  // may have >1 children
+        std::vector<PairData>    pairs;      // all variant sites for this family
+    };
+
+    // Per-family estimation result.
+    struct FamilyResult {
+        std::string fam_id;
+        std::string mother_id;
+        size_t      n_children    = 0;
+        size_t      n_pairs       = 0;      // total variant sites used
+        size_t      n_informative = 0;      // sites with 0 < p_M < 1
+        double      ne            = 0.0;    // per-family MMLE Ne
+        double      ci_low        = 0.0;
+        double      ci_high       = 0.0;
+        double      max_log_lik   = 0.0;
+        bool        ci_low_clipped  = false;
+        bool        ci_high_clipped = false;
+        double      mean_mother_dp  = 0.0;  // mean depth for quality assessment
+        double      mean_child_dp   = 0.0;
+        bool        skipped       = false;  // true when n_informative < min_family_sites
+        KimuraCheck kimura;                 // per-family Kimura cross-check
+        std::string warning;                // e.g. "small sample" or "Ne near boundary"
+    };
+
     // Final estimate.
     struct Result {
         double ne          = 0.0;
@@ -169,6 +202,8 @@ public:
         bool   ci_low_clipped  = false;   // optimum is at the search-boundary
         bool   ci_high_clipped = false;
         KimuraCheck kimura;               // populated only when requested
+        // Per-family results (populated only when --per-family is set).
+        std::vector<FamilyResult> family_results;
     };
 
     // CLI configuration parsed from argv.
@@ -206,6 +241,10 @@ public:
                                          // fitting exercise).
         double      ne_profile_step;     // grid step on the Ne axis for
                                          // --ne-profile (default 0.1).
+        // NEW: per-family options
+        bool        per_family         = false;   // --per-family
+        int         min_family_sites   = 3;       // --min-family-sites
+        std::string per_family_output_file;       // --per-family-output FILE (TSV)
     };
 
     /// One row of the per-bin observed-vs-simulated drift summary used
@@ -450,6 +489,40 @@ public:
                        const LogFactorial& lf,
                        double min_ne, double max_ne, double step,
                        int threads, bool continuous);
+
+    // -----------------------------------------------------------------
+    // Per-family estimation helpers.
+    // -----------------------------------------------------------------
+
+    // Group loaded pairs by (fam_id, mother_id) into FamilyData structs.
+    // Pairs with empty fam_id (legacy TSVs) are grouped into a single
+    // family with fam_id = "ALL".
+    static std::vector<FamilyData>
+    group_into_families(const std::vector<PairData>& data);
+
+    // Estimate Ne for a single family using the continuous MMLE.
+    // Returns a FamilyResult with skipped=true when n_informative < min_family_sites.
+    static FamilyResult estimate_family(const FamilyData& fam,
+                                         int min_ne, int max_ne,
+                                         int min_family_sites);
+
+    // Estimate Ne for all families (embarrassingly parallel across families).
+    static std::vector<FamilyResult>
+    estimate_all_families(const std::vector<FamilyData>& families,
+                          int min_ne, int max_ne,
+                          int min_family_sites,
+                          int threads);
+
+    // Per-family Kimura cross-check (site-level bootstrap, not pair-level).
+    static KimuraCheck compute_family_kimura_check(
+        const FamilyData& fam,
+        int      n_bootstrap = 0,
+        uint64_t seed        = 42,
+        double   trim_frac   = 0.0);
+
+    // Write per-family results as a TSV file (one row per family).
+    void _write_family_tsv(const std::vector<FamilyResult>& results,
+                           std::ostream& out) const;
 
     /// Closed-form Kimura-SSR best-fit Ne under the one-generation
     /// Wright-Fisher prediction:  Ne_best  =  Sigma w_i^2 / Sigma r_i w_i.

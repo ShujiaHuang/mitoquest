@@ -19,6 +19,7 @@
 #include <cstdio>
 #include <fstream>
 #include <random>
+#include <sstream>
 #include <vector>
 
 #include "log_factorial.h"
@@ -802,4 +803,636 @@ TEST(NeEstTrio, LoadPairsLegacyTsvHasGZero) {
     EXPECT_EQ(data[0].has_g, 0);
     EXPECT_EQ(data[0].g_dp,  0);
     std::remove(tsv.c_str());
+}
+
+// =====================================================================
+// Per-family estimation tests
+// =====================================================================
+
+// Helper: build a PairData with family identifiers.
+static NeEstimator::PairData make_family_pair(
+    int m_dp, int m_ad, int c_dp, int c_ad,
+    const std::string& fam, const std::string& mom, const std::string& kid)
+{
+    NeEstimator::PairData pd;
+    pd.m_dp = m_dp; pd.m_ad_alt = m_ad;
+    pd.c_dp = c_dp; pd.c_ad_alt = c_ad;
+    pd.fam_id = fam; pd.mother_id = mom; pd.child_id = kid;
+    return pd;
+}
+
+// Helper: simulate a family's worth of pairs under the continuous model
+// with known true Ne, attaching fam_id/mother_id/child_id.
+static std::vector<NeEstimator::PairData>
+simulate_family(double true_ne, int n_sites,
+                int m_dp, int c_dp,
+                double vaf_low, double vaf_high,
+                unsigned seed,
+                const std::string& fam, const std::string& mom,
+                const std::vector<std::string>& kids)
+{
+    auto pairs = simulate_pairs_continuous(true_ne, n_sites, m_dp, c_dp,
+                                           vaf_low, vaf_high, seed);
+    for (size_t i = 0; i < pairs.size(); ++i) {
+        pairs[i].fam_id    = fam;
+        pairs[i].mother_id = mom;
+        pairs[i].child_id  = kids[i % kids.size()];
+    }
+    return pairs;
+}
+
+// -----------------------------------------------------------------
+// group_into_families()
+// -----------------------------------------------------------------
+
+TEST(NeEstFamily, GroupIntoFamiliesCorrectGrouping) {
+    // Two families: F001 (2 kids, 3 sites) and F002 (1 kid, 2 sites).
+    std::vector<NeEstimator::PairData> data = {
+        make_family_pair(500, 150, 500, 170, "F001", "MOM_A", "KID_A1"),
+        make_family_pair(500, 250, 500, 240, "F001", "MOM_A", "KID_A1"),
+        make_family_pair(500, 350, 500, 320, "F001", "MOM_A", "KID_A2"),
+        make_family_pair(500, 200, 500, 210, "F002", "MOM_B", "KID_B1"),
+        make_family_pair(500, 300, 500, 290, "F002", "MOM_B", "KID_B1"),
+    };
+    auto families = NeEstimator::group_into_families(data);
+    ASSERT_EQ(families.size(), 2u);
+    // F001 should come first (map ordering by (F001,MOM_A) < (F002,MOM_B)).
+    EXPECT_EQ(families[0].fam_id,    "F001");
+    EXPECT_EQ(families[0].mother_id, "MOM_A");
+    EXPECT_EQ(families[0].pairs.size(), 3u);
+    EXPECT_EQ(families[0].child_ids.size(), 2u);  // KID_A1, KID_A2
+    // F002.
+    EXPECT_EQ(families[1].fam_id,    "F002");
+    EXPECT_EQ(families[1].mother_id, "MOM_B");
+    EXPECT_EQ(families[1].pairs.size(), 2u);
+    EXPECT_EQ(families[1].child_ids.size(), 1u);  // KID_B1
+}
+
+TEST(NeEstFamily, GroupIntoFamiliesLegacyFallback) {
+    // Legacy TSV: no FAM_ID/MOTHER_ID -> all grouped as "ALL".
+    std::vector<NeEstimator::PairData> data;
+    for (int i = 0; i < 5; ++i) {
+        NeEstimator::PairData pd;
+        pd.m_dp = 500; pd.m_ad_alt = 200;
+        pd.c_dp = 500; pd.c_ad_alt = 210;
+        // fam_id, mother_id, child_id all empty (legacy).
+        data.push_back(pd);
+    }
+    auto families = NeEstimator::group_into_families(data);
+    ASSERT_EQ(families.size(), 1u);
+    EXPECT_EQ(families[0].fam_id,    "ALL");
+    EXPECT_EQ(families[0].mother_id, "ALL");
+    EXPECT_EQ(families[0].pairs.size(), 5u);
+}
+
+TEST(NeEstFamily, GroupIntoFamiliesUniqueChildIds) {
+    // Same child appearing in multiple sites -> child_ids should be unique.
+    std::vector<NeEstimator::PairData> data = {
+        make_family_pair(500, 150, 500, 170, "F1", "M1", "K1"),
+        make_family_pair(500, 250, 500, 240, "F1", "M1", "K1"),
+        make_family_pair(500, 350, 500, 320, "F1", "M1", "K1"),
+        make_family_pair(500, 200, 500, 210, "F1", "M1", "K2"),
+        make_family_pair(500, 300, 500, 290, "F1", "M1", "K2"),
+    };
+    auto families = NeEstimator::group_into_families(data);
+    ASSERT_EQ(families.size(), 1u);
+    EXPECT_EQ(families[0].child_ids.size(), 2u);
+    // Order: K1 first (seen first), K2 second.
+    EXPECT_EQ(families[0].child_ids[0], "K1");
+    EXPECT_EQ(families[0].child_ids[1], "K2");
+}
+
+TEST(NeEstFamily, GroupIntoFamiliesEmptyInput) {
+    auto families = NeEstimator::group_into_families({});
+    EXPECT_TRUE(families.empty());
+}
+
+TEST(NeEstFamily, GroupIntoFamiliesSameFamDiffMother) {
+    // Same FAM_ID but different MOTHER_ID -> separate families.
+    std::vector<NeEstimator::PairData> data = {
+        make_family_pair(500, 150, 500, 170, "F1", "MOM_A", "K1"),
+        make_family_pair(500, 250, 500, 240, "F1", "MOM_B", "K2"),
+    };
+    auto families = NeEstimator::group_into_families(data);
+    ASSERT_EQ(families.size(), 2u);
+}
+
+// -----------------------------------------------------------------
+// estimate_family()
+// -----------------------------------------------------------------
+
+TEST(NeEstFamily, EstimateFamilyRecoversTrueNe) {
+    // Simulate a family with true Ne=15 under the continuous model.
+    // 200 informative sites, high depth -> should recover within 40%.
+    auto pairs = simulate_family(15.0, 200, 2000, 2000,
+                                 0.20, 0.80, 42u,
+                                 "F1", "MOM", {"K1", "K2"});
+    NeEstimator::FamilyData fam;
+    fam.fam_id = "F1"; fam.mother_id = "MOM";
+    fam.child_ids = {"K1", "K2"};
+    fam.pairs = pairs;
+
+    auto fr = NeEstimator::estimate_family(fam, 1, 100, 3);
+    EXPECT_FALSE(fr.skipped);
+    EXPECT_EQ(fr.fam_id, "F1");
+    EXPECT_EQ(fr.mother_id, "MOM");
+    EXPECT_EQ(fr.n_children, 2u);
+    EXPECT_EQ(fr.n_pairs, 200u);
+    EXPECT_GT(fr.n_informative, 180u);
+    // MMLE Ne should be within 40% of truth.
+    EXPECT_NEAR(fr.ne, 15.0, 15.0 * 0.40);
+    // CI should bracket the truth.
+    EXPECT_LE(fr.ci_low,  15.0);
+    EXPECT_GE(fr.ci_high, 15.0);
+    // Log-likelihood should be finite.
+    EXPECT_TRUE(std::isfinite(fr.max_log_lik));
+}
+
+TEST(NeEstFamily, EstimateFamilySkipsSmallFamilies) {
+    // Only 2 informative sites with min_family_sites=3 -> skipped.
+    NeEstimator::FamilyData fam;
+    fam.fam_id = "F_small"; fam.mother_id = "MOM";
+    fam.child_ids = {"K1"};
+    fam.pairs = {
+        make_family_pair(500, 150, 500, 170, "F_small", "MOM", "K1"),
+        make_family_pair(500, 250, 500, 240, "F_small", "MOM", "K1"),
+    };
+    auto fr = NeEstimator::estimate_family(fam, 1, 100, 3);
+    EXPECT_TRUE(fr.skipped);
+    EXPECT_EQ(fr.n_pairs, 2u);
+    EXPECT_EQ(fr.n_informative, 2u);
+    EXPECT_FALSE(fr.warning.empty());
+    // Ne/CI should be zero for skipped families.
+    EXPECT_DOUBLE_EQ(fr.ne, 0.0);
+}
+
+TEST(NeEstFamily, EstimateFamilySkipsHomoplasmicOnly) {
+    // All mother sites homoplasmic (m_ad_alt=0 or m_dp) -> 0 informative.
+    NeEstimator::FamilyData fam;
+    fam.fam_id = "F_homo"; fam.mother_id = "MOM";
+    fam.child_ids = {"K1"};
+    fam.pairs = {
+        make_family_pair(500, 0,   500, 10,  "F_homo", "MOM", "K1"),
+        make_family_pair(500, 500, 500, 490, "F_homo", "MOM", "K1"),
+        make_family_pair(500, 0,   500, 5,   "F_homo", "MOM", "K1"),
+    };
+    auto fr = NeEstimator::estimate_family(fam, 1, 100, 3);
+    EXPECT_TRUE(fr.skipped);
+    EXPECT_EQ(fr.n_informative, 0u);
+}
+
+TEST(NeEstFamily, EstimateFamilyMeanDepth) {
+    // Verify mean_mother_dp and mean_child_dp calculations.
+    NeEstimator::FamilyData fam;
+    fam.fam_id = "F"; fam.mother_id = "M";
+    fam.child_ids = {"K"};
+    fam.pairs = {
+        make_family_pair(100, 30, 200, 60, "F", "M", "K"),
+        make_family_pair(300, 90, 400, 120, "F", "M", "K"),
+    };
+    auto fr = NeEstimator::estimate_family(fam, 1, 100, 1);
+    // Mean depth: (100+300)/2 = 200, (200+400)/2 = 300.
+    EXPECT_DOUBLE_EQ(fr.mean_mother_dp, 200.0);
+    EXPECT_DOUBLE_EQ(fr.mean_child_dp,  300.0);
+}
+
+TEST(NeEstFamily, EstimateFamilyWarningSmallSample) {
+    // Between min_family_sites (3) and 10 -> warning "small sample".
+    auto pairs = simulate_family(10.0, 5, 2000, 2000,
+                                 0.20, 0.80, 77u,
+                                 "F", "M", {"K"});
+    NeEstimator::FamilyData fam;
+    fam.fam_id = "F"; fam.mother_id = "M";
+    fam.child_ids = {"K"};
+    fam.pairs = pairs;
+    auto fr = NeEstimator::estimate_family(fam, 1, 100, 3);
+    EXPECT_FALSE(fr.skipped);
+    // Should have small sample warning.
+    EXPECT_NE(fr.warning.find("small sample"), std::string::npos);
+}
+
+// -----------------------------------------------------------------
+// estimate_all_families()
+// -----------------------------------------------------------------
+
+TEST(NeEstFamily, EstimateAllFamiliesSerialParallelAgree) {
+    // Build 4 families with different true Ne.
+    std::vector<NeEstimator::PairData> all;
+    auto f1 = simulate_family(10.0, 100, 2000, 2000, 0.20, 0.80, 100u,
+                               "F1", "M1", {"K1"});
+    auto f2 = simulate_family(20.0, 100, 2000, 2000, 0.20, 0.80, 200u,
+                               "F2", "M2", {"K2"});
+    auto f3 = simulate_family(30.0, 100, 2000, 2000, 0.20, 0.80, 300u,
+                               "F3", "M3", {"K3"});
+    auto f4 = simulate_family(50.0, 100, 2000, 2000, 0.20, 0.80, 400u,
+                               "F4", "M4", {"K4"});
+    all.insert(all.end(), f1.begin(), f1.end());
+    all.insert(all.end(), f2.begin(), f2.end());
+    all.insert(all.end(), f3.begin(), f3.end());
+    all.insert(all.end(), f4.begin(), f4.end());
+
+    auto families = NeEstimator::group_into_families(all);
+    ASSERT_EQ(families.size(), 4u);
+
+    // Serial (threads=1).
+    auto serial = NeEstimator::estimate_all_families(families, 1, 100, 3, 1);
+    // Parallel (threads=2).
+    auto parallel = NeEstimator::estimate_all_families(families, 1, 100, 3, 2);
+
+    ASSERT_EQ(serial.size(), parallel.size());
+    for (size_t i = 0; i < serial.size(); ++i) {
+        EXPECT_EQ(serial[i].fam_id,    parallel[i].fam_id);
+        EXPECT_EQ(serial[i].skipped,   parallel[i].skipped);
+        if (!serial[i].skipped) {
+            EXPECT_DOUBLE_EQ(serial[i].ne,       parallel[i].ne);
+            EXPECT_DOUBLE_EQ(serial[i].ci_low,   parallel[i].ci_low);
+            EXPECT_DOUBLE_EQ(serial[i].ci_high,  parallel[i].ci_high);
+            EXPECT_DOUBLE_EQ(serial[i].max_log_lik, parallel[i].max_log_lik);
+        }
+    }
+}
+
+TEST(NeEstFamily, EstimateAllFamiliesMultipleFamilies) {
+    // Three families with well-separated true Ne values.
+    std::vector<NeEstimator::PairData> all;
+    auto f1 = simulate_family(8.0, 300, 2000, 2000, 0.20, 0.80, 1001u,
+                               "F1", "M1", {"K1", "K2"});
+    auto f2 = simulate_family(30.0, 300, 2000, 2000, 0.20, 0.80, 1002u,
+                               "F2", "M2", {"K3"});
+    auto f3 = simulate_family(80.0, 300, 2000, 2000, 0.20, 0.80, 1003u,
+                               "F3", "M3", {"K4"});
+    all.insert(all.end(), f1.begin(), f1.end());
+    all.insert(all.end(), f2.begin(), f2.end());
+    all.insert(all.end(), f3.begin(), f3.end());
+
+    auto families = NeEstimator::group_into_families(all);
+    auto results = NeEstimator::estimate_all_families(families, 1, 200, 3, 1);
+
+    ASSERT_EQ(results.size(), 3u);
+    // All should be estimated (none skipped).
+    for (const auto& r : results) {
+        EXPECT_FALSE(r.skipped);
+    }
+    // F1 (true Ne=8): estimate should be in [4, 15].
+    EXPECT_GE(results[0].ne, 4.0);
+    EXPECT_LE(results[0].ne, 15.0);
+    // F2 (true Ne=30): estimate should be in [15, 50].
+    EXPECT_GE(results[1].ne, 15.0);
+    EXPECT_LE(results[1].ne, 50.0);
+    // F3 (true Ne=80): estimate should be in [40, 150].
+    EXPECT_GE(results[2].ne, 40.0);
+    EXPECT_LE(results[2].ne, 150.0);
+    // Ordering: F1 < F2 < F3 in Ne.
+    EXPECT_LT(results[0].ne, results[1].ne);
+    EXPECT_LT(results[1].ne, results[2].ne);
+}
+
+TEST(NeEstFamily, EstimateAllFamiliesMixedSkipped) {
+    // Two families: one with enough sites, one too few.
+    std::vector<NeEstimator::PairData> all;
+    auto f_big = simulate_family(15.0, 50, 2000, 2000, 0.20, 0.80, 555u,
+                                  "F_big", "M_big", {"K_big"});
+    all.insert(all.end(), f_big.begin(), f_big.end());
+    // Tiny family: only 2 sites.
+    all.push_back(make_family_pair(500, 150, 500, 170, "F_tiny", "M_tiny", "K_tiny"));
+    all.push_back(make_family_pair(500, 250, 500, 240, "F_tiny", "M_tiny", "K_tiny"));
+
+    auto families = NeEstimator::group_into_families(all);
+    auto results = NeEstimator::estimate_all_families(families, 1, 100, 3, 1);
+    ASSERT_EQ(results.size(), 2u);
+    EXPECT_FALSE(results[0].skipped);  // F_big: enough sites
+    EXPECT_TRUE(results[1].skipped);   // F_tiny: only 2 sites
+}
+
+// -----------------------------------------------------------------
+// compute_family_kimura_check()
+// -----------------------------------------------------------------
+
+TEST(NeEstFamily, FamilyKimuraConsistency) {
+    // Per-family Kimura on a family's pairs should give the same result
+    // as calling compute_kimura_check directly on those pairs.
+    auto pairs = simulate_family(20.0, 100, 2000, 2000,
+                                 0.20, 0.80, 999u,
+                                 "F1", "M1", {"K1"});
+    NeEstimator::FamilyData fam;
+    fam.fam_id = "F1"; fam.mother_id = "M1";
+    fam.child_ids = {"K1"};
+    fam.pairs = pairs;
+
+    auto fam_kim = NeEstimator::compute_family_kimura_check(fam);
+    auto direct_kim = NeEstimator::compute_kimura_check(pairs);
+
+    EXPECT_EQ(fam_kim.computed, direct_kim.computed);
+    EXPECT_EQ(fam_kim.n_informative, direct_kim.n_informative);
+    EXPECT_DOUBLE_EQ(fam_kim.b,          direct_kim.b);
+    EXPECT_DOUBLE_EQ(fam_kim.ne_kimura,  direct_kim.ne_kimura);
+}
+
+TEST(NeEstFamily, FamilyKimuraOnSkippedFamily) {
+    // Kimura on a family with too few sites: should still compute but
+    // with very few informative pairs.
+    NeEstimator::FamilyData fam;
+    fam.fam_id = "F"; fam.mother_id = "M";
+    fam.child_ids = {"K"};
+    fam.pairs = {
+        make_family_pair(500, 150, 500, 170, "F", "M", "K"),
+        make_family_pair(500, 250, 500, 240, "F", "M", "K"),
+    };
+    auto kim = NeEstimator::compute_family_kimura_check(fam);
+    EXPECT_TRUE(kim.computed);
+    EXPECT_EQ(kim.n_informative, 2u);
+}
+
+// -----------------------------------------------------------------
+// _write_family_tsv()
+// -----------------------------------------------------------------
+
+TEST(NeEstFamily, WriteFamilyTsvFormat) {
+    // Build two family results (one estimated, one skipped) and verify TSV.
+    NeEstimator::Config cfg{};
+    cfg.input_tsv = "dummy";  // required by constructor
+    cfg.min_ne = 1; cfg.max_ne = 100;
+    NeEstimator est(cfg);
+
+    std::vector<NeEstimator::FamilyResult> results(2);
+    // Estimated family.
+    results[0].fam_id = "F1";
+    results[0].mother_id = "MOM_A";
+    results[0].n_children = 2;
+    results[0].n_pairs = 20;
+    results[0].n_informative = 18;
+    results[0].ne = 12.5;
+    results[0].ci_low = 8.0;
+    results[0].ci_high = 20.0;
+    results[0].max_log_lik = -123.456;
+    results[0].mean_mother_dp = 500.0;
+    results[0].mean_child_dp = 480.0;
+    results[0].skipped = false;
+    // Skipped family.
+    results[1].fam_id = "F2";
+    results[1].mother_id = "MOM_B";
+    results[1].n_children = 1;
+    results[1].n_pairs = 2;
+    results[1].n_informative = 2;
+    results[1].mean_mother_dp = 600.0;
+    results[1].mean_child_dp = 550.0;
+    results[1].skipped = true;
+    results[1].warning = "too few informative sites";
+
+    std::ostringstream oss;
+    est._write_family_tsv(results, oss);
+    std::string tsv = oss.str();
+
+    // Check header line.
+    auto first_newline = tsv.find('\n');
+    std::string header = tsv.substr(0, first_newline);
+    EXPECT_NE(header.find("FAM_ID"), std::string::npos);
+    EXPECT_NE(header.find("MOTHER_ID"), std::string::npos);
+    EXPECT_NE(header.find("NE_MMLE"), std::string::npos);
+    EXPECT_NE(header.find("CI_95_LOW"), std::string::npos);
+    EXPECT_NE(header.find("SKIPPED"), std::string::npos);
+    // No Kimura columns when no family has kimura.
+    EXPECT_EQ(header.find("KIMURA_b"), std::string::npos);
+
+    // Check data rows.
+    auto rest = tsv.substr(first_newline + 1);
+    // First row (estimated): should contain F1, NE=12.5, FALSE for SKIPPED.
+    EXPECT_NE(rest.find("F1\tMOM_A"), std::string::npos);
+    EXPECT_NE(rest.find("12.5"), std::string::npos);
+    EXPECT_NE(rest.find("FALSE"), std::string::npos);
+    // Second row (skipped): should contain F2, NA for Ne, TRUE for SKIPPED.
+    EXPECT_NE(rest.find("F2\tMOM_B"), std::string::npos);
+    EXPECT_NE(rest.find("TRUE"), std::string::npos);
+    // Skipped row should have NA for Ne columns.
+    // Count NAs in the second data row.
+    auto second_row_start = rest.find('\n') + 1;
+    std::string second_row = rest.substr(second_row_start);
+    second_row = second_row.substr(0, second_row.find('\n'));
+    size_t na_count = 0;
+    size_t pos = 0;
+    while ((pos = second_row.find("NA", pos)) != std::string::npos) {
+        ++na_count; ++pos;
+    }
+    EXPECT_GE(na_count, 6u);  // NE, CI_LOW, CI_HIGH, CLIPPED_LOW, CLIPPED_HIGH, LOGLIK
+}
+
+TEST(NeEstFamily, WriteFamilyTsvWithKimura) {
+    NeEstimator::Config cfg{};
+    cfg.input_tsv = "dummy";
+    cfg.min_ne = 1; cfg.max_ne = 100;
+    NeEstimator est(cfg);
+
+    std::vector<NeEstimator::FamilyResult> results(1);
+    results[0].fam_id = "F1";
+    results[0].mother_id = "M";
+    results[0].n_children = 1;
+    results[0].n_pairs = 20;
+    results[0].n_informative = 18;
+    results[0].ne = 15.0;
+    results[0].ci_low = 10.0;
+    results[0].ci_high = 25.0;
+    results[0].max_log_lik = -100.0;
+    results[0].mean_mother_dp = 500.0;
+    results[0].mean_child_dp = 500.0;
+    results[0].skipped = false;
+    // Attach Kimura result.
+    results[0].kimura.computed = true;
+    results[0].kimura.b = 0.85;
+    results[0].kimura.ne_kimura = 6.67;
+    results[0].kimura.n_informative = 18;
+
+    std::ostringstream oss;
+    est._write_family_tsv(results, oss);
+    std::string tsv = oss.str();
+
+    // Kimura columns should be present.
+    EXPECT_NE(tsv.find("KIMURA_b"), std::string::npos);
+    EXPECT_NE(tsv.find("KIMURA_NE"), std::string::npos);
+    EXPECT_NE(tsv.find("KIMURA_N_INFORMATIVE"), std::string::npos);
+    // Kimura values should appear in the data row.
+    EXPECT_NE(tsv.find("0.85"), std::string::npos);
+    EXPECT_NE(tsv.find("6.67"), std::string::npos);
+}
+
+TEST(NeEstFamily, WriteFamilyTsvSkippedKimuraNA) {
+    NeEstimator::Config cfg{};
+    cfg.input_tsv = "dummy";
+    cfg.min_ne = 1; cfg.max_ne = 100;
+    NeEstimator est(cfg);
+
+    std::vector<NeEstimator::FamilyResult> results(2);
+    // Family 1: estimated with kimura.
+    results[0].fam_id = "F1"; results[0].mother_id = "M1";
+    results[0].n_children = 1; results[0].n_pairs = 20;
+    results[0].n_informative = 18; results[0].ne = 15.0;
+    results[0].ci_low = 10.0; results[0].ci_high = 25.0;
+    results[0].max_log_lik = -100.0;
+    results[0].mean_mother_dp = 500.0; results[0].mean_child_dp = 500.0;
+    results[0].skipped = false;
+    results[0].kimura.computed = true;
+    results[0].kimura.b = 0.85; results[0].kimura.ne_kimura = 6.67;
+    results[0].kimura.n_informative = 18;
+    // Family 2: skipped, no kimura.
+    results[1].fam_id = "F2"; results[1].mother_id = "M2";
+    results[1].n_children = 1; results[1].n_pairs = 1;
+    results[1].n_informative = 1; results[1].skipped = true;
+    results[1].mean_mother_dp = 300.0; results[1].mean_child_dp = 300.0;
+
+    std::ostringstream oss;
+    est._write_family_tsv(results, oss);
+    std::string tsv = oss.str();
+
+    // Kimura columns present (any_kimura=true from F1).
+    EXPECT_NE(tsv.find("KIMURA_b"), std::string::npos);
+    // F2's row should have NA for kimura columns.
+    // Split into lines and check F2 line.
+    std::istringstream iss(tsv);
+    std::string line;
+    std::getline(iss, line);  // header
+    std::getline(iss, line);  // F1 row
+    std::getline(iss, line);  // F2 row
+    EXPECT_NE(line.find("F2"), std::string::npos);
+    // F2 row should contain "\tNA\tNA\tNA" for kimura columns.
+    EXPECT_NE(line.find("\tNA\tNA\tNA\t"), std::string::npos);
+}
+
+// -----------------------------------------------------------------
+// load_pairs() family column reading
+// -----------------------------------------------------------------
+
+TEST(NeEstFamily, LoadPairsReadsFamilyColumns) {
+    const std::string tsv = "/tmp/mitoquest_family_load_test.tsv";
+    {
+        std::ofstream out(tsv);
+        ASSERT_TRUE(out.is_open());
+        out << "CHROM\tPOS\tREF\tALT\tFAM_ID\tMOTHER_ID\tCHILD_ID\t"
+               "MOTHER_DP\tMOTHER_AD_REF\tMOTHER_AD_ALT\tMOTHER_VAF\t"
+               "CHILD_DP\tCHILD_AD_REF\tCHILD_AD_ALT\tCHILD_VAF\tQC\n";
+        out << "chrM\t100\tA\tT\tFAM1\tMOM_X\tKID_X1\t"
+               "500\t350\t150\t0.300\t500\t310\t190\t0.380\tPASS\n";
+        out << "chrM\t200\tC\tG\tFAM2\tMOM_Y\tKID_Y1\t"
+               "600\t420\t180\t0.300\t600\t400\t200\t0.333\tPASS\n";
+    }
+    auto data = NeEstimator::load_pairs(tsv, 0.0, 1.0);
+    ASSERT_EQ(data.size(), 2u);
+    EXPECT_EQ(data[0].fam_id,    "FAM1");
+    EXPECT_EQ(data[0].mother_id, "MOM_X");
+    EXPECT_EQ(data[0].child_id,  "KID_X1");
+    EXPECT_EQ(data[1].fam_id,    "FAM2");
+    EXPECT_EQ(data[1].mother_id, "MOM_Y");
+    EXPECT_EQ(data[1].child_id,  "KID_Y1");
+    std::remove(tsv.c_str());
+}
+
+TEST(NeEstFamily, LoadPairsLegacyNoFamilyColumns) {
+    // 16-col TSV without FAM_ID/MOTHER_ID/CHILD_ID -> empty strings.
+    const std::string tsv = "/tmp/mitoquest_family_legacy_test.tsv";
+    {
+        std::ofstream out(tsv);
+        ASSERT_TRUE(out.is_open());
+        out << "CHROM\tPOS\tREF\tALT\t"
+               "MOTHER_DP\tMOTHER_AD_REF\tMOTHER_AD_ALT\tMOTHER_VAF\t"
+               "CHILD_DP\tCHILD_AD_REF\tCHILD_AD_ALT\tCHILD_VAF\tQC\n";
+        out << "chrM\t100\tA\tT\t"
+               "500\t350\t150\t0.300\t500\t310\t190\t0.380\tPASS\n";
+    }
+    auto data = NeEstimator::load_pairs(tsv, 0.0, 1.0);
+    ASSERT_EQ(data.size(), 1u);
+    EXPECT_TRUE(data[0].fam_id.empty());
+    EXPECT_TRUE(data[0].mother_id.empty());
+    EXPECT_TRUE(data[0].child_id.empty());
+    std::remove(tsv.c_str());
+}
+
+// -----------------------------------------------------------------
+// End-to-end per-family validation with file
+// -----------------------------------------------------------------
+
+TEST(NeEstFamily, EndToEndValidationTsv) {
+    // Load the synthetic validation TSV file.
+    const std::string tsv = "tests/data/ne_pipeline/per_family_validation.tsv";
+    auto data = NeEstimator::load_pairs(tsv, 0.05, 0.95);
+    ASSERT_GT(data.size(), 0u);
+
+    // Group into families.
+    auto families = NeEstimator::group_into_families(data);
+    ASSERT_EQ(families.size(), 3u);
+
+    // Verify family structure.
+    // F001: 2 children, ~15 sites (10 KID_A1 + 5 KID_A2).
+    EXPECT_EQ(families[0].fam_id, "F001");
+    EXPECT_EQ(families[0].mother_id, "MOM_A");
+    EXPECT_EQ(families[0].child_ids.size(), 2u);
+    EXPECT_EQ(families[0].pairs.size(), 15u);
+
+    // F002: 1 child, 20 sites.
+    EXPECT_EQ(families[1].fam_id, "F002");
+    EXPECT_EQ(families[1].mother_id, "MOM_B");
+    EXPECT_EQ(families[1].child_ids.size(), 1u);
+    EXPECT_EQ(families[1].pairs.size(), 20u);
+
+    // F003: 1 child, 2 sites -> should be skipped with min_family_sites=3.
+    EXPECT_EQ(families[2].fam_id, "F003");
+    EXPECT_EQ(families[2].mother_id, "MOM_C");
+    EXPECT_EQ(families[2].pairs.size(), 2u);
+
+    // Estimate all families.
+    auto results = NeEstimator::estimate_all_families(families, 1, 100, 3, 1);
+    ASSERT_EQ(results.size(), 3u);
+
+    // F001: should be estimated.
+    EXPECT_FALSE(results[0].skipped);
+    EXPECT_EQ(results[0].n_children, 2u);
+    EXPECT_GT(results[0].ne, 0.0);
+    EXPECT_TRUE(std::isfinite(results[0].ne));
+
+    // F002: should be estimated.
+    EXPECT_FALSE(results[1].skipped);
+    EXPECT_EQ(results[1].n_children, 1u);
+    EXPECT_GT(results[1].ne, 0.0);
+
+    // F003: should be skipped (only 2 sites).
+    EXPECT_TRUE(results[2].skipped);
+    EXPECT_DOUBLE_EQ(results[2].ne, 0.0);
+}
+
+TEST(NeEstFamily, EndToEndWithKimura) {
+    // End-to-end with Kimura cross-check enabled.
+    const std::string tsv = "tests/data/ne_pipeline/per_family_validation.tsv";
+    auto data = NeEstimator::load_pairs(tsv, 0.05, 0.95);
+    auto families = NeEstimator::group_into_families(data);
+    auto results = NeEstimator::estimate_all_families(families, 1, 100, 3, 1);
+
+    // Run per-family Kimura on non-skipped families.
+    for (size_t i = 0; i < results.size(); ++i) {
+        if (!results[i].skipped) {
+            results[i].kimura = NeEstimator::compute_family_kimura_check(
+                families[i]);
+        }
+    }
+
+    // F001 and F002 should have Kimura computed.
+    EXPECT_TRUE(results[0].kimura.computed);
+    EXPECT_TRUE(results[1].kimura.computed);
+    // F003 skipped -> no Kimura.
+    EXPECT_FALSE(results[2].kimura.computed);
+
+    // For F001 (15 sites): Kimura Ne should be positive.
+    if (results[0].kimura.computed && results[0].kimura.n_informative > 2) {
+        EXPECT_GT(results[0].kimura.ne_kimura, 0.0);
+    }
+}
+
+// -----------------------------------------------------------------
+// Per-family TSV round-trip through Config/run()
+// -----------------------------------------------------------------
+
+TEST(NeEstFamily, ConfigPerFamilyDefaults) {
+    // Verify default values for per-family Config fields.
+    NeEstimator::Config cfg{};
+    cfg.input_tsv = "dummy";
+    NeEstimator est(cfg);
+    EXPECT_FALSE(est.config().per_family);
+    EXPECT_EQ(est.config().min_family_sites, 3);
+    EXPECT_TRUE(est.config().per_family_output_file.empty());
 }

@@ -14,6 +14,7 @@
 #include <iomanip>
 #include <iostream>
 #include <limits>
+#include <map>
 #include <numeric>
 #include <random>
 #include <sstream>
@@ -679,6 +680,11 @@ NeEstimator::load_pairs(const std::string& tsv_path, double min_vaf, double max_
     const int idx_g_dp     = opt_col("GRANDMOTHER_DP");
     const int idx_g_ad_alt = opt_col("GRANDMOTHER_AD_ALT");
 
+    // Family identifier columns (backward-compatible; empty when absent).
+    const int idx_fam_id    = opt_col("FAM_ID");
+    const int idx_mother_id = opt_col("MOTHER_ID");
+    const int idx_child_id  = opt_col("CHILD_ID");
+
     std::vector<PairData> data;
     while (std::getline(in_file, line)) {
         if (!line.empty() && line.back() == '\r') line.pop_back();
@@ -720,6 +726,11 @@ NeEstimator::load_pairs(const std::string& tsv_path, double min_vaf, double max_
                     }
                 }
             }
+
+            // Family identifiers (optional; used by per-family mode).
+            if (idx_fam_id >= 0)    pd.fam_id    = tk[idx_fam_id];
+            if (idx_mother_id >= 0) pd.mother_id = tk[idx_mother_id];
+            if (idx_child_id >= 0)  pd.child_id  = tk[idx_child_id];
 
             data.push_back(pd);
         } catch (const std::exception&) {
@@ -1205,6 +1216,205 @@ double NeEstimator::kimura_ssr_best_ne(const std::vector<PairData>& data) {
 }
 
 // ---------------------------------------------------------------------
+// Per-family estimation
+// ---------------------------------------------------------------------
+
+std::vector<NeEstimator::FamilyData>
+NeEstimator::group_into_families(const std::vector<PairData>& data) {
+    // Key = (fam_id, mother_id) -> index into result vector.
+    std::map<std::pair<std::string,std::string>, size_t> key_to_idx;
+    std::vector<FamilyData> families;
+
+    for (const auto& pd : data) {
+        // Legacy TSVs without FAM_ID: group everything into one family.
+        const std::string fid = pd.fam_id.empty() ? "ALL" : pd.fam_id;
+        const std::string mid = pd.mother_id.empty() ? "ALL" : pd.mother_id;
+        auto key = std::make_pair(fid, mid);
+
+        auto it = key_to_idx.find(key);
+        if (it == key_to_idx.end()) {
+            FamilyData fd;
+            fd.fam_id    = fid;
+            fd.mother_id = mid;
+            fd.pairs.push_back(pd);
+            if (!pd.child_id.empty()) fd.child_ids.push_back(pd.child_id);
+            key_to_idx[key] = families.size();
+            families.push_back(std::move(fd));
+        } else {
+            auto& fam = families[it->second];
+            fam.pairs.push_back(pd);
+            // Track unique child IDs.
+            if (!pd.child_id.empty()) {
+                bool found = false;
+                for (const auto& cid : fam.child_ids) {
+                    if (cid == pd.child_id) { found = true; break; }
+                }
+                if (!found) fam.child_ids.push_back(pd.child_id);
+            }
+        }
+    }
+    return families;
+}
+
+NeEstimator::FamilyResult
+NeEstimator::estimate_family(const FamilyData& fam,
+                              int min_ne, int max_ne,
+                              int min_family_sites) {
+    FamilyResult fr;
+    fr.fam_id    = fam.fam_id;
+    fr.mother_id = fam.mother_id;
+    fr.n_children = fam.child_ids.size();
+    fr.n_pairs   = fam.pairs.size();
+
+    // Count informative sites (mother heteroplasmic: 0 < p_M < 1).
+    size_t n_info = 0;
+    double sum_m_dp = 0.0, sum_c_dp = 0.0;
+    for (const auto& pd : fam.pairs) {
+        if (pd.m_dp <= 0) continue;
+        const double pm = static_cast<double>(pd.m_ad_alt)
+                        / static_cast<double>(pd.m_dp);
+        if (pm > 0.0 && pm < 1.0) ++n_info;
+        sum_m_dp += pd.m_dp;
+        sum_c_dp += pd.c_dp;
+    }
+    fr.n_informative = n_info;
+    fr.mean_mother_dp = fam.pairs.empty() ? 0.0 : sum_m_dp / fam.pairs.size();
+    fr.mean_child_dp  = fam.pairs.empty() ? 0.0 : sum_c_dp / fam.pairs.size();
+
+    if (static_cast<int>(n_info) < min_family_sites) {
+        fr.skipped = true;
+        fr.warning = "too few informative sites (" + std::to_string(n_info)
+                   + " < " + std::to_string(min_family_sites) + ")";
+        return fr;
+    }
+
+    // Reuse the existing continuous MMLE estimator on this family's pairs.
+    Result est = estimate_continuous(fam.pairs, min_ne, max_ne, /*threads=*/1);
+    fr.ne             = est.ne;
+    fr.ci_low         = est.ci_low;
+    fr.ci_high        = est.ci_high;
+    fr.max_log_lik    = est.max_log_lik;
+    fr.ci_low_clipped  = est.ci_low_clipped;
+    fr.ci_high_clipped = est.ci_high_clipped;
+
+    // Warnings for edge cases.
+    if (n_info < 10) {
+        fr.warning = "small sample (" + std::to_string(n_info) + " informative sites)";
+    }
+    if (fr.ci_low_clipped || fr.ci_high_clipped) {
+        if (!fr.warning.empty()) fr.warning += "; ";
+        fr.warning += "CI clipped at search boundary";
+    }
+
+    return fr;
+}
+
+std::vector<NeEstimator::FamilyResult>
+NeEstimator::estimate_all_families(const std::vector<FamilyData>& families,
+                                    int min_ne, int max_ne,
+                                    int min_family_sites,
+                                    int threads) {
+    std::vector<FamilyResult> results(families.size());
+
+    if (threads <= 1 || families.size() <= 1) {
+        // Serial path.
+        for (size_t i = 0; i < families.size(); ++i) {
+            results[i] = estimate_family(families[i], min_ne, max_ne,
+                                          min_family_sites);
+        }
+        return results;
+    }
+
+    // Embarrassingly parallel: distribute families across workers.
+    const size_t n = families.size();
+    auto worker = [&](size_t start, size_t end) {
+        for (size_t i = start; i < end; ++i) {
+            results[i] = estimate_family(families[i], min_ne, max_ne,
+                                          min_family_sites);
+        }
+    };
+
+    std::vector<std::future<void>> futures;
+    const size_t chunk = (n + threads - 1) / threads;
+    for (size_t t = 0; t < static_cast<size_t>(threads); ++t) {
+        const size_t lo = t * chunk;
+        const size_t hi = std::min(lo + chunk, n);
+        if (lo >= n) break;
+        futures.push_back(std::async(std::launch::async, worker, lo, hi));
+    }
+    for (auto& f : futures) f.get();
+
+    return results;
+}
+
+NeEstimator::KimuraCheck
+NeEstimator::compute_family_kimura_check(const FamilyData& fam,
+                                          int n_bootstrap, uint64_t seed,
+                                          double trim_frac) {
+    // Reuse the existing Kimura check on the family's pairs.
+    // The bootstrap unit is already pair-level in compute_kimura_check;
+    // for a family with site-level data this is equivalent to site-level
+    // bootstrap (each PairData = one site across all children).
+    return compute_kimura_check(fam.pairs, n_bootstrap, seed, trim_frac, 0);
+}
+
+void NeEstimator::_write_family_tsv(
+    const std::vector<FamilyResult>& results, std::ostream& out) const
+{
+    // Header.
+    out << "FAM_ID\tMOTHER_ID\tN_CHILDREN\tN_PAIRS\tN_INFORMATIVE"
+        << "\tNE_MMLE\tCI_95_LOW\tCI_95_HIGH"
+        << "\tCI_LOW_CLIPPED\tCI_HIGH_CLIPPED"
+        << "\tMAX_LOG_LIK"
+        << "\tMEAN_MOTHER_DP\tMEAN_CHILD_DP";
+    // Kimura columns (if any family has kimura computed).
+    bool any_kimura = false;
+    for (const auto& fr : results) {
+        if (fr.kimura.computed) { any_kimura = true; break; }
+    }
+    if (any_kimura) {
+        out << "\tKIMURA_b\tKIMURA_NE\tKIMURA_N_INFORMATIVE";
+    }
+    out << "\tSKIPPED\tWARNING\n";
+
+    // Rows.
+    out << std::setprecision(4);
+    for (const auto& fr : results) {
+        out << fr.fam_id       << "\t"
+            << fr.mother_id    << "\t"
+            << fr.n_children   << "\t"
+            << fr.n_pairs      << "\t"
+            << fr.n_informative << "\t";
+        if (fr.skipped) {
+            out << "NA\tNA\tNA\tNA\tNA\tNA\t"
+                << std::setprecision(2) << fr.mean_mother_dp << "\t"
+                << fr.mean_child_dp;
+        } else {
+            out << std::setprecision(4)
+                << fr.ne       << "\t"
+                << fr.ci_low   << "\t"
+                << fr.ci_high  << "\t"
+                << (fr.ci_low_clipped  ? "TRUE" : "FALSE") << "\t"
+                << (fr.ci_high_clipped ? "TRUE" : "FALSE") << "\t"
+                << std::setprecision(8) << fr.max_log_lik << "\t"
+                << std::setprecision(2) << fr.mean_mother_dp << "\t"
+                << fr.mean_child_dp;
+        }
+        if (any_kimura) {
+            if (fr.kimura.computed) {
+                out << "\t" << std::setprecision(8) << fr.kimura.b
+                    << "\t" << fr.kimura.ne_kimura
+                    << "\t" << fr.kimura.n_informative;
+            } else {
+                out << "\tNA\tNA\tNA";
+            }
+        }
+        out << "\t" << (fr.skipped ? "TRUE" : "FALSE")
+            << "\t" << fr.warning << "\n";
+    }
+}
+
+// ---------------------------------------------------------------------
 // Constructors / CLI
 // ---------------------------------------------------------------------
 
@@ -1225,6 +1435,7 @@ NeEstimator::NeEstimator(Config config) : _config(std::move(config)) {
     if (_config.bin_simulation_n_bins < 1) _config.bin_simulation_n_bins = 1;
     if (_config.ne_profile_step <= 0.0)    _config.ne_profile_step = 0.1;
     if (_config.model.empty())    _config.model = "continuous";
+    if (_config.min_family_sites < 1) _config.min_family_sites = 1;
     // kimura_check defaults to false; callers may flip it explicitly.
 }
 
@@ -1293,6 +1504,14 @@ void NeEstimator::usage() {
                  "                              Grid range = [--min-ne, --max-ne].\n"
                  "      --ne-profile-step FLOAT Grid step on the Ne axis for --ne-profile\n"
                  "                              [0.1].\n"
+                 "      --per-family              Enable per-family Ne estimation.\n"
+                 "                                Groups pairs by FAM_ID + MOTHER_ID and\n"
+                 "                                estimates Ne independently for each family.\n"
+                 "      --min-family-sites INT    Minimum informative sites per family [3].\n"
+                 "                                Families with fewer sites are skipped.\n"
+                 "      --per-family-output FILE  Write per-family Ne results as TSV (one\n"
+                 "                                row per family).  If not set, per-family\n"
+                 "                                results are embedded in the JSON output.\n"
                  "  -h, --help               Print this help message.\n\n"
                  "Notes:\n"
                  "  * Sites with maternal VAF near 0 or 1 carry virtually no information\n"
@@ -1329,6 +1548,9 @@ void NeEstimator::_parse_args(int argc, char* argv[]) {
     _config.bin_simulation_n_bins = 10;
     _config.ne_profile_file.clear();
     _config.ne_profile_step       = 0.1;
+    _config.per_family            = false;
+    _config.min_family_sites      = 3;
+    _config.per_family_output_file.clear();
 
     _cmdline_string = "#mitoquest_ne_estimate_command=";
     for (int i = 0; i < argc; ++i) {
@@ -1352,6 +1574,9 @@ void NeEstimator::_parse_args(int argc, char* argv[]) {
         {"bin-simulation-bins",  required_argument, 0, 12 },
         {"ne-profile",           required_argument, 0, 13 },
         {"ne-profile-step",      required_argument, 0, 14 },
+        {"per-family",           no_argument,       0, 15 },
+        {"min-family-sites",     required_argument, 0, 16 },
+        {"per-family-output",    required_argument, 0, 17 },
         {"threads",          required_argument, 0, 't'},
         {"help",             no_argument,       0, 'h'},
         {0, 0, 0, 0}
@@ -1401,6 +1626,9 @@ void NeEstimator::_parse_args(int argc, char* argv[]) {
             case 12 : _config.bin_simulation_n_bins = std::stoi(optarg); break;
             case 13 : _config.ne_profile_file       = optarg;          break;
             case 14 : _config.ne_profile_step       = std::stod(optarg); break;
+            case 15 : _config.per_family            = true;              break;
+            case 16 : _config.min_family_sites      = std::stoi(optarg); break;
+            case 17 : _config.per_family_output_file = optarg;           break;
             case 't': _config.threads     = std::stoi(optarg); break;
             case 'h': usage(); std::exit(EXIT_SUCCESS);
             case '?':
@@ -1434,6 +1662,7 @@ void NeEstimator::_parse_args(int argc, char* argv[]) {
     if (_config.ne_profile_step <= 0.0) {
         throw std::runtime_error("[ne-estimate] --ne-profile-step must be > 0.");
     }
+    if (_config.min_family_sites < 1) _config.min_family_sites = 1;
 }
 
 void NeEstimator::_write_json(const Result& r, std::ostream& out) const {
@@ -1538,6 +1767,51 @@ void NeEstimator::_write_json(const Result& r, std::ostream& out) const {
             << "  }";
     }
 
+    // Per-family estimates (when --per-family is set).
+    if (!r.family_results.empty()) {
+        out << ",\n  \"Per_Family_Estimates\": [\n";
+        bool first_fam = true;
+        size_t n_estimated = 0, n_skipped = 0;
+        for (const auto& fr : r.family_results) {
+            if (fr.skipped) { ++n_skipped; continue; }
+            if (!first_fam) out << ",\n";
+            first_fam = false;
+            ++n_estimated;
+            out << "    {\n"
+                << "      \"FAM_ID\":            \"" << fr.fam_id << "\",\n"
+                << "      \"Mother_ID\":         \"" << fr.mother_id << "\",\n"
+                << "      \"N_Children\":        " << fr.n_children << ",\n"
+                << "      \"N_Sites\":           " << fr.n_pairs << ",\n"
+                << "      \"N_Informative\":     " << fr.n_informative << ",\n"
+                << "      \"Ne\":                " << std::fixed << std::setprecision(2) << fr.ne << ",\n"
+                << "      \"CI_95_Low\":         " << fr.ci_low << ",\n"
+                << "      \"CI_95_High\":        " << fr.ci_high << ",\n"
+                << std::defaultfloat
+                << "      \"CI_Low_Clipped\":    " << (fr.ci_low_clipped ? "true" : "false") << ",\n"
+                << "      \"CI_High_Clipped\":   " << (fr.ci_high_clipped ? "true" : "false") << ",\n"
+                << "      \"Max_Marginal_LogLik\": " << std::setprecision(8) << fr.max_log_lik << ",\n"
+                << "      \"Mean_Mother_DP\":    " << std::setprecision(2) << fr.mean_mother_dp << ",\n"
+                << "      \"Mean_Child_DP\":     " << fr.mean_child_dp;
+            if (fr.kimura.computed) {
+                out << ",\n      \"Kimura_Cross_Check\": {\n"
+                    << "        \"b\":             " << std::setprecision(8) << fr.kimura.b << ",\n"
+                    << "        \"Ne_Kimura\":     " << fr.kimura.ne_kimura << ",\n"
+                    << "        \"N_Informative\": " << fr.kimura.n_informative << ",\n"
+                    << "        \"Sampling_Corrected\": true\n"
+                    << "      }";
+            }
+            if (!fr.warning.empty()) {
+                out << ",\n      \"Warning\":         \"" << fr.warning << "\"";
+            }
+            out << "\n    }";
+        }
+        out << "\n  ],\n"
+            << "  \"Per_Family_Summary\": {\n"
+            << "    \"N_Families_Estimated\": " << n_estimated << ",\n"
+            << "    \"N_Families_Skipped\":   " << n_skipped << "\n"
+            << "  }";
+    }
+
     out << "\n}\n";
 }
 
@@ -1582,6 +1856,75 @@ NeEstimator::Result NeEstimator::run() {
                                         _config.kimura_seed,
                                         _config.kimura_trim,
                                         _config.top_drift_k);
+    }
+
+    // ---------------------------------------------------------------
+    // Optional: per-family Ne estimation.
+    // Groups pairs by (FAM_ID, MOTHER_ID) and estimates Ne independently
+    // for each family using the continuous MMLE.
+    // ---------------------------------------------------------------
+    if (_config.per_family) {
+        auto families = group_into_families(data);
+        std::cerr << "[ne-estimate] Per-family mode: " << families.size()
+                  << " families detected from " << data.size() << " pairs.\n";
+
+        r.family_results = estimate_all_families(
+            families, _config.min_ne, _config.max_ne,
+            _config.min_family_sites, _config.threads);
+
+        // Optional: per-family Kimura cross-check.
+        if (_config.kimura_check) {
+            for (size_t fi = 0; fi < r.family_results.size(); ++fi) {
+                auto& fr = r.family_results[fi];
+                if (fr.skipped) continue;
+                fr.kimura = compute_family_kimura_check(
+                    families[fi], _config.kimura_bootstrap,
+                    _config.kimura_seed, _config.kimura_trim);
+            }
+        }
+
+        // Summary stats.
+        size_t n_estimated = 0, n_skipped = 0;
+        double sum_ne = 0.0;
+        for (const auto& fr : r.family_results) {
+            if (fr.skipped) { ++n_skipped; continue; }
+            ++n_estimated;
+            sum_ne += fr.ne;
+        }
+        std::cerr << "[ne-estimate] Per-family results: "
+                  << n_estimated << " families estimated, "
+                  << n_skipped << " skipped (< "
+                  << _config.min_family_sites << " informative sites).\n";
+        if (n_estimated > 0) {
+            std::cerr << "[ne-estimate] Per-family mean Ne = "
+                      << std::setprecision(4) << (sum_ne / n_estimated) << "\n";
+        }
+
+        // Per-family TSV output.
+        if (!_config.per_family_output_file.empty()) {
+            std::ofstream fam_out(_config.per_family_output_file);
+            if (!fam_out.is_open()) {
+                throw std::runtime_error(
+                    "[ne-estimate] Failed to open --per-family-output: "
+                    + _config.per_family_output_file);
+            }
+            if (!_cmdline_string.empty()) fam_out << _cmdline_string << "\n";
+            fam_out << "#mitoquest_version="  << MITOQUEST_VERSION << "\n"
+                    << "#model="              << _config.model     << "\n"
+                    << "#min_vaf="            << _config.min_vaf   << "\n"
+                    << "#max_vaf="            << _config.max_vaf   << "\n"
+                    << "#min_ne="             << _config.min_ne    << "\n"
+                    << "#max_ne="             << _config.max_ne    << "\n"
+                    << "#n_families="         << r.family_results.size() << "\n"
+                    << "#n_families_estimated=" << n_estimated << "\n"
+                    << "#n_families_skipped="  << n_skipped   << "\n"
+                    << "#population_ne="       << std::setprecision(8) << r.ne      << "\n"
+                    << "#population_ne_ci_low=" << std::setprecision(8) << r.ci_low  << "\n"
+                    << "#population_ne_ci_high=" << std::setprecision(8) << r.ci_high << "\n";
+            _write_family_tsv(r.family_results, fam_out);
+            std::cerr << "[ne-estimate] Wrote per-family TSV to "
+                      << _config.per_family_output_file << "\n";
+        }
     }
 
     // ---------------------------------------------------------------

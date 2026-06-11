@@ -19,7 +19,7 @@ clinical workflow to population-level cohorts with thousands of samples.
 
 ```bash
 mitoquest: Human Mitochondrial sequencing data Analysis Toolkit
-Version: 1.10.0
+Version: 1.11.0
 
 Usage: mitoquest <command> [options]
 Commands:
@@ -1027,6 +1027,18 @@ Optional options:
                               Grid range = [--min-ne, --max-ne].
       --ne-profile-step FLOAT Grid step on the Ne axis for --ne-profile
                               [0.1].
+      --per-family             Enable per-family Ne estimation.
+                               Groups pairs by FAM_ID + MOTHER_ID and
+                               estimates Ne independently for each family
+                               using the continuous MMLE.
+      --min-family-sites INT   Minimum informative sites (mother VAF in
+                               (0, 1)) required per family [3].
+                               Families below this threshold are skipped
+                               with a warning.
+      --per-family-output FILE Write per-family Ne results as a TSV file
+                               (one row per mother-child family).
+                               If not set, per-family results are only
+                               embedded in the JSON output.
   -h, --help               Print this help message.
 ```
 
@@ -1136,6 +1148,149 @@ Both TSVs start with `#`-prefixed metadata comments that record the
 fitted `Ne`, its 95% CI, and the exact CLI invocation, so downstream
 plotting scripts (e.g., `tools/plot_bottleneck_simulation.py`) can
 reproduce the figure without re-parsing the JSON.
+
+### Per-family Ne estimation (`--per-family`)
+
+In addition to the population-level Ne estimate, `mitoquest ne-estimate`
+can estimate the bottleneck size **independently for each mother-child
+family** in the cohort. This is enabled by the `--per-family` flag.
+
+Per-family mode groups the transmission pairs by `(FAM_ID, MOTHER_ID)`
+(columns emitted by `mitoquest trans-prep`) and runs the continuous
+Beta-diffusion MMLE on each group separately. The results are reported
+as:
+
+- A **per-family TSV** (`--per-family-output FILE`) with one row per
+  family, including: family identifiers, number of children, number of
+  pairs, number of informative sites, Ne estimate with 95% CI, mean
+  depth, and optional Kimura cross-check columns.
+- A `Per_Family_Estimates` array and `Per_Family_Summary` block in the
+  main JSON output.
+
+Families with fewer than `--min-family-sites` (default: 3) informative
+sites are **skipped** and flagged with `SKIPPED=TRUE` and a warning
+message. This prevents unreliable estimates from very small families.
+
+> **Note:** Per-family Ne estimation on a single family with only a
+> handful of variant sites will typically produce a very wide CI. This
+> is expected — the Beta-diffusion MMLE is statistically consistent but
+> needs sufficient heteroplasmic sites to resolve Ne precisely.
+
+#### Per-family usage example
+
+```bash
+# Population-level + per-family Ne estimation with Kimura cross-check.
+mitoquest ne-estimate \
+    -i cohort.transmission_pairs.tsv \
+    --per-family \
+    --min-family-sites 5 \
+    --per-family-output cohort.per_family_ne.tsv \
+    --cross-check kimura \
+    --min-vaf 0.05 --max-vaf 0.95 \
+    --min-ne 1 --max-ne 200 \
+    -t 8 \
+    -o cohort.ne.json
+```
+
+#### Per-family TSV format
+
+The `--per-family-output` TSV has one row per family:
+
+| Column             | Description                                                    |
+| ------------------ | -------------------------------------------------------------- |
+| `FAM_ID`           | Family ID from the input TSV                                   |
+| `MOTHER_ID`        | Mother sample ID                                               |
+| `N_CHILDREN`       | Number of distinct children in this family                     |
+| `N_PAIRS`          | Total variant sites (rows) for this family                     |
+| `N_INFORMATIVE`    | Sites with 0 < mother VAF < 1                                  |
+| `NE_MMLE`          | Per-family Ne estimate (continuous MMLE); `NA` if skipped     |
+| `CI_95_LOW`        | 95% CI lower bound; `NA` if skipped                            |
+| `CI_95_HIGH`       | 95% CI upper bound; `NA` if skipped                            |
+| `CI_LOW_CLIPPED`   | `TRUE` if CI lower bound hit the search boundary               |
+| `CI_HIGH_CLIPPED`  | `TRUE` if CI upper bound hit the search boundary               |
+| `MAX_LOG_LIK`      | Maximum marginal log-likelihood                                |
+| `MEAN_MOTHER_DP`   | Mean mother sequencing depth across sites                      |
+| `MEAN_CHILD_DP`    | Mean child sequencing depth across sites                       |
+| `KIMURA_b`         | Kimura bottleneck parameter *b* (only when `--cross-check kimura`) |
+| `KIMURA_NE`        | Kimura-implied Ne (only when `--cross-check kimura`)          |
+| `KIMURA_N_INFORMATIVE` | Kimura informative pair count                             |
+| `SKIPPED`          | `TRUE` when family has too few informative sites               |
+| `WARNING`          | Free-text warning (e.g. "small sample", "CI clipped")          |
+
+The TSV file starts with `#`-prefixed metadata comments recording the
+CLI parameters, the population-level Ne estimate, and the number of
+families estimated / skipped.
+
+### Validating `ne-estimate` without real data
+
+The `tests/data/ne_pipeline/` directory ships a complete synthetic
+cohort that lets you validate the entire `trans-prep → ne-estimate`
+pipeline end-to-end **without any real sequencing data**.
+
+#### Quick validation (population-level Ne)
+
+```bash
+# Run the bundled smoke-test script (true Ne = 5, 20 trios, seed 20260528):
+bash tests/data/ne_pipeline/run_demo.sh
+
+# Expected output:
+#   Ne ≈ 3–8  (true Ne = 5; MMLE is consistent but stochastic at N=20)
+#   Ne_kimura in the same ballpark
+#   Both CI_Low_Clipped and CI_High_Clipped = false
+```
+
+The synthetic cohort was generated by `tests/data/ne_pipeline/synthesize.py`
+under the continuous Beta-diffusion model with known `true_ne = 5`. The
+MMLE should recover a value within ~50% of the truth on this small
+cohort; larger cohorts (hundreds of pairs) yield tighter estimates.
+
+#### Quick validation (per-family Ne)
+
+```bash
+# Per-family test with 3 synthetic families:
+#   F001 (2 children, 15 sites), F002 (1 child, 20 sites), F003 (2 sites, should be skipped)
+./bin/mitoquest ne-estimate \
+    -i tests/data/ne_pipeline/per_family_validation.tsv \
+    --per-family \
+    --per-family-output /tmp/per_family_ne.tsv \
+    --cross-check kimura \
+    --min-vaf 0.05 --max-vaf 0.95 \
+    -o /tmp/pop_ne.json
+
+# Expected:
+#   F001: Ne estimated (15 informative sites, 2 children)
+#   F002: Ne estimated (20 informative sites, 1 child)
+#   F003: SKIPPED (only 2 sites < min_family_sites=3)
+cat /tmp/per_family_ne.tsv
+```
+
+#### Running the full unit-test suite
+
+```bash
+# Build with testing enabled, then run all tests:
+cmake -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
+cmake --build build --parallel
+./bin/mitoquest_tests --gtest_filter="NeEst*:NeEstFamily*"
+
+# Expected: 56 tests, 0 failures
+# (NeEstFamily suite: 23 tests covering grouping, estimation,
+#  serial/parallel consistency, Kimura, TSV output, and end-to-end)
+```
+
+#### Additional validation scenarios
+
+The `tests/data/ne_pipeline/scenarios/` directory contains 11
+pre-generated scenarios (`S1`–`S11`) with known Ne values ranging from
+3 to 200, covering: baseline, fractional Ne, small cohorts, low depth,
+outliers, large Ne, and multi-generation pedigrees. Each scenario
+includes both continuous and discrete model results for comparison.
+
+```bash
+# Spot-check one scenario (S8: true Ne = 10, 2 generations):
+./bin/mitoquest ne-estimate \
+    -i tests/data/ne_pipeline/scenarios/S8_g2_ne10/ne.continuous.json 2>/dev/null || \
+cat tests/data/ne_pipeline/scenarios/S8_g2_ne10/ne.continuous.json
+```
 
 ### Recommendations
 

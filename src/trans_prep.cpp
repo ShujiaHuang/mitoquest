@@ -247,7 +247,7 @@ void TransmissionPrep::usage() {
                  "Description:\n"
                  "  Extract mother-child mtDNA allele transmission pairs from a multi-\n"
                  "  sample VCF produced by `mitoquest caller`, joined to a PLINK FAM\n"
-                 "  file describing the trios.  Only mother-child relationships are\n"
+                 "  file describing the trios. Only mother-child relationships are\n"
                  "  retained; fathers are ignored (mtDNA is maternally inherited).\n"
                  "\n"
                  "  The TSV emitted here is the input of `mitoquest ne-estimate`.\n"
