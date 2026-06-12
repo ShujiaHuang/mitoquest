@@ -28,7 +28,6 @@ Commands:
   copynum      Estimate per-chromosome (incl. mtDNA) relative copy number from a BAM/CRAM file.
   trans-prep   Extract mother-child mtDNA allele transmission pairs from a multi-sample VCF + FAM file.
   ne-estimate  Estimate the mtDNA bottleneck size (Ne) from transmission pairs via Beta-Binomial MMLE (Maximum Marginal Likelihood).
-  variant-qc   Bayesian quality control for mtDNA variants from VCF files.
 
 ```
 
