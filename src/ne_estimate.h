@@ -226,19 +226,18 @@ public:
         int         top_drift_k;     // emit the top-K drift outlier pairs in the
                                      // JSON output for diagnostic inspection;
                                      // 0 disables (default).
-        std::string bin_simulation_file; // when non-empty, write a deCODE-style
-                                         // "Figure 5" simulation TSV (per
+        std::string bin_simulation_file; // when non-empty, write a per-bin
+                                         // observed-drift summary TSV (per
                                          // maternal-VAF bin: observed mean
-                                         // drift vs theoretical p(1-p)/Ne at
-                                         // the fitted Ne and its 95% CI).
+                                         // drift vs analytical Kimura
+                                         // prediction p(1-p)/Ne at the
+                                         // fitted Ne and its 95% CI).
         int         bin_simulation_n_bins; // number of equal-width bins to use
                                            // when --bin-simulation is set.
         std::string ne_profile_file;     // when non-empty, write an Ne-profile
                                          // TSV that scores every candidate Ne
                                          // under both the MMLE and Kimura
-                                         // models (analog of the deCODE
-                                         // "best-fit Ne = 3" distribution-
-                                         // fitting exercise).
+                                         // models (dual-objective Ne scan).
         double      ne_profile_step;     // grid step on the Ne axis for
                                          // --ne-profile (default 0.1).
         // NEW: per-family options
@@ -247,10 +246,9 @@ public:
         std::string per_family_output_file;       // --per-family-output FILE (TSV)
     };
 
-    /// One row of the per-bin observed-vs-simulated drift summary used
-    /// to reproduce the deCODE 2024 Cell Figure 5 ("Observed and simulated
-    /// means for bottleneck parameter, b").  All quantities are computed
-    /// on the same pair set the MMLE / Kimura cross-check was fit on.
+    /// One row of the per-bin observed-vs-theoretical drift summary.
+    /// All quantities are computed on the same pair set the MMLE /
+    /// Kimura cross-check was fit on.
     struct BinSimulationRow {
         int    bin_idx       = 0;
         double bin_low       = 0.0;   // maternal-VAF bin lower edge (inclusive)
@@ -448,7 +446,7 @@ public:
 
     /**
      * @brief Aggregate per-pair drift statistics into equal-width
-     *        maternal-VAF bins for the deCODE-style "Figure 5" plot.
+     *        maternal-VAF bins for the per-bin drift summary plot.
      *
      * For each bin the row reports:
      *   * `obs_var`      = mean (p_c - p_m)^2          (raw observed drift)

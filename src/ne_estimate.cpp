@@ -1018,7 +1018,7 @@ NeEstimator::compute_kimura_check(const std::vector<PairData>& data,
 }
 
 // ---------------------------------------------------------------------
-// Per-bin observed drift summary (deCODE 2024 Cell Figure 5 reproduction)
+// Per-bin observed drift summary with analytical Kimura predictions
 // ---------------------------------------------------------------------
 //
 // For each equal-width maternal-VAF bin in [vaf_low, vaf_high] we report
@@ -1037,8 +1037,7 @@ NeEstimator::compute_kimura_check(const std::vector<PairData>& data,
 //   E[obs_F]        =  1 / Ne
 //
 // The plotting script overlays these theoretical parabolas on the
-// observed bin means using the fitted Ne and its 95% CI, reproducing
-// the deCODE Figure 5 layout.
+// observed bin means using the fitted Ne and its 95% CI.
 std::vector<NeEstimator::BinSimulationRow>
 NeEstimator::compute_bin_simulation(const std::vector<PairData>& data,
                                     double vaf_low, double vaf_high, int n_bins) {
@@ -1129,11 +1128,10 @@ NeEstimator::compute_bin_simulation(const std::vector<PairData>& data,
 //                       Wright-Fisher prediction.  Minimised at the
 //                       analytic best Ne_kimura_ssr = Sigma w^2 / Sigma rw.
 //
-// The Kimura SSR is the deCODE-style "distribution fitting" metric in
-// closed form: the deCODE 2024 Cell paper picked Ne ~~ 3 by minimising
-// the deviation between observed allele-frequency drift and the Kimura
-// distribution prediction; SSR is the same idea reduced to a per-pair
-// quadratic.  We report both profiles so the user can see whether the
+// The Kimura SSR is a closed-form least-squares analogue of the
+// Kimura distribution-fit approach: it minimises the per-pair quadratic
+// residual between observed drift r_i and the Wright-Fisher prediction
+// w_i / Ne.  We report both profiles so the user can see whether the
 // two estimators agree on the location of the best Ne.
 std::vector<NeEstimator::NeProfileRow>
 NeEstimator::compute_ne_profile(const std::vector<PairData>& data,
@@ -1489,18 +1487,18 @@ void NeEstimator::usage() {
                  "      --top-drift-k     INT   Emit the top-K highest-drift pairs in the JSON\n"
                  "                              output for outlier inspection (NUMTs / errors).\n"
                  "                              0 disables [0].\n"
-                 "      --bin-simulation FILE   Emit a deCODE-style \"Figure 5\" TSV: per\n"
+                 "      --bin-simulation FILE   Emit a per-bin drift summary TSV: per\n"
                  "                              maternal-VAF bin observed mean drift vs\n"
-                 "                              theoretical p_m(1 - p_m) / Ne under the\n"
-                 "                              fitted Ne (and its 95%% CI).  Bin range =\n"
-                 "                              [--min-vaf, --max-vaf].\n"
+                 "                              analytical Kimura prediction p_m(1 - p_m) / Ne\n"
+                 "                              under the fitted Ne (and its 95%% CI).  Bin\n"
+                 "                              range = [--min-vaf, --max-vaf].\n"
                  "      --bin-simulation-bins INT  Number of equal-width maternal-VAF bins\n"
                  "                                 for --bin-simulation [10].\n"
                  "      --ne-profile     FILE   Emit a TSV that scores every candidate Ne\n"
                  "                              under both the MMLE marginal log-likelihood\n"
                  "                              and the Kimura per-pair SSR metric.  Useful to\n"
                  "                              visually compare which Ne each estimator\n"
-                 "                              prefers (deCODE-style distribution fit).\n"
+                 "                              prefers (dual-objective Ne scan).\n"
                  "                              Grid range = [--min-ne, --max-ne].\n"
                  "      --ne-profile-step FLOAT Grid step on the Ne axis for --ne-profile\n"
                  "                              [0.1].\n"
@@ -1928,9 +1926,9 @@ NeEstimator::Result NeEstimator::run() {
     }
 
     // ---------------------------------------------------------------
-    // Optional: deCODE-style "Figure 5" per-bin observed-vs-simulated
-    // drift TSV.  Computed on the same pair set used by the MMLE; the
-    // theoretical curves p_m(1 - p_m) / Ne are derived from the fitted
+    // Optional: per-bin observed-vs-theoretical drift summary TSV.
+    // Computed on the same pair set used by the MMLE; the analytical
+    // Kimura predictions p_m(1 - p_m) / Ne are derived from the fitted
     // Ne and (when available) its 95% profile-likelihood CI bounds.
     // ---------------------------------------------------------------
     if (!_config.bin_simulation_file.empty()) {
@@ -2017,13 +2015,11 @@ NeEstimator::Result NeEstimator::run() {
     }
 
     // ---------------------------------------------------------------
-    // Optional: Ne-profile TSV (deCODE-style "best-fit Ne" exercise).
+    // Optional: Ne-profile TSV (dual-objective Ne scan).
     // For each Ne candidate on a fine grid, score it under both the MMLE
-    // marginal log-likelihood and the Kimura per-pair SSR.  This lets the user
-    // see which Ne each of the two estimators in the program prefers,
-    // similar to how deCODE arrived at Ne ~~ 3 by minimising the
-    // Kimura distribution-fit deviation across 137 variants in 53,041
-    // mother-child pairs.
+    // marginal log-likelihood and the Kimura per-pair SSR.  This lets the
+    // user see which Ne each of the two estimators in the program
+    // prefers, and whether they converge to the same optimum.
     // ---------------------------------------------------------------
     if (!_config.ne_profile_file.empty()) {
         const int cache_size = required_cache_size(data, _config.max_ne);

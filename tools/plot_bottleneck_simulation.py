@@ -1,9 +1,16 @@
 #!/usr/bin/env python3
-"""Plot the deCODE-style "Figure 5" bottleneck-parameter simulation.
+"""Plot the per-bin observed-vs-theoretical bottleneck drift summary.
 
-Reproduces the per-maternal-VAF-bin "Observed and simulated means for
-bottleneck parameter, b" panel from Helgason et al. 2024 Cell using the
-TSV emitted by `mitoquest ne-estimate --bin-simulation`.
+Generates a two-panel figure from the per-maternal-VAF-bin TSV emitted by
+`mitoquest ne-estimate --bin-simulation`:
+
+  Panel 1 (left):  Observed mean (p_c - p_m)^2 per bin overlaid with the
+                   analytical Kimura prediction p(1-p)/Ne at the fitted Ne
+                   and its 95% profile-likelihood CI.
+
+  Panel 2 (right): Per-bin F_i = (d_i - s_i) / [p_m(1-p_m)] (an estimate
+                   of 1-b = 1/Ne) overlaid with horizontal lines at 1/Ne
+                   for the MMLE fit and (optionally) the Kimura cross-check.
 
 The TSV stores, per equal-width maternal-VAF bin:
 
@@ -78,7 +85,7 @@ def load_bin_simulation(tsv_path):
 
 
 def plot_drift_panel(ax, df, meta):
-    """Draw the deCODE-style raw drift panel (observed vs simulated)."""
+    """Draw the raw drift panel (observed bin means vs analytical prediction)."""
     p = np.linspace(0.0, 1.0, 201)
     ne_pt = meta.get('fitted_ne')
     ne_lo = meta.get('fitted_ne_ci_low')
@@ -160,7 +167,7 @@ def plot_F_panel(ax, df, meta):
 
 
 def make_plot(tsv_path, output_path, dpi=300, figsize=(13, 5.2), title=None):
-    """Render the two-panel deCODE-style figure to `output_path`."""
+    """Render the two-panel observed-vs-theoretical drift figure to `output_path`."""
     meta, df = load_bin_simulation(tsv_path)
     if df.empty:
         raise ValueError(f'[plot] No bin rows found in {tsv_path}')
@@ -185,8 +192,8 @@ def make_plot(tsv_path, output_path, dpi=300, figsize=(13, 5.2), title=None):
 def parse_args() -> argparse.Namespace:
     """Parse command-line arguments."""
     parser = argparse.ArgumentParser(
-        description="Plot the deCODE-style observed-vs-simulated bottleneck "
-                    "drift panel from `mitoquest ne-estimate --bin-simulation`.",
+        description="Plot the per-bin observed-vs-theoretical bottleneck "
+                    "drift summary from `mitoquest ne-estimate --bin-simulation`.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(

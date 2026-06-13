@@ -1011,18 +1011,18 @@ Optional options:
                               recommended 0.10) [0.0].
       --top-drift-k     INT   Emit the top-K highest-drift pairs in JSON
                               for outlier inspection [0].
-      --bin-simulation FILE   Emit a deCODE-style "Figure 5" TSV: per
+      --bin-simulation FILE   Emit a per-bin drift summary TSV: per
                               maternal-VAF bin observed mean drift vs
-                              theoretical p_m(1 - p_m) / Ne under the
-                              fitted Ne (and its 95% CI).  Bin range =
-                              [--min-vaf, --max-vaf].
+                              analytical Kimura prediction p_m(1 - p_m) / Ne
+                              under the fitted Ne (and its 95% CI).  Bin
+                              range = [--min-vaf, --max-vaf].
       --bin-simulation-bins INT  Number of equal-width maternal-VAF bins
                                  for --bin-simulation [10].
       --ne-profile     FILE   Emit a TSV that scores every candidate Ne
                               under both the MMLE marginal log-likelihood
                               and the Kimura per-pair SSR metric.  Useful
                               to visually compare which Ne each estimator
-                              prefers (deCODE-style distribution fit).
+                              prefers (dual-objective Ne scan).
                               Grid range = [--min-ne, --max-ne].
       --ne-profile-step FLOAT Grid step on the Ne axis for --ne-profile
                               [0.1].
@@ -1118,14 +1118,14 @@ mitoquest ne-estimate \
     -o cohort.ne.json
 ```
 
-### DeCODE-style diagnostic outputs
+### Diagnostic TSV outputs
 
-Two optional TSV outputs reproduce the figures used in Helgason et al.
-(2024, *Cell*) and let you visually compare the MMLE and Kimura fits:
+Two optional TSV outputs let you visually assess and compare the MMLE
+and Kimura fits:
 
 | Flag                        | Purpose                                                                                       |
 | --------------------------- | --------------------------------------------------------------------------------------------- |
-| `--bin-simulation FILE`     | Per maternal-VAF bin observed drift vs. the theoretical `p_m(1 − p_m) / Ne` curve (Figure 5). |
+| `--bin-simulation FILE`     | Per maternal-VAF bin observed drift vs. the analytical Kimura prediction `p_m(1 − p_m) / Ne`. |
 | `--bin-simulation-bins INT` | Number of equal-width bins across `[--min-vaf, --max-vaf]` (default: 10).                      |
 | `--ne-profile FILE`         | Per-candidate-Ne grid of MMLE marginal log-likelihood and Kimura SSR — lets you plot both objectives on the same axis and see which Ne each prefers. |
 | `--ne-profile-step FLOAT`   | Grid step on the Ne axis (default: 0.1).                                                       |
@@ -1407,7 +1407,7 @@ the C++ binaries:
 | `tools/shift_fasta.py`          | Produce a circularly shifted FASTA (used by the join-region pipeline).                   |
 | `tools/create_join_seq.py`      | Build the joined coding-region / non-coding-region reference for re-alignment.           |
 | `tools/detect_NUMT_by_mtCN.py`  | Flag potential NUMT contamination using mtCN ratios per sample.                          |
-| `tools/plot_bottleneck_simulation.py` | Plot per-bin observed drift vs. `p_m(1−p_m)/Ne` (deCODE Figure 5) from `ne-estimate --bin-simulation`. |
+| `tools/plot_bottleneck_simulation.py` | Plot per-bin observed drift vs. analytical Kimura prediction `p_m(1−p_m)/Ne` from `ne-estimate --bin-simulation`. |
 | `tools/plot_ne_profile.py`      | Plot the MMLE and Kimura objective curves over Ne from `ne-estimate --ne-profile`.        |
 | `tools/vcf_format_validator.py` | Sanity-check a VCF for downstream compatibility.                                         |
 

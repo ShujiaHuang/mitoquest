@@ -62,13 +62,12 @@ options:
 
 #### plot_bottleneck_simulation.py
 ##### 1. Purpose
-Reproduces the deCODE 2024 Cell **"Figure 5. Observed and simulated
-means for bottleneck parameter, b"** panel from the per-bin TSV emitted
-by `mitoquest ne-estimate --bin-simulation`. The figure shows two panels
-side by side:
+Generates a per-bin observed-vs-theoretical bottleneck drift summary figure
+from the TSV emitted by `mitoquest ne-estimate --bin-simulation`.
+The figure shows two panels side by side:
 
 * **Left** — observed mean drift `(p_c - p_m)^2` per maternal-VAF bin
-  with error bars, overlaid on the simulated parabolas
+  with error bars, overlaid on the analytical Kimura prediction
   `p_m(1 - p_m) / Ne` at the fitted MMLE Ne (red, with 95% CI ribbon) and
   the Wonnapinij/Kimura cross-check Ne (blue dashed).
 * **Right** — per-bin estimate of `1 - b = F_i = (d_i - s_i) / [p_m(1 - p_m)]`
@@ -76,8 +75,7 @@ side by side:
   with CI band) and `1/Ne_Kimura` (blue dashed).
 
 Marker size scales with the number of pairs in each bin so visual
-weight is proportional to information content, exactly as in the
-deCODE figure.
+weight is proportional to information content.
 
 ##### 2. Upstream input — generate the TSV with `mitoquest ne-estimate`
 
@@ -126,16 +124,10 @@ Key options: `--dpi` (default 300), `--figsize W,H` (default `13,5.2`),
 
 ##### 1. Purpose
 
-Reproduces the deCODE 2024 *Cell* paper's "best-fit Ne" exercise: the
-paper scanned candidate Ne values, simulated the Kimura distribution at
-each one, and chose the Ne that best fits the observed allele-frequency
-change distribution (Ne ≈ 3 across 137 variants × 53,041 mother-child
-pairs).  This script renders the equivalent diagnostic for the cohort
-fed to `mitoquest ne-estimate`.
-
-For every candidate Ne in `[--min-ne, --max-ne]` (step `--ne-profile-step`)
-the upstream C++ command scores two **independent** goodness-of-fit
-metrics on the *same* informative pair set:
+Visualises the dual-objective Ne scan produced by `mitoquest ne-estimate
+--ne-profile`.  For every candidate Ne in `[--min-ne, --max-ne]` (step
+`--ne-profile-step`) the upstream C++ command scores two **independent**
+goodness-of-fit metrics on the *same* informative pair set:
 
 * **MMLE marginal log-likelihood** under the configured model (continuous
   Beta-diffusion or discrete Beta-Binomial).  Maximised at the fitted

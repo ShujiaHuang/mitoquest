@@ -1,14 +1,10 @@
 #!/usr/bin/env python3
-"""Plot the deCODE-style Ne-profile comparison between MMLE and Kimura.
+"""Plot the Ne-profile comparison between MMLE and Kimura SSR.
 
-The deCODE 2024 *Cell* paper picked the mtDNA bottleneck size Ne ~~ 3 by
-scanning candidate Ne values, simulating the Kimura allele-frequency-
-change distribution at each one, and choosing the Ne that best fits the
-observed distribution across 137 variants in 53,041 mother-child pairs.
-
-This script reproduces that diagnostic for the data fed to
-`mitoquest ne-estimate`.  The companion C++ command writes a TSV that
-scores every candidate Ne under both estimators in the program:
+This script visualises the dual-objective Ne scan produced by
+`mitoquest ne-estimate --ne-profile`.  The companion C++ command writes
+a TSV that scores every candidate Ne under both estimators in the
+program:
 
     mmle_log_lik(Ne) -- global marginal log-likelihood under the configured
                         model (continuous Beta-diffusion or discrete
