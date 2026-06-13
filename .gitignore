@@ -14,5 +14,6 @@ __pycache__/
 
 # Generated demo artifacts (regenerable via tests/data/ne_pipeline/run_demo.sh
 # and tests/data/ne_pipeline/validate_estimators.py)
+handoff/
 tests/data/ne_pipeline/cohort.*
 tests/data/ne_pipeline/scenarios/
