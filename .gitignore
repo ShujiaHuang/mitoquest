@@ -14,6 +14,9 @@ __pycache__/
 
 # Generated demo artifacts (regenerable via tests/data/ne_pipeline/run_demo.sh
 # and tests/data/ne_pipeline/validate_estimators.py)
-handoff/
+handoff/HANDOFF_per_family_ne_estimation.md
+handoff/HANDOFF_caller_module_method.md
+handoff/HANDOFF_ne_estimate_methods.md
+handoff/HANDOFF_ne_estimate_vs_deCODE_methodology.md
 tests/data/ne_pipeline/cohort.*
 tests/data/ne_pipeline/scenarios/

@@ -1605,8 +1605,7 @@ void NeEstimator::_parse_args(int argc, char* argv[]) {
                 break;
             }
             case  6 : _config.kimura_bootstrap = std::stoi(optarg); break;
-            case  7 : _config.kimura_seed      = static_cast<uint64_t>(
-                                                    std::stoull(optarg)); break;
+            case  7 : _config.kimura_seed      = static_cast<uint64_t>(std::stoull(optarg)); break;
             case  8 : _config.kimura_trim      = std::stod(optarg); break;
             case  9 : _config.top_drift_k      = std::stoi(optarg); break;
             case 10 : {
@@ -1620,14 +1619,14 @@ void NeEstimator::_parse_args(int argc, char* argv[]) {
                 }
                 break;
             }
-            case 11 : _config.bin_simulation_file   = optarg;          break;
+            case 11 : _config.bin_simulation_file   = optarg;            break;
             case 12 : _config.bin_simulation_n_bins = std::stoi(optarg); break;
-            case 13 : _config.ne_profile_file       = optarg;          break;
+            case 13 : _config.ne_profile_file       = optarg;            break;
             case 14 : _config.ne_profile_step       = std::stod(optarg); break;
             case 15 : _config.per_family            = true;              break;
             case 16 : _config.min_family_sites      = std::stoi(optarg); break;
             case 17 : _config.per_family_output_file = optarg;           break;
-            case 't': _config.threads     = std::stoi(optarg); break;
+            case 't': _config.threads     = std::stoi(optarg);           break;
             case 'h': usage(); std::exit(EXIT_SUCCESS);
             case '?':
             default:  usage(); std::exit(EXIT_FAILURE);
