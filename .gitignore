@@ -11,12 +11,10 @@ __pycache__/
 .ipynb_checkpoints/
 .DS_Store
 .qoder/
+.cache/
 
 # Generated demo artifacts (regenerable via tests/data/ne_pipeline/run_demo.sh
 # and tests/data/ne_pipeline/validate_estimators.py)
-handoff/HANDOFF_per_family_ne_estimation.md
-handoff/HANDOFF_caller_module_method.md
-handoff/HANDOFF_ne_estimate_methods.md
-handoff/HANDOFF_ne_estimate_vs_deCODE_methodology.md
+handoff/HANDOFF_*
 tests/data/ne_pipeline/cohort.*
 tests/data/ne_pipeline/scenarios/
