@@ -15,14 +15,15 @@
 #include <set>
 #include <iterator>
 #include <cstdint>    // uint32_t
+#include <stdexcept>
 
 namespace ngslib {
 
     // define data types for variant calling
     struct GenomeRegion {
         std::string chrom; // chromosome name
-        uint32_t start;    // 0-based start position
-        uint32_t end;      // 0-based end position (exclusive)
+        uint32_t start;    // start position
+        uint32_t end;      // end position
 
         GenomeRegion() : chrom(""), start(0), end(0) {};
         GenomeRegion(const std::string& rid, uint32_t s, uint32_t e) : chrom(rid), start(s), end(e) {
@@ -32,7 +33,7 @@ namespace ngslib {
                                             "-" + std::to_string(end));
             }
         };
-        
+
         int size() const {
             return end - start + 1;
         }
@@ -111,6 +112,7 @@ namespace ngslib {
      */
     std::vector<std::string> get_firstcolumn_from_file(const std::string &fn);
 
+    // Generic join (fallback for types without specialized overload)
     template<typename T>
     std::string join(const std::vector<T> &input, const std::string delim="\t") {
         if (input.empty()) 
@@ -119,6 +121,55 @@ namespace ngslib {
         std::string out_str = tostring(input[0]);
         for (size_t i(1); i < input.size(); ++i) {
             out_str += (delim + tostring(input[i]));
+        }
+
+        return out_str;
+    }
+
+    // Fast-path join for vector<std::string>: avoids ostringstream overhead
+    inline std::string join(const std::vector<std::string> &input, const std::string delim="\t") {
+        if (input.empty()) return "";
+
+        // Pre-calculate total size for reservation
+        size_t total = input[0].size();
+        for (size_t i = 1; i < input.size(); ++i)
+            total += delim.size() + input[i].size();
+
+        std::string out_str;
+        out_str.reserve(total);
+        out_str.append(input[0]);
+        for (size_t i(1); i < input.size(); ++i) {
+            out_str.append(delim);
+            out_str.append(input[i]);
+        }
+
+        return out_str;
+    }
+
+    // Fast-path join for vector<char>: each element is a single character
+    inline std::string join(const std::vector<char> &input, const std::string delim="\t") {
+        if (input.empty()) return "";
+
+        // Pre-calculate: N chars + (N-1) delimiters
+        std::string out_str;
+        out_str.reserve(input.size() + (input.size() - 1) * delim.size());
+        out_str.push_back(input[0]);
+        for (size_t i(1); i < input.size(); ++i) {
+            out_str.append(delim);
+            out_str.push_back(input[i]);
+        }
+
+        return out_str;
+    }
+
+    // Fast-path join for vector<int>: uses std::to_string instead of ostringstream
+    inline std::string join(const std::vector<int> &input, const std::string delim="\t") {
+        if (input.empty()) return "";
+
+        std::string out_str = std::to_string(input[0]);
+        for (size_t i(1); i < input.size(); ++i) {
+            out_str.append(delim);
+            out_str.append(std::to_string(input[i]));
         }
 
         return out_str;
@@ -165,7 +216,7 @@ namespace ngslib {
     template<typename T>
     std::vector<T> split(const std::string &in_str, const char *delim) {
         std::vector<T> out;
-        
+
         // Takes only space separated C++ strings when using 'stringstream'  
         std::istringstream ss;
 
@@ -194,7 +245,6 @@ namespace ngslib {
 
         return out;
     }
-
 
     // Template function to slice a vector from range X to Y
     template <typename T>
