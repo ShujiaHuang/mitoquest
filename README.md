@@ -41,12 +41,10 @@ In addition to the main `mitoquest` binary, the project ships:
 
 ---
 
-## Installation
-
-### Option 1 — Download pre-built binary (Recommended, no compilation needed)
+## Installation and quick start
 
 Pre-built static binaries are published on the
-[GitHub Releases page](https://github.com/ShujiaHuang/mitoquest/releases).
+[GitHub Releases page](https://github.com/ShujiaHuang/mitoquest/releases) — **most user shoild simply download the binary and run**.
 
 | Platform              | Download                                                                                                              | Notes                                  |
 | --------------------- | --------------------------------------------------------------------------------------------------------------------- | -------------------------------------- |
@@ -62,27 +60,6 @@ The Linux binary is a **partial-static** build, produced on Ubuntu 22.04
 **forward-compatible only**, the binary requires the host `glibc` version
 to be **≥ 2.35**.
 
-**Confirmed compatible distributions** (glibc ≥ 2.35):
-
-| Distribution            | glibc      | `mitoquest-linux-static` |
-| ----------------------- | ---------- | :----------------------: |
-| Ubuntu 22.04 LTS        | 2.35       | ✅                       |
-| Ubuntu 24.04 LTS        | 2.39       | ✅                       |
-| Debian 12 (bookworm)    | 2.36       | ✅                       |
-| Fedora 36+              | 2.35+      | ✅                       |
-| openSUSE Tumbleweed     | rolling    | ✅                       |
-
-**Distributions where `mitoquest-linux-static` will NOT run** (glibc too old —
-please [compile from source](#option-2--compile-from-source) instead):
-
-| Distribution                                  | glibc          | `mitoquest-linux-static` |
-| --------------------------------------------- | -------------- | :----------------------: |
-| CentOS 7 / RHEL 7                             | 2.17           | ❌                       |
-| CentOS 8 / RHEL 8 / Rocky 8 / Alma 8          | 2.28           | ❌                       |
-| CentOS 9 / RHEL 9 / Rocky 9 / Alma 9          | 2.34           | ❌                       |
-| Ubuntu 18.04 / 20.04                          | 2.27 / 2.31    | ❌                       |
-| Debian 10 / 11                                | 2.28 / 2.31    | ❌                       |
-
 **Quick check on your machine:**
 
 ```bash
@@ -90,147 +67,29 @@ please [compile from source](#option-2--compile-from-source) instead):
 ldd --version | head -1
 ```
 
-A typical incompatibility error looks like:
-
-```
-./mitoquest-linux-static: /lib64/libc.so.6: version `GLIBC_2.35' not found
-(required by ./mitoquest-linux-static)
-```
-
-If you see this — or you are on CentOS / RHEL / Rocky / AlmaLinux / older
-Ubuntu / older Debian — please use [Option 2: compile from source](#option-2--compile-from-source).
-The build is straightforward and takes only a few minutes.
+If you see this — or you are on CentOS / RHEL / Rocky / AlmaLinux / older Ubuntu / older Debian — you can compile from source instead (see below).
 
 ```bash
 # Linux
 wget https://github.com/ShujiaHuang/mitoquest/releases/latest/download/mitoquest-linux-static
 chmod +x mitoquest-linux-static
-./mitoquest-linux-static --help
+mv mitoquest-linux-static motiquest
+./mitoquest --help
 ```
 
 ```bash
 # macOS
-curl -LO https://github.com/ShujiaHuang/mitoquest/releases/latest/download/mitoquest-macos-static
-chmod +x mitoquest-macos-static
-./mitoquest-macos-static --help
+curl -LO https://github.com/ShujiaHuang/mitoquest/releases/latest/download/motiquest-macos-static
+chmod +x mitoquest-linux-static motiquest
+mv mitoquest-linux-static motiquest
+./mitoquest --help
 ```
 
-#### System requirements for `mitoquest-macos-static`
+> [!IMPORTANT]
+> **Rename the downloaded binary** to `mitoquest` for convenience. You may also move it to a directory in your `$PATH` (e.g. `/usr/local/bin`) for system-wide access.
 
-The macOS binary is a **best-effort static** build. Apple does not support
-fully-static executables, so only Apple system frameworks (`libSystem`,
-`libc++abi`, `libcurl`, …) remain dynamic; everything else (htslib, zlib,
-bzip2, xz) is statically linked.
-
-- Tested on **macOS 13+** on Apple Silicon (arm64) — should also run on
-  Intel macOS 12+.
-- If you hit a "code signature invalid" error after `chmod +x`, run
-  `xattr -d com.apple.quarantine ./mitoquest-macos-static` once to clear
-  Gatekeeper's quarantine flag.
-
----
-
-### Option 2 — Compile from source
-
-*Requirements: C++17 compiler (GCC 7+ or Apple Clang 10+), CMake ≥ 3.12, and
-the system libraries: zlib, bzip2, xz-utils, libcurl, openssl (Linux only).*
-
-#### Step 1 — Clone the repository (including the htslib submodule)
-
-```bash
-git clone --recursive https://github.com/ShujiaHuang/mitoquest.git
-cd mitoquest
-```
-
-> If you forgot `--recursive`, run: `git submodule update --init --recursive`
-
-#### Step 2 — Build with CMake (standard dynamic build)
-
-```bash
-cmake -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build --parallel
-```
-
-The executable `bin/mitoquest` will be produced. Verify with:
-
-```bash
-./bin/mitoquest --help
-./bin/mitoquest copynum --help
-```
-
-#### Step 3 (Optional) — Run the unit tests
-
-```bash
-cmake -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
-cmake --build build --parallel
-cd build && ctest --output-on-failure
-```
-
-> Requires a system GoogleTest installation (e.g., `brew install googletest`
-> on macOS or `sudo apt-get install libgtest-dev` on Ubuntu 22.04+).
-
-#### Step 4 (Optional) — Build a static binary locally
-
-**Linux** (portable static via Ubuntu/glibc — same approach used in CI):
-
-```bash
-sudo apt-get install -y build-essential cmake autoconf automake \
-    zlib1g-dev libbz2-dev liblzma-dev libssl-dev
-cmake -B build-static -DSTATIC_BUILD=ON -DCMAKE_BUILD_TYPE=Release
-cmake --build build-static --parallel
-```
-
-This bundles `libstdc++`, `libgcc`, `htslib`, `openssl`, and the compression
-libraries statically; glibc remains dynamic. The resulting binary runs on
-the build host and on any Linux with the same-or-newer glibc.
-
-**macOS** (Homebrew):
-
-```bash
-brew install autoconf automake zlib bzip2 xz curl
-cmake -B build-static -DSTATIC_BUILD=ON -DCMAKE_BUILD_TYPE=Release
-cmake --build build-static --parallel
-```
-
----
-
-### Option 3 — Manual g++ compilation (fallback)
-
-First, build htslib:
-
-```bash
-cd htslib && autoreconf -i && ./configure && make -j && cd ..
-```
-
-Then compile manually:
-
-**Linux:**
-
-```bash
-mkdir -p bin && cd bin/
-g++ -O3 -fPIC -std=c++17 \
-    ../src/*.cpp ../src/io/*.cpp ../htslib/libhts.a \
-    -I ../htslib -I ../src \
-    -lz -lbz2 -lm -llzma -lpthread -lcurl -lssl -lcrypto \
-    -o mitoquest
-```
-
-**macOS:**
-
-```bash
-mkdir -p bin && cd bin/
-g++ -O3 -fPIC -std=c++17 -Wl,-no_compact_unwind \
-    ../src/*.cpp ../src/io/*.cpp ../htslib/libhts.a \
-    -I ../htslib -I ../src \
-    -lz -lbz2 -lm -llzma -lpthread -lcurl \
-    -o mitoquest
-```
-
-> **Note:** If you encounter a `test/test_khash.c` compilation error during
-> `make` in htslib, you can safely ignore it — the required `libhts.a`
-> archive is still produced correctly.
-
----
+> [!TIP]
+> **If the pre-built binary does not work on your system** (e.g. glibc < 2.35 on older Linux), you can compile from source instead. Detailed build instructions (CMake build, static build, and manual g++ fallback) are available in **[docs/INSTALL_FROM_SOURCE.md](docs/INSTALL_FROM_SOURCE.md)**.
 
 ## Commands overview
 
