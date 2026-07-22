@@ -573,58 +573,66 @@ void VariantQC::_collect_samples_info(
                  dp_vals[s] != ngslib::VCFRecord::INT_MISSING)
                 ? dp_vals[s] : -1;
 
-        // AD (per allele, variable length)
+        // AD (per allele, variable length). FORMAT arrays are stored as a
+        // rectangular matrix padded to the widest sample with vector-end
+        // sentinels; stop at the first vector-end so each sample keeps only
+        // its real (GT-aligned) values instead of spurious padding.
         si.ad.clear();
         if (ad_per_sample > 0) {
             int offset = s * ad_per_sample;
             for (int j = 0; j < ad_per_sample; ++j) {
-                int val = (offset + j < static_cast<int>(ad_values.size()))
-                          ? ad_values[offset + j] : ngslib::VCFRecord::INT_MISSING;
+                if (offset + j >= static_cast<int>(ad_values.size())) break;
+                int val = ad_values[offset + j];
+                if (val == ngslib::VCFRecord::INT_VECTOR_END) break;
                 si.ad.push_back(val == ngslib::VCFRecord::INT_MISSING ? -1 : val);
             }
         }
 
-        // AF
+        // AF (variable length; stop at vector-end padding)
         si.af.clear();
         if (af_per_sample > 0) {
             int offset = s * af_per_sample;
             for (int j = 0; j < af_per_sample; ++j) {
-                float val = (offset + j < static_cast<int>(af_values.size()))
-                            ? af_values[offset + j] : ngslib::VCFRecord::FLOAT_MISSING;
-                si.af.push_back(std::isnan(val) ? -1.0 : static_cast<double>(val));
+                if (offset + j >= static_cast<int>(af_values.size())) break;
+                float val = af_values[offset + j];
+                if (bcf_float_is_vector_end(val)) break;
+                si.af.push_back(bcf_float_is_missing(val) ? -1.0 : static_cast<double>(val));
             }
         }
 
-        // AQ
+        // AQ (variable length; stop at vector-end padding)
         si.aq.clear();
         if (aq_per_sample > 0) {
             int offset = s * aq_per_sample;
             for (int j = 0; j < aq_per_sample; ++j) {
-                int val = (offset + j < static_cast<int>(aq_values.size()))
-                          ? aq_values[offset + j] : ngslib::VCFRecord::INT_MISSING;
+                if (offset + j >= static_cast<int>(aq_values.size())) break;
+                int val = aq_values[offset + j];
+                if (val == ngslib::VCFRecord::INT_VECTOR_END) break;
                 si.aq.push_back(val == ngslib::VCFRecord::INT_MISSING ? -1 : val);
             }
         }
 
-        // FS
+        // FS (variable length; stop at vector-end padding)
         si.fs.clear();
         if (fs_per_sample > 0) {
             int offset = s * fs_per_sample;
             for (int j = 0; j < fs_per_sample; ++j) {
-                float val = (offset + j < static_cast<int>(fs_values.size()))
-                            ? fs_values[offset + j] : ngslib::VCFRecord::FLOAT_MISSING;
-                si.fs.push_back(std::isnan(val) ? -1.0 : static_cast<double>(val));
+                if (offset + j >= static_cast<int>(fs_values.size())) break;
+                float val = fs_values[offset + j];
+                if (bcf_float_is_vector_end(val)) break;
+                si.fs.push_back(bcf_float_is_missing(val) ? -1.0 : static_cast<double>(val));
             }
         }
 
-        // SOR
+        // SOR (variable length; stop at vector-end padding)
         si.sor.clear();
         if (sor_per_sample > 0) {
             int offset = s * sor_per_sample;
             for (int j = 0; j < sor_per_sample; ++j) {
-                float val = (offset + j < static_cast<int>(sor_values.size()))
-                            ? sor_values[offset + j] : ngslib::VCFRecord::FLOAT_MISSING;
-                si.sor.push_back(std::isnan(val) ? -1.0 : static_cast<double>(val));
+                if (offset + j >= static_cast<int>(sor_values.size())) break;
+                float val = sor_values[offset + j];
+                if (bcf_float_is_vector_end(val)) break;
+                si.sor.push_back(bcf_float_is_missing(val) ? -1.0 : static_cast<double>(val));
             }
         }
 

@@ -906,7 +906,12 @@ def bayesian_filter(
     # Sigmoid penalty functions for SRF and HQ to smoothly penalize low-quality evidence for mutations, 
     # which helps to reduce false positives by down-weighting the likelihood of H1 when quality metrics 
     # are poor.
-    penalty_srf = 1 - srf
+    # srf = min(fwd, rev) / max(fwd, rev) is in [0, 1]: close to 1 means balanced
+    # strands (good evidence, no penalty), close to 0 means strong strand bias
+    # (likely NUMT/artifact, heavy penalty). The penalty multiplies the H1
+    # likelihood, so it must equal srf itself (biased -> small -> heavy penalty),
+    # NOT 1 - srf which would wrongly penalize well-balanced alleles.
+    penalty_srf = srf
     
     # HQ高于阈值，免除惩罚；低于阈值，增加惩罚.
     penalty_hq = 1.0 / (1.0 + np.exp(hq_k * (hq_threshold - hq))) if hq < hq_threshold else 1.0

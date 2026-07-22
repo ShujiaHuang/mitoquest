@@ -998,7 +998,11 @@ namespace ngslib {
                     if (sample_gt[j] < 0) {
                         curr_sample[j] = bcf_gt_missing;  // 标记缺失的基因型，输出为 ‘.’
                     } else {
-                        curr_sample[j] = bcf_gt_is_phased(sample_gt[j]) ? bcf_gt_phased(sample_gt[j]) : bcf_gt_unphased(sample_gt[j]);
+                        // 入参为已解码的等位基因索引（get_genotypes 通过 bcf_gt_allele
+                        // 去除了相位信息），不能对纯索引做 bcf_gt_is_phased 判断，
+                        // 否则奇数索引(1,3,...)的 bit0 会被误判为 phased 而错误输出 '|'。
+                        // 相位无法经由该接口往返，统一按 unphased 编码。
+                        curr_sample[j] = bcf_gt_unphased(sample_gt[j]);
                     }
                 } else {
                     // 对于倍性较低的样本，用向量结束标记填充
