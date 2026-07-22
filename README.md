@@ -107,7 +107,6 @@ Commands:
                multi-sample VCF + a PLINK FAM file.
   ne-estimate  Estimate the mtDNA bottleneck size (Ne) from transmission
                pairs via the Beta-Binomial Maximum Marginal Likelihood Estimator (MMLE).
-  variant-qc   Bayesian quality control for mtDNA variants from VCF files.
 ```
 
 ---
