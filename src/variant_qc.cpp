@@ -709,17 +709,17 @@ std::vector<double> VariantQC::_fetch_background_error_rates(
         }
         if (skip) continue;
 
-        // Use reference-homozygous samples (GT = [0])
-        if (si.gt.size() == 1 && si.gt[0] == 0) {
-            if (!si.af.empty() && si.af[0] > 0.0 && si.af[0] < 1.0) {
-                rates.push_back(1.0 - si.af[0]);
-            }
-        }
-        // Also include alt-homoplasmic samples (GT = [1], [2], etc.)
-        if (si.gt.size() == 1 && si.gt[0] > 0) {
-            if (!si.af.empty() && si.af[0] > 0.0 && si.af[0] < 1.0) {
-                rates.push_back(1.0 - si.af[0]);
-            }
+        // Background error rate = 1 - (sum of called-allele frequencies), for
+        // every qualifying haploid sample regardless of GT. Matches Python
+        // fetch_background_error_rates, which appends 1 - sum(AF) without checking
+        // GT and WITHOUT filtering exact 0/1 boundaries here: boundary values
+        // (e.g. perfect homoplasmy, error rate 0) are legitimate observations for
+        // the p_error mean. The Beta fit (fit_beta_mle) filters the (0,1) interior
+        // on its own, mirroring Python's estimate_background_noise.
+        if (!si.af.empty()) {
+            double sum_af = 0.0;
+            for (double a : si.af) sum_af += a;
+            rates.push_back(1.0 - sum_af);
         }
     }
     return rates;
