@@ -1,5 +1,14 @@
 # MitoQuest Changelog
 
+## [1.11.2] - 2026-06-01
+
+- **修复（严重）：`mitoquest variant-qc` 的 Bayesian filter 分母错误**：此前贝叶斯假设检验误将 `sum(AD)`（GT 中活跃等位基因深度之和）当作分母 `D`，而 caller 输出的 `sum(AD)` 对杂合样本远小于真实测序深度 `DP`。这会同时高估观测 VAF（`AD/sum(AD)`）并使 H1 参数拟合空间（`AD/DP`）与似然评估点不一致，导致杂合样本的后验概率严重失真
+- 现在全流程统一使用 VCF 的 `DP` 字段作为分母 `D`（与参考实现 `tools/mtDNA_variant_QC.py` 行为一致）：`ResultRecord` 新增 `dp` 字段，Bayesian 调用循环与 EM 重拟合的 VAF/`n` 采集均改用 `DP`
+- **修复（中等）：过滤后的 GT 未写回输出 VCF**：迭代过程中已将低后验等位基因标记为过滤（`-1`），但 `_write_vcf` 从未把更新后的 GT 写回。现在先 `get_genotypes` 读取当前基因型，仅覆盖出现在 QC 结果中的样本（被过滤等位基因写为缺失 `.`），再 `update_genotypes` 写回；未参与 QC 的样本保持原 GT 不变
+- 惩罚项 `penalty_srf = srf` 的方向保持 C++ 现有实现，不回退为 Python 的 `1 - srf`
+- 全部 23 个 `VariantQC*` 单元测试通过；完整测试套件在 `tests/` 目录下 130/130 通过
+- 统一版本号：`src/version.h` 由 CMake 从 `version.h.in` 依据 `CMakeLists.txt` 的 `PROJECT_VERSION` 自动生成，重新构建后与 `CMakeLists.txt` 同步为 `1.11.2`
+
 ## [1.8.6] - 2026-05-30
 
 - 术语精修：将 `mitoquest ne-estimate` 模块输出与文档中所有 `MLE` / `Likelihood` 字样统一改为 `MMLE`（Maximum Marginal Likelihood Estimator）

@@ -95,6 +95,7 @@ public:
         std::vector<int>    gt;        // original or updated GT
         std::vector<int>    original_gt; // GT as read from VCF (never modified during iteration)
         int    ploidy;
+        int    dp;                     // total depth (DP field), used as denominator D in Bayesian filter
         double q_alpha;                // background noise Beta alpha at this site
         double q_beta;                 // background noise Beta beta at this site
         double p_error;                // mean background error rate at this site

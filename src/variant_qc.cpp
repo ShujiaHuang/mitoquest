@@ -837,11 +837,6 @@ void VariantQC::_iterative_fit_and_call(
         for (auto& r : results) {
             if (r.pre_filtered) continue;
 
-            int total_d = 0;
-            for (int ad : r.allele_depths) {
-                if (ad >= 0) total_d += ad;
-            }
-
             int n_alleles = std::min({
                 static_cast<int>(r.allele_depths.size()),
                 static_cast<int>(r.allele_srf.size()),
@@ -856,7 +851,7 @@ void VariantQC::_iterative_fit_and_call(
                 double srf_val = (j < static_cast<int>(r.allele_srf.size()))
                     ? r.allele_srf[j] : 0.5;
                 double pp = bayesian_filter(
-                    r.allele_depths[j], total_d,
+                    r.allele_depths[j], r.dp,
                     srf_val, hq_val, _config.hq_threshold,
                     r.q_alpha, r.q_beta,
                     h1_params.alpha, h1_params.beta,
@@ -898,17 +893,14 @@ void VariantQC::_iterative_fit_and_call(
         std::vector<int> new_k, new_n;
         for (const auto& r : results) {
             if (!r.is_mutation || r.pre_filtered) continue;
-            int total_d = 0;
-            for (int ad : r.allele_depths) {
-                if (ad >= 0) total_d += ad;
-            }
+            if (r.dp <= 0) continue;
             for (size_t j = 0; j < r.original_gt.size() && j < r.allele_depths.size(); ++j) {
-                if (r.original_gt[j] > 0 && r.allele_depths[j] > 0 && total_d > 0) {
-                    double vaf = static_cast<double>(r.allele_depths[j]) / total_d;
+                if (r.original_gt[j] > 0 && r.allele_depths[j] > 0) {
+                    double vaf = static_cast<double>(r.allele_depths[j]) / r.dp;
                     if (vaf > 0.0 && vaf < 1.0) {
                         new_vafs.push_back(vaf);
                         new_k.push_back(r.allele_depths[j]);
-                        new_n.push_back(total_d);
+                        new_n.push_back(r.dp);
                     }
                 }
             }
@@ -1013,6 +1005,7 @@ void VariantQC::_process() {
             rr.pos = pos;
             rr.ref = ref;
             rr.ploidy = si.ploidy;
+            rr.dp = si.dp;
             rr.q_alpha = bg_params.alpha;
             rr.q_beta = bg_params.beta;
             rr.p_error = p_error;
@@ -1119,15 +1112,25 @@ void VariantQC::_write_vcf(
         std::vector<float> pp_values(n_samp, 0.0f);
         std::vector<const char*> gc_values(n_samp, FALSE_STR);
 
+        // Read current genotypes so that samples we do not touch keep their
+        // original GT; overwrite only samples present in the QC results.
+        std::vector<std::vector<int>> genotypes;
+        rec.get_genotypes(out_hdr, genotypes);
+
+        const std::vector<std::string>& snames = out_hdr.sample_names();
         for (int s = 0; s < n_samp; ++s) {
-            std::string sname = out_hdr.sample_names()[s];
+            const std::string& sname = snames[s];
             auto it = lookup.find({chrom, pos, sname});
             if (it != lookup.end()) {
                 pp_values[s] = static_cast<float>(it->second.posterior);
                 gc_values[s] = it->second.is_mutation ? TRUE_STR : FALSE_STR;
+                if (!it->second.gt.empty() && s < static_cast<int>(genotypes.size())) {
+                    genotypes[s] = it->second.gt;  // filtered GT (low-posterior alleles set to -1 -> '.')
+                }
             }
         }
 
+        rec.update_genotypes(out_hdr, genotypes);
         rec.update_format_float(out_hdr, "PP", pp_values.data(), 1);
         rec.update_format_string(out_hdr, "GOOD_CALL", gc_values.data());
 
