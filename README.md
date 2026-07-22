@@ -404,6 +404,8 @@ following columns:
 
 ---
 
+<!-- 
+
 ## `mitoquest trans-prep` — Extract mother-child transmission pairs
 
 `mitoquest trans-prep` walks a multi-sample VCF (typically the output of
@@ -1246,7 +1248,9 @@ mitoquest variant-qc \
 - The TSV report contains one row per (sample, site) flagged as a
   mutation, with posterior probability and fitted Beta parameters.
 
----
+--- 
+-->
+
 
 ## Auxiliary Python tools (`tools/`)
 
