@@ -1,8 +1,9 @@
 #include "bam_record.h"
 
+
 namespace ngslib {
-    // `_p_cigar_field` member should be initialization to a NULL pointer 
-    // in constructor function.
+
+    // _p_cigar_field member should be initialization to a NULL pointer in constructor function.
     BamRecord::BamRecord(const BamRecord &b) : _p_cigar_field(NULL), _n_cigar_op(0) {
         this->_b = bam_dup1(b._b);
         this->_make_cigar_field();
@@ -14,6 +15,7 @@ namespace ngslib {
     }
 
     BamRecord &BamRecord::operator=(const BamRecord &b) {
+
         if (this->_b)
             bam_destroy1(this->_b);
 
@@ -23,7 +25,35 @@ namespace ngslib {
         return *this;
     }
 
+    // Move constructor: transfer ownership of resources from source.
+    // P1-2 optimization: avoids bam_dup1() deep copy (~250ns per read).
+    // After move, source is left in a valid empty state (NULL pointers).
+    BamRecord::BamRecord(BamRecord &&b) noexcept
+        : _b(b._b), _p_cigar_field(b._p_cigar_field), _n_cigar_op(b._n_cigar_op) {
+        b._b = NULL;
+        b._p_cigar_field = NULL;
+        b._n_cigar_op = 0;
+    }
+
+    // Move assignment: transfer ownership of resources from source.
+    BamRecord &BamRecord::operator=(BamRecord &&b) noexcept {
+        if (this != &b) {
+            if (this->_b) bam_destroy1(this->_b);
+            if (this->_p_cigar_field) delete [] this->_p_cigar_field;
+
+            this->_b = b._b;
+            this->_p_cigar_field = b._p_cigar_field;
+            this->_n_cigar_op = b._n_cigar_op;
+
+            b._b = NULL;
+            b._p_cigar_field = NULL;
+            b._n_cigar_op = 0;
+        }
+        return *this;
+    }
+
     BamRecord &BamRecord::operator=(const bam1_t *b) {
+
         if (this->_b)
             bam_destroy1(this->_b);
 
@@ -38,7 +68,8 @@ namespace ngslib {
         if (_p_cigar_field)
             delete [] _p_cigar_field;
 
-        if (!_b) return;
+        if (!_b)
+            return;
 
         _n_cigar_op = _b->core.n_cigar;
         _p_cigar_field = new CigarField[_n_cigar_op];
@@ -58,6 +89,7 @@ namespace ngslib {
     }
 
     std::string BamRecord::cigar() const {
+
         if (!is_mapped()) return "*";  // empty
 
         std::stringstream cig;
@@ -83,6 +115,7 @@ namespace ngslib {
     }
 
     int BamRecord::load_read(samFile *fp, sam_hdr_t *h) {
+
         if (!this->_b)
             this->init();
 
@@ -98,6 +131,7 @@ namespace ngslib {
     }
 
     int BamRecord::next_read(samFile *fp, hts_itr_t *itr) {
+
         if (!this->_b)
             this->init();
 
@@ -113,6 +147,7 @@ namespace ngslib {
     }
 
     unsigned int BamRecord::align_length() const {
+
         if (!is_mapped()) return 0;
 
         unsigned int length = 0;
@@ -128,6 +163,7 @@ namespace ngslib {
     }
 
     unsigned int BamRecord::match_length() const {
+
         if (!is_mapped()) return 0;
 
         unsigned int m_size = 0;
@@ -153,11 +189,13 @@ namespace ngslib {
     }
 
     std::vector<std::tuple<int, uint32_t>> BamRecord::get_cigar_blocks() const {
+
         if (!_b) {
             throw std::runtime_error("[BamRecord::get_cigar_blocks]: Not found alignment data.");
         }
 
         std::vector<std::tuple<int, uint32_t>> cigar_block;
+
         uint32_t *c = bam_get_cigar(_b);
         for (size_t i(0); i < _b->core.n_cigar; ++i) {
             cigar_block.push_back(std::make_tuple(bam_cigar_op(c[i]), bam_cigar_oplen(c[i]))); // (op, l) in sam.h
@@ -167,6 +205,7 @@ namespace ngslib {
     }
 
     std::vector<std::tuple<hts_pos_t, hts_pos_t>> BamRecord::get_alignment_blocks() const {
+
         // get alignment block by CIGAR
         if (!_b) {
             throw std::runtime_error("[BamRecord::get_alignment_blocks]: Not found alignement data.");
@@ -177,8 +216,10 @@ namespace ngslib {
         
         int op;         /* cigar OP */ 
         hts_pos_t len;  /* cigar 'OP' length */
+
         uint32_t *c = bam_get_cigar(_b);
         for (size_t i(0); i < _b->core.n_cigar; ++i) {
+
             op   = bam_cigar_op(c[i]);
             len  = bam_cigar_oplen(c[i]);
 
@@ -201,7 +242,8 @@ namespace ngslib {
         }
 
         // mapped pair of read mapped to reference information: 
-        // ReadAlignedPair: (cigar_op, read_pos, ref_pos, read_base, read_qual, ref_base)
+        // ReadAlignedPair: (cigar_op, read_pos, ref_pos, ref_base, qpos, read_base, read_qual, multi_base)
+        // P1-1 optimization: Use char for single-base fields, multi_base string only for multi-base Indels.
         std::vector<ReadAlignedPair> aligned_pairs;
         ReadAlignedPair al_pair;
 
@@ -212,20 +254,24 @@ namespace ngslib {
 
         int op;         /* cigar OP */ 
         hts_pos_t len;  /* cigar 'OP' length */
+
         uint32_t *c = bam_get_cigar(_b);
         for (size_t i(0); i < _b->core.n_cigar; ++i) {
+
             op   = bam_cigar_op(c[i]);
             len  = bam_cigar_oplen(c[i]);
 
             // 'BAM_XXX' is macros, which defined in sam.h
             if (op == BAM_CMATCH || op == BAM_CEQUAL || op == BAM_CDIFF) {  
+
                 for (hts_pos_t i(rpos); i < rpos + len; ++i) {
                     al_pair.op        = op;                         // cigar op
                     al_pair.ref_pos   = i;                          // reference position, 0-based
-                    al_pair.ref_base  = fa.substr(i, 1);            // reference base
+                    al_pair.ref_base  = fa[i];                      // reference base (char)
                     al_pair.qpos      = qpos;                       // read position, 0-based
-                    al_pair.read_base = read_seq.substr(qpos, 1);   // read base
-                    al_pair.read_qual = read_qual.substr(qpos, 1);  // read quality base
+                    al_pair.read_base = read_seq[qpos];             // read base (char)
+                    al_pair.read_qual = read_qual[qpos];            // read quality (char)
+                    al_pair.multi_base.clear();                     // no multi-base for match
 
                     aligned_pairs.push_back(al_pair);
                     ++qpos;
@@ -234,20 +280,30 @@ namespace ngslib {
             } else if (op == BAM_CINS || op == BAM_CSOFT_CLIP || op == BAM_CPAD) {
                 al_pair.op        = op;                           // cigar op
                 al_pair.ref_pos   = rpos;                         // reference position, 0-based
-                al_pair.ref_base  = "";                           // reference base, empty
+                al_pair.ref_base  = '\0';                         // no reference base for insertion
                 al_pair.qpos      = qpos;                         // read position, 0-based
-                al_pair.read_base = read_seq.substr(qpos, len);   // read base
-                al_pair.read_qual = read_qual.substr(qpos, len);  // read quality base
+                al_pair.read_base = read_seq[qpos];               // first inserted base (char)
+                al_pair.read_qual = read_qual[qpos];              // first base quality (char)
+                if (len > 1) {
+                    al_pair.multi_base = read_seq.substr(qpos + 1, len - 1);
+                } else {
+                    al_pair.multi_base.clear();
+                }
                 
                 aligned_pairs.push_back(al_pair);
                 qpos += len;
             } else if (op == BAM_CDEL || op == BAM_CREF_SKIP) {
                 al_pair.op        = op;                    // cigar op
                 al_pair.ref_pos   = rpos;                  // reference position, 0-based
-                al_pair.ref_base  = fa.substr(rpos, len);  // reference base
+                al_pair.ref_base  = fa[rpos];              // first deleted ref base (char)
                 al_pair.qpos      = qpos;                  // read position, 0-based
-                al_pair.read_base = "";                    // read base, empty
-                al_pair.read_qual = "";   
+                al_pair.read_base = '\0';                  // no read base for deletion
+                al_pair.read_qual = '\0';
+                if (len > 1) {
+                    al_pair.multi_base = fa.substr(rpos + 1, len - 1);
+                } else {
+                    al_pair.multi_base.clear();
+                }
 
                 aligned_pairs.push_back(al_pair);
                 rpos += len;
@@ -261,6 +317,7 @@ namespace ngslib {
     }
 
     unsigned int BamRecord::_max_cigar_Opsize(const char op) const {
+
         if (!is_mapped()) return 0;
 
         int max_size = 0;
@@ -281,6 +338,7 @@ namespace ngslib {
     }
 
     std::string BamRecord::query_sequence() const {
+
         if (!_b) return "";
 
         uint8_t *p = bam_get_seq(_b);
@@ -292,6 +350,7 @@ namespace ngslib {
     }
 
     std::string BamRecord::query_qual(int offset) const {
+
         if (!_b) return "";
 
         uint8_t *p = bam_get_qual(_b);
@@ -305,6 +364,7 @@ namespace ngslib {
     }
 
     double BamRecord::mean_qqual() const {
+
         if (!is_mapped() || (_b->core.l_qseq <= 0))
             return -1;
 
@@ -317,6 +377,7 @@ namespace ngslib {
     }
 
     int32_t BamRecord::query_start_pos() const {
+
         if (!is_mapped()) return -1;
 
         int32_t p = 0;
@@ -332,6 +393,7 @@ namespace ngslib {
     }
 
     int32_t BamRecord::query_end_pos() const {
+
         if (!is_mapped()) return -1;
 
         int32_t p = 0;
@@ -348,11 +410,12 @@ namespace ngslib {
     }
 
     int32_t BamRecord::query_start_pos_reverse() const {
+
         if (!is_mapped()) return -1;
 
         int32_t p = 0;
-        // loop from the end
-        for (size_t i = _n_cigar_op - 1; i >= 0; --i) {
+        // loop from the end (int32_t: `i >= 0` on a size_t is always true)
+        for (int32_t i = _n_cigar_op - 1; i >= 0; --i) {
             if (_p_cigar_field[i].op == 'S') {
                 p += _p_cigar_field[i].len;
             } else { // not a clip, stop counting
@@ -363,6 +426,7 @@ namespace ngslib {
     }
     
     int32_t BamRecord::query_end_pos_reverse() const {
+
         if (!is_mapped()) return -1;
 
         int32_t p = 0;
@@ -377,6 +441,7 @@ namespace ngslib {
     }
 
     bool BamRecord::is_proper_orientation() const {
+
         // _b is NULL
         if (!is_mapped() || !is_mate_mapped()) return false;
 
@@ -401,6 +466,7 @@ namespace ngslib {
     }
 
     bool BamRecord::has_tag(const std::string tag) const {
+
         if (!_b) return false;
 
         uint8_t *p = bam_aux_get(_b, tag.c_str());
@@ -408,6 +474,7 @@ namespace ngslib {
     }
 
     std::string BamRecord::get_Z_tag(const std::string tag) const {
+
         std::string tag_str;
         if (has_tag(tag)) {
 
@@ -424,6 +491,7 @@ namespace ngslib {
     }
 
     std::string BamRecord::get_Int_tag(const std::string tag) const {
+
         std::string tag_str;
         if (has_tag(tag)) {
 
@@ -440,6 +508,7 @@ namespace ngslib {
     }
 
     std::string BamRecord::get_Float_tag(const std::string tag) const {
+
         std::string tag_str;
         if (has_tag(tag)) {
 
@@ -453,6 +522,7 @@ namespace ngslib {
     }
 
     std::string BamRecord::get_tag(const std::string tag) const {
+
         std::string tag_str;
 
         tag_str = get_Z_tag(tag);
@@ -474,6 +544,7 @@ namespace ngslib {
     }
 
     std::string BamRecord::read_group() const {
+
         std::string rg;
         if (has_tag("RG")) {
             // try to get from RG tag first
@@ -491,7 +562,9 @@ namespace ngslib {
     }
 
     std::ostream &operator<<(std::ostream &os, const BamRecord &r) {
-        if (!r._b) return os;
+
+        if (!r._b)
+            return os;
 
         os << r.qname() << "\t"
            << r.flag()  << "\t"
@@ -511,4 +584,6 @@ namespace ngslib {
 
         return os;
     }
+
+
 }  // namespace ngslib

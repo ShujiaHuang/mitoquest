@@ -62,6 +62,11 @@ namespace ngslib {
         if (_idx) hts_idx_destroy(_idx);
         if (_itr) sam_itr_destroy(_itr);
 
+        // Null the handles so a double destroy() (dtor after explicit close)
+        // is a no-op instead of a double-free.
+        _fp = nullptr;
+        _idx = nullptr;
+        _itr = nullptr;
         _io_status = -1;
     }
 

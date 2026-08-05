@@ -110,6 +110,13 @@ namespace ngslib {
         VCFHeader copy_header() const;
 
         /**
+         * @brief Synchronizes the header's internal sample dictionary after
+         *        adding/removing samples. Wraps bcf_hdr_sync().
+         * @return 0 on success, negative on error.
+         */
+        int sync() { return bcf_hdr_sync(_hdr.get()); }
+
+        /**
          * @brief Gets the number of samples in the header.
          * @return The number of samples, or 0 if the header is invalid.
          */
@@ -133,10 +140,9 @@ namespace ngslib {
          * Note: This modifies the underlying header. Use `copy_header()` first
          * if you need to preserve the original shared header.
          * @param sample_name The name of the sample to add.
-         * @param warn Warn if sample already exists (passed to bcf_hdr_add_sample).
          * @return 0 on success, -1 on failure (e.g., duplicate name, memory allocation error).
          */
-        int add_sample(const std::string& sample_name, bool warn = true);
+        int add_sample(const std::string& sample_name);
 
         /**
          * @brief Removes a sample from the header by index.

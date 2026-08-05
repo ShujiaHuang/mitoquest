@@ -75,7 +75,7 @@ namespace ngslib {
         // check if we have loaded the fasta index
         if (!fai) throw std::invalid_argument("Fasta::fetch index not loaded");
         if (start > end) throw std::invalid_argument("Fasta::fetch the start position must be <= end.");
-        if (start < 0) throw std::invalid_argument("Fasta::fetch the start position must be >= 0");
+        // (no `start < 0` check: start is uint32_t and can never be negative)
 
         int length;
         char *f = faidx_fetch_seq(fai, chromosome, start, end, &length);

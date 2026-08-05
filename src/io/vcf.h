@@ -35,6 +35,12 @@ namespace ngslib {
         htsFile *_fp;        // htsFile file pointer for VCF/BCF
         hts_idx_t *_idx;     // VCF/BCF index pointer (usually tbi or csi)
         hts_itr_t *_itr;     // Iterator for querying specific regions
+        tbx_t *_tbx;         // Tabix index shell for TEXT VCF region queries
+                             // (bcf_itr_next only supports binary BCF; text
+                             // VCF iterates via tbx_itr_next + vcf_parse, the
+                             // same path htslib's synced reader uses).
+        bool _itr_text;      // true when _itr is a tabix (text-VCF) iterator
+        kstring_t _line;     // line buffer for tbx_itr_next (text path)
         VCFHeader _hdr;      // VCFHeader object managing the bcf_hdr_t
 
         // Private method to open the file and read the header
@@ -48,7 +54,7 @@ namespace ngslib {
         /**
          * @brief Default constructor. Initializes an invalid reader.
          */
-        VCFFile() : _fname(""), _mode(""), _io_status(-1), _fp(nullptr), _idx(nullptr), _itr(nullptr), _hdr() {}
+        VCFFile() : _fname(""), _mode(""), _io_status(-1), _fp(nullptr), _idx(nullptr), _itr(nullptr), _tbx(nullptr), _itr_text(false), _line{0,0,0}, _hdr() {}
 
         /**
          * @brief Constructor that opens a VCF/BCF file for reading.
@@ -57,7 +63,7 @@ namespace ngslib {
          * @throws std::runtime_error if the file cannot be opened or header read.
          */
         explicit VCFFile(const std::string &fn, const std::string mode = "r") :
-            _fname(""), _mode(""), _io_status(-1), _fp(nullptr), _idx(nullptr), _itr(nullptr), _hdr()
+            _fname(""), _mode(""), _io_status(-1), _fp(nullptr), _idx(nullptr), _itr(nullptr), _tbx(nullptr), _itr_text(false), _line{0,0,0}, _hdr()
         {
             _open(fn, mode);
         }
@@ -70,7 +76,7 @@ namespace ngslib {
          * @throws std::runtime_error if the file cannot be opened or the header written.
          */
         explicit VCFFile(const std::string &fn, VCFHeader &hdr, const std::string mode = "w") :
-            _fname(""), _mode(""), _io_status(-1), _fp(nullptr), _idx(nullptr), _itr(nullptr), _hdr(hdr) // Copy/share the header
+            _fname(""), _mode(""), _io_status(-1), _fp(nullptr), _idx(nullptr), _itr(nullptr), _tbx(nullptr), _itr_text(false), _line{0,0,0}, _hdr(hdr) // Copy/share the header
         {
             // Check if the provided header is valid before proceeding
             if (!hdr.is_valid()) {

@@ -55,7 +55,7 @@ namespace ngslib {
     // Read operations
     BGZFile& BGZFile::reado(std::string &line) {
         // 用这个函数虽然可以和运算符匹配但坏处是不知道文件被读完了没有，这很糟糕
-        bool is_eof = read(line, '\n');
+        read(line, '\n');
         return *this;
     }
 

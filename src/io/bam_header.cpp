@@ -39,6 +39,7 @@ namespace ngslib {
     }
 
     BamHeader &BamHeader::operator=(const BamHeader &bh) {
+        if (this == &bh) return *this;  // self-assignment: dup-after-destroy is a UAF
         // release _h pointer if _h is not NULL
         sam_hdr_destroy(_h);
         _h = sam_hdr_dup(bh._h);
@@ -77,24 +78,25 @@ namespace ngslib {
     }
 
     std::string BamHeader::get_sample_name() {
-        size_t r, n_rg = sam_hdr_count_lines(_h, "RG");
+        const size_t n_rg = sam_hdr_count_lines(_h, "RG");
         kstring_t sm = KS_INITIALIZE;  // {0, 0, NULL}
         for (size_t i(0); i < n_rg; ++i) {
             // 0 on success; 
             // -1 if the requested tag does not exist;
-            // -2 on other errors
-            r = sam_hdr_find_tag_pos(_h, "RG", i, "SM", &sm);
+            // -2 on other errors.
+            // Signed: sam_hdr_find_tag_pos returns int; storing it in size_t
+            // made the `r < 0` skip check below always false.
+            const int r = sam_hdr_find_tag_pos(_h, "RG", i, "SM", &sm);
             if (r < 0) continue;  // not found, continue
             break;                // 一个 bam 里可能有多个 RG，但找到第一个 SM 后就退出，不管其他的
         }
 
-        std::string samplename = sm.s ? std::string(sm.s) : "";
         if (sm.s == NULL) {
             throw std::runtime_error("[bam_header.cpp::BamHeader:get_sample_name] Bam file format error: "
                                      "missing `SM` tag in `@RG` field in BAM/CRAM/SAM header.");
-        } else {
-            free(sm.s);
         }
+        std::string samplename(sm.s);
+        free(sm.s);
 
         return samplename;
     }

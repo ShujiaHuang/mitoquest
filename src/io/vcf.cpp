@@ -71,6 +71,16 @@ namespace ngslib {
             hts_idx_destroy(_idx); // Use generic hts_idx_destroy
             _idx = nullptr;
         }
+        if (_tbx) {
+            tbx_destroy(_tbx);
+            _tbx = nullptr;
+        }
+        if (_line.s) {
+            free(_line.s);
+            _line.l = _line.m = 0;
+            _line.s = nullptr;
+        }
+        _itr_text = false;
         // _hdr manages its own memory via shared_ptr
 
         if (_fp) {
@@ -88,27 +98,30 @@ namespace ngslib {
         if (!is_open()) {
             throw std::runtime_error("Cannot load index: VCF/BCF file is not open.");
         }
-        if (_idx) { // Already loaded
+        if (_idx || _tbx) { // Already loaded
             return;
         }
 
-        // hts_idx_load2 tries both .tbi and .csi
-        _idx = hts_idx_load2(_fname.c_str(), nullptr); // Pass NULL for default index filename
+        // TEXT VCF must be queried through the tabix API (tbx_itr_*):
+        // bcf_itr_next only understands binary BCF records (bcf_readrec ->
+        // bcf_read1_core parses the BCF binary layout) and returns -2 on
+        // text lines. BCF keeps the generic hts index path.
+        if (_fp->format.format == vcf) {
+            _tbx = tbx_index_load(_fname.c_str()); // resolves <fname>.tbi/.csi
+            if (_tbx == nullptr) {
+                throw std::runtime_error("Failed to load tabix index for: " + _fname + ". Ensure index file (.tbi or .csi) exists.");
+            }
+            return;
+        }
+        _idx = hts_idx_load2(_fname.c_str(), nullptr);
         if (_idx == nullptr) {
-            // Try legacy tbx_index_load for VCF specifically (might find .tbi)
-            // Note: bcf_index_load is a wrapper around hts_idx_load nowadays
-            // _idx = tbx_index_load(_fname.c_str()); // Deprecated approach
-
-            // If hts_idx_load2 failed, it's unlikely tbx_index_load would succeed,
-            // unless the index has a very non-standard name not handled by hts_idx_load2.
-            // Stick with hts_idx_load2 result.
              throw std::runtime_error("Failed to load VCF/BCF index for: " + _fname + ". Ensure index file (.tbi or .csi) exists.");
         }
     }
 
     // Fetch by region string
     bool VCFFile::fetch(const std::string &region) {
-        if (!is_open() || !_idx) {
+        if (!is_open() || (!_idx && !_tbx)) {
             _io_status = -2; // Indicate error state (e.g., index not loaded)
             return false;
         }
@@ -119,7 +132,16 @@ namespace ngslib {
 
         // Use bcf_itr_querys for string region parsing
         // Pass writable header pointer as the underlying hts_itr_querys expects void*
-        _itr = bcf_itr_querys(_idx, _hdr.hts_header_writable(), region.c_str());
+        if (_tbx) {
+            // TEXT VCF: tabix iterator; records come back as text lines and
+            // are parsed with vcf_parse in read().
+            _itr = tbx_itr_querys(_tbx, region.c_str());
+            _itr_text = true;
+        } else {
+            // Binary BCF: bcf iterator (readrec = bcf_readrec).
+            _itr = bcf_itr_querys(_idx, _hdr.hts_header_writable(), region.c_str());
+            _itr_text = false;
+        }
         if (_itr == nullptr) {
             // Query failed (e.g., invalid region string, contig not found)
             _io_status = -3; // Indicate query failure
@@ -132,7 +154,7 @@ namespace ngslib {
 
     // Fetch by coordinates
     bool VCFFile::fetch(const std::string &seq_id, hts_pos_t beg, hts_pos_t end) {
-         if (!is_open() || !_idx) {
+         if (!is_open() || (!_idx && !_tbx)) {
             _io_status = -2;
             return false;
         }
@@ -149,7 +171,14 @@ namespace ngslib {
         }
 
         // Use bcf_itr_queryi for coordinate-based query
-        _itr = bcf_itr_queryi(_idx, rid, beg, end);
+        if (_tbx) {
+            // TEXT VCF: coordinate query through the tabix index.
+            _itr = tbx_itr_queryi(_tbx, rid, beg, end);
+            _itr_text = true;
+        } else {
+            _itr = bcf_itr_queryi(_idx, rid, beg, end);
+            _itr_text = false;
+        }
         if (_itr == nullptr) {
             // Query failed (e.g., invalid coordinates)
             _io_status = -3;
@@ -183,7 +212,18 @@ namespace ngslib {
             rec.clear();
         }
 
-        if (_itr) {
+        if (_itr && _itr_text) {
+            // TEXT VCF via tabix iterator: pull a text line, then parse it
+            // with vcf_parse (bcf_itr_next cannot read text VCF).
+            _io_status = tbx_itr_next(_fp, _tbx, _itr, &_line);
+            if (_io_status < 0) {
+                return _io_status; // -1 = end of region; < -1 = error
+            }
+            if (vcf_parse(&_line, _hdr.hts_header(), rec.hts_record_writable()) < 0) {
+                _io_status = -2;
+            }
+            return _io_status;
+        } else if (_itr) {
             // Read using iterator
             _io_status = bcf_itr_next(_fp, _itr, rec.hts_record_writable());
         } else {

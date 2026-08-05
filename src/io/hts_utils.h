@@ -42,6 +42,7 @@ namespace ngslib { // hts
 
         const htsFormat *fmt = hts_get_format(fp);
         if (!fmt) {
+            hts_close(fp);  // close before returning, else the handle leaks
             return Format::unknown;
         }
         Format format = static_cast<Format>(fmt->format);

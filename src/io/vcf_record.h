@@ -9,14 +9,16 @@
 #include <vector>
 #include <memory> // For std::shared_ptr
 #include <stdexcept>
-#include <limits> // For numeric_limits
+#include <limits> // Required for numeric_limits
+#include <cstring> // For strcmp, strlen
 
 #include <htslib/vcf.h>
+#include <htslib/kstring.h> // For string manipulation if needed
+
 #include "vcf_header.h" // Needs header context
 #include "utils.h"      // For potential utility functions
 
 namespace ngslib {
-
     /**
      * @brief A C++ wrapper class for an htslib VCF/BCF record (bcf1_t).
      *
@@ -43,6 +45,21 @@ namespace ngslib {
         static const float FLOAT_MISSING;        // Initialized in cpp file
         static const float FLOAT_VECTOR_END;     // Initialized in cpp file
         static const std::string STRING_MISSING; // Initialized in cpp file
+
+        // === Genotype (GT) encoding utilities ===
+        // These wrap htslib's bcf_gt_* macros so callers need not include
+        // <htslib/vcf.h> directly.
+
+        /// Encode an unphased genotype allele (e.g. 0 -> bcf_gt_unphased(0)).
+        static int gt_unphased(int allele) { return bcf_gt_unphased(allele); }
+        /// Encode a phased genotype allele.
+        static int gt_phased(int allele) { return bcf_gt_phased(allele); }
+        /// Extract the allele index from a GT integer (strips phase bit).
+        static int gt_allele(int gt) { return bcf_gt_allele(gt); }
+        /// True if the GT integer carries the phased bit.
+        static bool gt_is_phased(int gt) { return bcf_gt_is_phased(gt) != 0; }
+        /// Encoded GT value for a missing allele ('.'); wrap of bcf_gt_missing.
+        static constexpr int GT_MISSING = bcf_gt_missing;
 
         /**
          * @brief Default constructor. Creates an empty, invalid record.
@@ -120,6 +137,15 @@ namespace ngslib {
         void clear();
 
         /**
+         * @brief Allocates a fresh underlying bcf1_t (bcf_init) for writing.
+         * Intended for writer-side records created by the default constructor
+         * (which starts invalid). Any previously held record is released when
+         * the last shared_ptr reference drops.
+         * @throws std::runtime_error if bcf_init fails.
+         */
+        void allocate();
+
+        /**
          * @brief Unpacks specific fields in the BCF record for access.
          * Call this before accessing fields like FILTER, INFO, or FORMAT.
          * @param which Fields to unpack (e.g., BCF_UN_ALL, BCF_UN_FLT, BCF_UN_INFO, BCF_UN_SHR, BCF_UN_FMT).
@@ -178,7 +204,7 @@ namespace ngslib {
 
         /**
          * @brief Gets the quality score (QUAL).
-         * @return The quality score. Returns bcf_float_missing if missing or invalid.
+         * @return The quality score. Returns FLOAT_MISSING if missing or invalid.
          */
         float qual() const;
 
@@ -354,6 +380,19 @@ namespace ngslib {
         void set_pos(hts_pos_t pos);
 
         /**
+         * @brief Sets the reference sequence ID (rid) directly (writer-side;
+         * resolve the rid via VCFHeader::seq_id first).
+         */
+        void set_rid(int rid);
+
+        /**
+         * @brief Primes the per-record sample count (bcf1_t.n_sample). Required
+         * before writing FORMAT fields on a freshly allocated record, since
+         * bcf_update_* cross-checks n_sample against the header.
+         */
+        void set_n_samples(int32_t n);
+
+        /**
          * @brief Sets the reference allele.
          * @param ref The reference allele string.
          */
@@ -368,7 +407,7 @@ namespace ngslib {
 
         /**
          * @brief Sets the quality score.
-         * @param qual The quality score. Use bcf_float_missing for missing QUAL.
+         * @param qual The quality score. Use VCFRecord::FLOAT_MISSING for missing QUAL.
          */
         void set_qual(float qual);
 
@@ -471,7 +510,6 @@ namespace ngslib {
 
         /**
          * @brief Cleans up alleles (REF and ALT) to remove invalid or missing values.
-         * This is a helper function for update_alleles.
          * @param hdr The VCFHeader associated with this record.
          * @return True if cleanup was successful, false if the record is invalid.
          */
@@ -493,6 +531,21 @@ namespace ngslib {
          * @return 0 on success, negative on error.
          */
         int update_genotypes(const VCFHeader& hdr, const std::vector<std::vector<int>>& genotypes);
+
+        /**
+         * @brief Writes pre-encoded GT values verbatim (writer-side fast path).
+         * Unlike update_genotypes() (which takes decoded allele indices and
+         * requires an existing GT FORMAT field), this creates/replaces the GT
+         * field from scratch via bcf_update_genotypes, so it works on freshly
+         * allocated records. Values must already carry phase encoding
+         * (gt_unphased/gt_phased/GT_MISSING).
+         * @param hdr The VCFHeader associated with this record.
+         * @param gt_encoded Pre-encoded GT integers, sample-major, exactly
+         *        n_values_per_sample * n_samples() entries.
+         * @param n_values Number of encoded integers (ploidy * sample count).
+         * @return 0 on success, negative on error.
+         */
+        int update_genotypes_encoded(const VCFHeader& hdr, const int32_t* gt_encoded, int n_values);
 
         /**
          * @brief Subsets the record to include only specified samples

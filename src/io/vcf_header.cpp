@@ -89,13 +89,12 @@ namespace ngslib {
     }
 
     // Adds a sample to the header.
-    int VCFHeader::add_sample(const std::string& sample_name, bool warn) {
+    int VCFHeader::add_sample(const std::string& sample_name) {
         if (!is_valid()) return -1;
-        // bcf_hdr_add_sample returns 0 on success, <0 on failure.
-        // It handles warnings internally if warn is true.
+        // bcf_hdr_add_sample returns 0 on success, <0 on failure. Duplicate
+        // names are rejected with an htslib-side warning; the wrapper used to
+        // carry a `warn` flag that htslib cannot honour (removed as dead code).
         return bcf_hdr_add_sample(_hdr.get(), sample_name.c_str());
-        // Note: If warn is true (default in htslib), it prints to stderr on duplicate.
-        // If warn is false, it returns -1 on duplicate.
     }
 
     // Removes a sample from the header by index.

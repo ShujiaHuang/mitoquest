@@ -8,6 +8,7 @@
 #include <vector>
 #include <string>
 #include <cstring> // For strcmp, strlen
+#include <cstdint> // For uint32_t
 #include <stdexcept>
 #include <limits> // Required for numeric_limits
 
@@ -15,9 +16,18 @@ namespace ngslib {
 
     // Initialize static const members
     const std::string VCFRecord::STRING_MISSING = ".";
-    // Initialize float constants here as they might not be true compile-time constants
-    const float VCFRecord::FLOAT_MISSING = bcf_float_missing;
-    const float VCFRecord::FLOAT_VECTOR_END = bcf_float_vector_end;
+    // bcf_float_missing / bcf_float_vector_end are uint32 BIT PATTERNS, not
+    // values: initializing a float with '=' value-converts (~2.14e9). Plant
+    // the raw bits via memcpy instead (same as bcf_float_set_missing).
+    namespace {
+        float float_bits(uint32_t pattern) {
+            float f;
+            std::memcpy(&f, &pattern, sizeof(f));
+            return f;
+        }
+    }
+    const float VCFRecord::FLOAT_MISSING = float_bits(bcf_float_missing);
+    const float VCFRecord::FLOAT_VECTOR_END = float_bits(bcf_float_vector_end);
 
     // --- Constructors & Destructor ---
 
@@ -73,6 +83,15 @@ namespace ngslib {
         if (is_valid_unsafe()) {
             bcf_clear(_b.get());
         }
+    }
+
+    void VCFRecord::allocate() {
+        bcf1_t* raw = bcf_init();
+        if (raw == nullptr) {
+            throw std::runtime_error("VCFRecord::allocate: bcf_init failed");
+        }
+        // Same ownership model as the bcf1_t-taking constructor.
+        _b = std::shared_ptr<bcf1_t>(raw, bcf_destroy);
     }
 
     int VCFRecord::unpack(int which) const {
@@ -597,6 +616,18 @@ namespace ngslib {
         }
     }
 
+    void VCFRecord::set_rid(int rid) {
+        if (is_valid_unsafe()) {
+            _b->rid = rid;
+        }
+    }
+
+    void VCFRecord::set_n_samples(int32_t n) {
+        if (is_valid_unsafe()) {
+            _b->n_sample = n;
+        }
+    }
+
     void VCFRecord::set_ref(const std::string& ref) {
         // Setting REF requires setting ALT simultaneously using bcf_update_alleles
         // This is a simplified placeholder; use set_alt which handles both.
@@ -631,7 +662,9 @@ namespace ngslib {
 
     void VCFRecord::set_qual(float qual) {
         if (is_valid_unsafe()) {
-            _b->qual = (qual == FLOAT_MISSING) ? bcf_float_missing : qual;
+            // FLOAT_MISSING already carries the bcf_float_missing bit pattern;
+            // assigning the raw uint32 would value-convert to ~2.14e9.
+            _b->qual = (qual == FLOAT_MISSING) ? FLOAT_MISSING : qual;
         }
     }
 
@@ -834,8 +867,10 @@ namespace ngslib {
             new_gt.reserve(sample_gt.size());
             for (int gt : sample_gt) {  
 
-                if (allele_used[gt] && gt >= 0 &&  // gt may be missing
-                    gt < allele_used.size()) 
+                // Bounds-check BEFORE indexing: `gt` may be missing (-1),
+                // and `allele_used[gt]` first would index out of range.
+                if (gt >= 0 && gt < static_cast<int>(allele_used.size()) &&
+                    allele_used[gt]) 
                 {
                     new_gt.push_back(allele_map[gt]);  // 映射到新的等位基因索引
                 } else {
@@ -1002,6 +1037,27 @@ namespace ngslib {
                         // 去除了相位信息），不能对纯索引做 bcf_gt_is_phased 判断，
                         // 否则奇数索引(1,3,...)的 bit0 会被误判为 phased 而错误输出 '|'。
                         // 相位无法经由该接口往返，统一按 unphased 编码。
+                        /**
+                         * @brief 
+                         *  原本这句代码是错误的：curr_sample[j] = bcf_gt_is_phased(sample_gt[j]) ? bcf_gt_phased(sample_gt[j]) : bcf_gt_unphased(sample_gt[j]);
+                         *  但这句错误代码的影响范围不大 —— 只对 / | 的分隔符有影响，且只在奇数索引的等位基因上发生。
+                         *
+                         *   raw indices    | BUGGY out  | FIXED out  | differs?
+                         *   ---------------+------------+------------+---------
+                         *   0              | 0          | 0          | no
+                         *   1              | 1          | 1          | no
+                         *   0,1            | 0|1        | 0/1        | *** YES
+                         *   1,1            | 1|1        | 1/1        | *** YES
+                         *   0,2            | 0/2        | 0/2        | no
+                         *   0,1,2          | 0|1/2      | 0/1/2      | *** YES
+                         *   0,1,.          | 0|1/.      | 0/1/.      | *** YES
+                         *   0,.            | 0/.        | 0/.        | no
+                         *
+                         *   Note: bcf_gt_allele(buggy) == bcf_gt_allele(fixed) for every case,
+                         *   i.e. the numeric allele values are IDENTICAL; only the '/' vs '|'
+                         *   phase separator can differ (and only for odd-index alleles at pos >= 2).
+                         */
+                        // 统一按 unphased 编码
                         curr_sample[j] = bcf_gt_unphased(sample_gt[j]);
                     }
                 } else {
@@ -1023,7 +1079,19 @@ namespace ngslib {
                           << "\n";
             }
         }
-        return (ret >= 0) ? max_ploidy : ret;
+        return (ret >= 0) ? 0 : ret;  // doc: 0 on success, negative on error
+    }
+
+    int VCFRecord::update_genotypes_encoded(const VCFHeader& hdr, const int32_t* gt_encoded, int n_values) {
+        // Writer-side fast path: values are already phase-encoded (gt_unphased/
+        // gt_phased/GT_MISSING), so they go straight through bcf_update_genotypes
+        // — no unpack / GT-idx lookup needed; works on freshly allocated records.
+        if (!is_valid_unsafe() || !hdr.is_valid() || gt_encoded == nullptr || n_values <= 0) {
+            return -1;
+        }
+        const int ret = bcf_update_genotypes(hdr.hts_header(), _b.get(),
+                                             gt_encoded, n_values);
+        return (ret >= 0) ? 0 : ret;
     }
 
     // --- Output Stream ---
