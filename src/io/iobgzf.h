@@ -154,9 +154,9 @@ namespace ngslib {
 
         // Add move constructor and move assignment
         BGZFile(BGZFile&& other) noexcept : 
-            _bgzf(other._bgzf), 
             _fname(other._fname), 
-            _mode(other._mode) 
+            _mode(other._mode), 
+            _bgzf(other._bgzf) 
         {
             other._bgzf = nullptr;
             other._fname.clear();

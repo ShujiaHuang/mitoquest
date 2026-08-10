@@ -71,9 +71,9 @@ namespace ngslib {
         // Bam &operator=(const Bam &b) = delete;  // reject using copy/assignment operator (C++11 style).
 
     public:
-        Bam() : _fp(NULL), _itr(NULL), _idx(NULL), _io_status(-1) {}
+        Bam() : _io_status(-1), _fp(NULL), _idx(NULL), _itr(NULL) {}
         explicit Bam(const std::string &fn, const std::string mode = "r", const std::string ref_fn = ""): 
-            _fp(NULL), _itr(NULL), _idx(NULL), _io_status(-1) 
+            _io_status(-1), _fp(NULL), _idx(NULL), _itr(NULL) 
         {
             // @mode could only matching one of [rwa]
             _open(fn, mode, ref_fn);  

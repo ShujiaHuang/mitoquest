@@ -46,6 +46,11 @@ namespace ngslib {
         static const float FLOAT_VECTOR_END;     // Initialized in cpp file
         static const std::string STRING_MISSING; // Initialized in cpp file
 
+        /// True if `value` carries the htslib float-missing bit pattern.
+        /// FLOAT_MISSING is a NaN bit pattern (0x7F800001), so a `==`
+        /// comparison is always false; the check must compare raw bits.
+        static bool is_float_missing(float value);
+
         // === Genotype (GT) encoding utilities ===
         // These wrap htslib's bcf_gt_* macros so callers need not include
         // <htslib/vcf.h> directly.

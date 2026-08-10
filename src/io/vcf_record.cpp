@@ -29,6 +29,14 @@ namespace ngslib {
     const float VCFRecord::FLOAT_MISSING = float_bits(bcf_float_missing);
     const float VCFRecord::FLOAT_VECTOR_END = float_bits(bcf_float_vector_end);
 
+    bool VCFRecord::is_float_missing(float value) {
+        // Bit-pattern compare: the missing value is a NaN bit pattern, so a
+        // value compare (`value == FLOAT_MISSING`) is always false.
+        uint32_t bits;
+        std::memcpy(&bits, &value, sizeof(bits));
+        return bits == static_cast<uint32_t>(bcf_float_missing);
+    }
+
     // --- Constructors & Destructor ---
 
     // Private constructor
@@ -557,7 +565,7 @@ namespace ngslib {
         if (!fmt_gt) return -1;
     
         // 计算实际倍性（找到第一个 vector_end 或遍历完所有位置）
-        int i, j, actual_ploidy = 0;
+        int j, actual_ploidy = 0;
         #define BRANCH(type_t, convert, vector_end) { \
             /* 获取当前样本的基因型数据 */ \
             uint8_t *ptr = fmt_gt->p + sample_idx*fmt_gt->size; \
@@ -829,7 +837,7 @@ namespace ngslib {
         allele_used[0] = true;  // REF 总是保留
         for (const auto& sample_gt : genotypes) {
             for (int gt : sample_gt) {
-                if (gt >= 0 && gt < allele_used.size()) {
+                if (gt >= 0 && static_cast<size_t>(gt) < allele_used.size()) {
                     allele_used[gt] = true;
                 }
             }
@@ -1009,7 +1017,7 @@ namespace ngslib {
         
         // 4. 计算需要的总空间
         int n_samp = n_samples();
-        if (genotypes.size() != n_samp) return -1; // n_samples 与 genotypes.size() 不匹配
+        if (genotypes.size() != static_cast<size_t>(n_samp)) return -1; // n_samples 与 genotypes.size() 不匹配
         
         // 5. 找到最大倍性
         int max_ploidy = 0;
@@ -1027,7 +1035,7 @@ namespace ngslib {
             int32_t* curr_sample = gt_arr.data() + i * max_ploidy;
             
             // 设置该样本的基因型
-            for (size_t j = 0; j < max_ploidy; ++j) {
+            for (size_t j = 0; j < static_cast<size_t>(max_ploidy); ++j) {
                 if (j < sample_gt.size()) {
                     // 实际的基因型值
                     if (sample_gt[j] < 0) {
@@ -1072,7 +1080,6 @@ namespace ngslib {
 
         // 检查最大倍性的大小是否发生了改变
         if (ret >= 0 && _b->n_fmt > 0) {
-            bcf_fmt_t *fmt = &_b->d.fmt[gt_idx];
             if (get_max_ploidy(hdr) != original_ploidy) {
                 std::cerr << "[INFO]: Ploidy changed from " << original_ploidy << " to " 
                           << get_max_ploidy(hdr) << " at " << chrom(hdr) << ":" << pos() + 1 

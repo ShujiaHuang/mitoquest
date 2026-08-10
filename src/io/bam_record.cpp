@@ -343,7 +343,7 @@ namespace ngslib {
 
         uint8_t *p = bam_get_seq(_b);
         std::string seq(_b->core.l_qseq, 'N');  // initial by a batch of 'N'
-        for (size_t i = 0; i < _b->core.l_qseq; ++i)
+        for (size_t i = 0; i < static_cast<size_t>(_b->core.l_qseq); ++i)
             seq[i] = _BASES[bam_seqi(p, i)];
 
         return seq;
@@ -357,7 +357,7 @@ namespace ngslib {
         if (!p) return "";
 
         std::string qual(_b->core.l_qseq, (char)(offset));
-        for (size_t i = 0; i < _b->core.l_qseq; ++i)
+        for (size_t i = 0; i < static_cast<size_t>(_b->core.l_qseq); ++i)
             qual[i] = (char) (p[i] + offset);
 
         return qual;
@@ -370,7 +370,7 @@ namespace ngslib {
 
         double total_phred_score = 0;
         uint8_t *p = bam_get_qual(_b);
-        for (size_t i = 0; i < _b->core.l_qseq; ++i)
+        for (size_t i = 0; i < static_cast<size_t>(_b->core.l_qseq); ++i)
             total_phred_score += p[i];
 
         return total_phred_score / _b->core.l_qseq;

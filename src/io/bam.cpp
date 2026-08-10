@@ -46,7 +46,7 @@ namespace ngslib {
     }
 
     // copy constructor
-    Bam::Bam(const Bam &b) : _itr(NULL), _idx(NULL) {
+    Bam::Bam(const Bam &b) : _idx(NULL), _itr(NULL) {
         _open(b._fname, b._mode, b._reference_path);  // reopen the bamfile
     }
 
