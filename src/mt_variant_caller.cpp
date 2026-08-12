@@ -474,41 +474,50 @@ void MtVariantCaller::_seek_position(const std::string &fa_seq,                 
             if (map_ref_pos > gr.end) break;
 
             // 'BAM_XXX' are macros for CIGAR, which defined in 'htslib/sam.h'
+            // Note: ReadAlignedPair now stores single-base fields as 'char' (ref_base/read_base/read_qual),
+            // with any extra bases of a multi-base Indel kept in 'multi_base' (bases only, no per-base quality).
             if (aligned_pairs[i].op == BAM_CMATCH ||  /* CIGAR: M */ 
                 aligned_pairs[i].op == BAM_CEQUAL ||  /* CIGAR: = */
                 aligned_pairs[i].op == BAM_CDIFF)     /* CIGAR: X */
             {
-                // SNV. Only one character
-                ab.ref_base  = aligned_pairs[i].ref_base[0];
-                ab.read_base = aligned_pairs[i].read_base[0];
-                ab.base_qual = aligned_pairs[i].read_qual[0];
+                // SNV. Only one character (char -> single-char std::string assignment)
+                ab.ref_base  = aligned_pairs[i].ref_base;
+                ab.read_base = aligned_pairs[i].read_base;
+                ab.base_qual = aligned_pairs[i].read_qual;
             } else if (aligned_pairs[i].op == BAM_CINS) {  /* CIGAR: I */
                 // Insertion
-                if (!aligned_pairs[i].ref_base.empty()) {
+                if (aligned_pairs[i].ref_base != '\0') {
                     std::cerr << al << "\n";
                     throw std::runtime_error("[ERROR] We got reference base in insertion region.");
                 }
 
                 // do not roll back position here
                 ab.ref_base  = "";
-                ab.read_base = "+" + aligned_pairs[i].read_base;
+                ab.read_base = "+" + std::string(1, aligned_pairs[i].read_base) + aligned_pairs[i].multi_base;
 
-                // mean quality of the whole insertion sequence
-                double total_score = 0;
-                for (size_t j = 0; j < aligned_pairs[i].read_base.size(); ++j) {
-                    total_score += aligned_pairs[i].read_qual[j];
+                // Use upstream anchor base quality
+                if (i > 0) {
+                    ab.base_qual = aligned_pairs[i-1].read_qual;
+                } else {
+                    // Fallback: mean quality of insertion sequence
+                    double total_qual = (aligned_pairs[i].read_qual - 33);
+                    for (char q : aligned_pairs[i].multi_base) {
+                        total_qual += (q - 33);
+                    }
+                    size_t ins_len = 1 + aligned_pairs[i].multi_base.size();
+                    ab.base_qual = static_cast<char>(total_qual / ins_len + 33);
                 }
-                ab.base_qual = uint8_t(total_score / aligned_pairs[i].read_base.size());
+                
             } else if (aligned_pairs[i].op == BAM_CDEL) {  /* CIGAR: D */
                 // Deletion.
-                if (!aligned_pairs[i].read_base.empty()) {
+                if (aligned_pairs[i].read_base != '\0') {
                     std::cerr << al << "\n";
                     throw std::runtime_error("[ERROR] We got read bases in deletion region.");
                 }
 
                 // do not roll back position here
-                ab.ref_base  = aligned_pairs[i].ref_base;
-                ab.read_base = "-" + aligned_pairs[i].ref_base;  // aligned_pairs[i].ref_base 识别用的 (后面不直接用，要替换的)，同位点可以有多类型的 DEL 
+                ab.ref_base  = std::string(1, aligned_pairs[i].ref_base) + aligned_pairs[i].multi_base;
+                ab.read_base = "-" + ab.ref_base;  // 识别用的 (后面不直接用，要替换的)，同位点可以有多类型的 DEL
 
                 // set to be mean quality of the whole read if deletion
                 ab.base_qual = static_cast<char>(al.mean_qqual() + 33); // 33 is the offset of base QUAL;

@@ -54,7 +54,7 @@ void VCFSubsetSamples::parse_args(int argc, char* argv[]) {
                 break;
             case 'O': _output_mode   = optarg; break;
             case '1': _update_info   = false;  break;
-            case '2': _keep_all_site = true;  break;
+            case '2': _keep_all_site = true;   break;
             case 'h': 
                 print_usage();
                 exit(EXIT_SUCCESS);

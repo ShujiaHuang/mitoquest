@@ -3,6 +3,8 @@
 // Date: 2025-04-17
 #include "vcf_header.h"
 
+#include <algorithm>
+
 namespace ngslib {
 
     // main constructor

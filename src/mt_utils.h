@@ -40,17 +40,20 @@ struct AlignBase {
     char map_strand;       // mapping reference strand, should be one of '-', '+' or '*'
 
     std::string to_string() const {
-        std::stringstream ss;
+        std::string s;
+        // ref_base/read_base 通常很短；32 足够容纳两个整数、两个 char 和 5 个制表符
+        s.reserve(ref_base.size() + read_base.size() + 32);
+        s.append(ref_base);  s.push_back('\t');
+        s.append(read_base); s.push_back('\t');
         
-        // Required fields
-        ss << ref_base  << "\t"
-           << read_base << "\t"
-           << base_qual << "\t"
-           << rpr       << "\t"
-           << mapq      << "\t"
-           << map_strand;
+        s.push_back(base_qual);  // char：按字符输出，与原 << 语义一致
+        s.push_back('\t');
 
-        return ss.str();
+        s.append(std::to_string(rpr));  s.push_back('\t');
+        s.append(std::to_string(mapq)); s.push_back('\t');
+        s.push_back(map_strand);  // char：按字符输出
+
+        return s;
     }
 };
 
@@ -159,28 +162,46 @@ struct VCFRecord {
     }
 
     // Helper method to format record as VCF string
-    std::string to_string() const {
-        std::stringstream ss;
-        
-        // Required fields
-        ss << chrom << "\t"
-           << pos   << "\t"
-           << id    << "\t"
-           << ref   << "\t"
-           << (alt.empty() ? "." : ngslib::join(alt, ",")) << "\t"
-           << (qual <= 0 ? "." : std::to_string(qual))     << "\t"
-           << filter << "\t"
-           << info;
+    std::string to_string(const std::string& sep = "\t") const {
+        const std::string pos_s  = std::to_string(pos);
+        const std::string alt_s  = alt.empty() ? "." : ngslib::join(alt, ",");
+        const std::string qual_s = qual <= 0 ? "." : std::to_string(qual);
 
-        // Optional fields
+        // Pre-calculate total size for a single allocation
+        size_t est = chrom.size() + pos_s.size() + id.size() + ref.size() + alt_s.size() + 
+                     qual_s.size() + filter.size() + info.size() + 7 * sep.size();
+
         if (!samples.empty()) {
-            ss << "\t" << format;
+            est += sep.size() + format.size();
             for (const auto& sample : samples) {
-                ss << "\t" << sample;
+                est += sep.size() + sample.size();
             }
         }
 
-        return ss.str();
+        std::string s;
+        s.reserve(est);
+
+        // Required fields
+        s.append(chrom);  s.append(sep);
+        s.append(pos_s);  s.append(sep);
+        s.append(id);     s.append(sep);
+        s.append(ref);    s.append(sep);
+        s.append(alt_s);  s.append(sep);
+        s.append(qual_s); s.append(sep);
+        s.append(filter); s.append(sep);
+        s.append(info);
+
+        // Optional fields
+        if (!samples.empty()) {
+            s.append(sep);
+            s.append(format);
+            for (const auto& sample : samples) {
+                s.append(sep);
+                s.append(sample);
+            }
+        }
+
+        return s;
     }
 };
 
@@ -212,6 +233,7 @@ int get_total_depth(const AlignInfo &align_infor);
  * @param bases 
  * @param strands 
  * @return StrandBiasInfo 
+ *
  */
 StrandBiasInfo strand_bias(const std::string &ref_base, 
                            const std::string &alt_bases_string,

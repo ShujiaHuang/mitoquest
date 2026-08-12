@@ -37,13 +37,18 @@ namespace ngslib {
 
     /// Defined a structure for recording the mapped pair information of read mapped on reference.
     // been used in `BamRecord::get_aligned_pairs` 
+    //
+    // P1-1 optimization: Use char instead of string for single-base fields.
+    // For M/=/X operations (the vast majority of bases), all three base fields are single chars,
+    // avoiding per-base string allocation. multi_base is only allocated for multi-base Indels (rare).
     typedef struct {
         int         op;         // cigar op,    detail about: `bam_get_cigar(_b)` could be found in sam.h
         hts_pos_t   ref_pos;    // reference position
-        std::string ref_base;   // reference base
+        char        ref_base;   // reference base (single char; '\0' for INS)
         uint32_t    qpos;       // read position
-        std::string read_base;  // read base
-        std::string read_qual;  // read quality base
+        char        read_base;  // read base (single char; '\0' for DEL; first base for multi-base INS)
+        char        read_qual;  // read quality (single char; '\0' for DEL)
+        std::string multi_base; // extra bases for multi-base INS/SOFT_CLIP (empty for single-base ops)
     } ReadAlignedPair;
 
     class BamRecord {
@@ -80,6 +85,9 @@ namespace ngslib {
 
         BamRecord(const BamRecord &b);  // copy constructor
         BamRecord &operator=(const BamRecord &b);
+
+        BamRecord(BamRecord &&b) noexcept;          // move constructor
+        BamRecord &operator=(BamRecord &&b) noexcept; // move assignment
 
         BamRecord(const bam1_t *b);
         BamRecord &operator=(const bam1_t *b);

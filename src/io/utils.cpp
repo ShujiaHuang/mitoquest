@@ -7,6 +7,8 @@
  */
 #include "utils.h"
 
+#include <algorithm>
+
 namespace ngslib {
 
     // http://c.biancheng.net/cpp/html/303.html
