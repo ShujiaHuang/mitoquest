@@ -12,7 +12,6 @@
 #ifndef __INCLUDE_THREAD_POOL_H__
 #define __INCLUDE_THREAD_POOL_H__
 
-#include <iostream>
 #include <thread>
 #include <queue>
 #include <functional>
@@ -45,19 +44,12 @@ public:
                         // 获取任务队列中的第一个任务
                         task = std::move(this->tasks.front());
                         this->tasks.pop();
-                    }
-                    // 执行任务, 捕获异常
-                    try {
-                        task();
-                    } catch (const std::exception& e) {
-                        std::cerr << "Task threw an exception: " << e.what() << std::endl;
-                        {
-                            std::unique_lock<std::mutex> lock(queueMutex);
-                            stop = true; // 设置停止标志
-                            hasError = true; // 设置错误标志
-                        }
-                        condition.notify_all(); // 通知所有等待线程
-                    }
+                    } // ← 锁在此释放，{} 是必须的。
+
+                    // 执行任务。submit() 用 packaged_task 包装，任务抛出的异常
+                    // 会被捕获并存入 future，由调用方 f.get() 重抛 —— 这里的
+                    // try/catch 对 packaged 任务永远不会触发（已移除旧的死分支）。
+                    task();
                 }
             });
         }
@@ -68,8 +60,8 @@ public:
         {
             std::unique_lock<std::mutex> lock(queueMutex);
             stop = true;
-        }
-        
+        }  // 必须先释放锁，否则 worker 无法获取锁来检查 stop 标志 → 死锁，这里的 {} 是必须的。
+
         condition.notify_all();
         for (std::thread& worker : workers) {
             if (worker.joinable()) {
@@ -102,7 +94,7 @@ public:
             
             // 将任务添加到队列
             tasks.emplace([task]() { (*task)(); });
-        }
+        } // ← 锁在此释放
         
         // 通知一个等待中的线程
         condition.notify_one();
@@ -120,17 +112,12 @@ public:
         return workers.size();
     }
 
-    bool has_error() const {
-        return hasError;
-    }
-
 private:
     std::vector<std::thread> workers;                // 工作线程容器
     std::queue<std::function<void()>> tasks;         // 任务队列
     mutable std::mutex queueMutex;                   // 互斥锁
     std::condition_variable condition;               // 条件变量
     bool stop;                                       // 停止标志
-    bool hasError;                                   // 错误标志
 };
 
 #endif
