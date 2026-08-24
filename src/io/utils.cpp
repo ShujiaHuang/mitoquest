@@ -8,6 +8,9 @@
 #include "utils.h"
 
 #include <algorithm>
+#include <cctype>
+#include <cerrno>
+#include <cstdlib>
 
 namespace ngslib {
 
@@ -158,4 +161,53 @@ namespace ngslib {
         return out;
     }
 
-}  // namespae ngslib
+    // ---- split_whitespace: split on any whitespace, skip empty tokens --------
+    // Splits "a  b\tc" into {"a", "b", "c"}, same as Python str.split().
+    void split_whitespace(const std::string &in_str, std::vector<std::string> &out, bool is_append) {
+        if (!is_append) { out.clear(); }
+
+        const char* p   = in_str.data();
+        const char* end = p + in_str.size();
+
+        while (p < end) {
+            // skip leading whitespace
+            while (p < end && std::isspace(static_cast<unsigned char>(*p))) ++p;
+            if (p >= end) break;
+
+            // collect token
+            const char* tok_begin = p;
+            while (p < end && !std::isspace(static_cast<unsigned char>(*p))) ++p;
+            out.emplace_back(tok_begin, p);
+        }
+    }
+
+    std::vector<std::string> split_whitespace(const std::string &in_str) {
+        std::vector<std::string> out;
+        split_whitespace(in_str, out);
+        return out;
+    }
+
+    // ---- Non-throwing numeric parsers ---------------------------------------
+    bool parse_int(const std::string &tok, std::int64_t &out) {
+        if (tok.empty()) return false;
+        const char* begin = tok.c_str();
+        char* end = nullptr;
+        errno = 0;
+        const long long v = std::strtoll(begin, &end, 10);
+        if (end != begin + tok.size() || errno != 0) return false;
+        out = static_cast<std::int64_t>(v);
+        return true;
+    }
+
+    bool parse_double(const std::string &tok, double &out) {
+        if (tok.empty()) return false;
+        const char* begin = tok.c_str();
+        char* end = nullptr;
+        errno = 0;
+        const double v = std::strtod(begin, &end);
+        if (end != begin + tok.size() || errno != 0) return false;
+        out = v;
+        return true;
+    }
+
+}  // namespace ngslib

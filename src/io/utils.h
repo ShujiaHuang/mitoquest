@@ -16,17 +16,58 @@
 #include <iterator>
 #include <cstdint>    // uint32_t
 #include <stdexcept>
+#include <chrono>
+#include <ctime>
+
+#include <htslib/hts.h>  // hts_pos_t
 
 namespace ngslib {
+
+    // Lightweight dual timer (wall-clock + CPU) for EM iteration and stage timing.
+    // Wall time uses steady_clock (monotonic); CPU time uses std::clock() (sum of
+    // all threads — useful for measuring parallel work).
+    class RunTimer {
+    public:
+        RunTimer() = default;
+
+        void reset() {
+            wall_start_ = std::chrono::steady_clock::now();
+            cpu_start_  = std::clock();
+        }
+
+        double elapsed_wall() const {
+            return std::chrono::duration<double>(
+                std::chrono::steady_clock::now() - wall_start_
+            ).count();
+        }
+
+        double elapsed_cpu() const {
+            return static_cast<double>(std::clock() - cpu_start_) / CLOCKS_PER_SEC;
+        }
+
+        // Linear-extrapolation ETA: avg time per completed iteration × remaining.
+        // `iter` is the just-finished iteration index (0-based); `max_iter` is the
+        // total iteration budget.
+        double eta(int iter, int max_iter) const {
+            if (iter < 1) return 0.0;
+            double wall_s = elapsed_wall();
+            return wall_s * static_cast<double>(max_iter - iter - 1)
+                        / static_cast<double>(iter + 1);
+        }
+
+    private:
+        std::chrono::steady_clock::time_point wall_start_ = std::chrono::steady_clock::now();
+        std::clock_t cpu_start_ = std::clock();
+    };
 
     // define data types for variant calling
     struct GenomeRegion {
         std::string chrom; // chromosome name
-        uint32_t start;    // start position
-        uint32_t end;      // end position
+        hts_pos_t start;   // start position (0-based)
+        hts_pos_t end;     // end position (0-based, half-open or inclusive — caller's convention)
 
         GenomeRegion() : chrom(""), start(0), end(0) {};
-        GenomeRegion(const std::string& rid, uint32_t s, uint32_t e) : chrom(rid), start(s), end(e) {
+        GenomeRegion(const std::string& rid, hts_pos_t s, hts_pos_t e) : chrom(rid), start(s), end(e) {
             if (start > end) {
                 throw std::invalid_argument("[ERROR] start postion is larger than end position in "
                                             "GenomeRegion: " + chrom + ":" + std::to_string(start) + 
@@ -34,7 +75,7 @@ namespace ngslib {
             }
         };
 
-        int size() const {
+        hts_pos_t size() const {
             return end - start + 1;
         }
 
@@ -175,24 +216,34 @@ namespace ngslib {
         return out_str;
     }
 
+    // Split on any whitespace (space, tab, \r, etc.), skipping consecutive
+    // whitespace runs (no empty tokens). Analogous to Python str.split().
+    std::vector<std::string> split_whitespace(const std::string &in_str);
+    void split_whitespace(const std::string &in_str, std::vector<std::string> &out, bool is_append=false);
+
+    // Non-throwing numeric parsing: return true iff `tok` is a complete valid
+    // number (no trailing junk, no overflow).  Use these instead of std::stoll /
+    // std::stod, which throw exceptions that are unreliable across the libc++
+    // ABI boundary in release builds.
+    bool parse_int(const std::string &tok, std::int64_t &out);
+    bool parse_double(const std::string &tok, double &out);
+
+    // Split on a specific delimiter (e.g. ",")
     std::vector<std::string> split(const std::string &in_str, const char *delim);
     void split(const std::string &in_str, std::vector<std::string> &out, const char *delim, bool is_append=false);
-    
+
     // 重载了除 vector<string> 之外的所有其他基础数据类型(string 的操作和它们不同)，包括：int，double，float
     template<typename T>
     void split(const std::string &in_str, std::vector<T> &out, const char *delim, bool is_append=false) {
-        
-        if (!is_append) { out.clear(); }
-
-        // Takes only space separated C++ strings when using 'stringstream'  
-        std::istringstream ss;
+        if (!is_append) out.clear();
 
         size_t i(0), find_start_idx(0), delim_len(std::strlen(delim)), len;
         std::string tok;
         T d;
-
+        
+        // Takes only space separated C++ strings when using 'stringstream'  
+        std::istringstream ss;
         while(i != std::string::npos) {
-
             ss.clear();  // clear the stringstream pipe first
 
             i = in_str.find(delim, find_start_idx);
@@ -250,11 +301,13 @@ namespace ngslib {
     template <typename T>
     std::vector<T> vector_slicing(const std::vector<T> &v, size_t x, size_t y) {
     
-        if (x > y) 
+        if (x > y) {
             throw std::invalid_argument(
                 "[ERROR] input value error in 'std::vector<T> vector_slicing"
                 "(const std::vector<T> &v, int x, int y)', start (x) larger "
-                "than end(y)!");
+                "than end(y)!"
+            );
+        }
 
         // Begin and End iterator
         auto first = x < v.size() ? v.begin()+x : v.end();
@@ -283,7 +336,7 @@ namespace ngslib {
 
         return duplicates;
     }
-    
+
 }  // namespace ngslib
 
 #endif
