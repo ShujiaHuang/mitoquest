@@ -349,9 +349,15 @@ TEST(NeEstProfile, DiscreteModelUsesIntegerCandidates) {
     for (size_t index = 0; index < profile.size(); ++index) {
         const int ne = static_cast<int>(index) + 1;
         EXPECT_DOUBLE_EQ(profile[index].ne_candidate, static_cast<double>(ne));
-        EXPECT_NEAR(profile[index].mmle_log_lik,
-                    NeEstimator::compute_global_ll_parallel(ne, data, lf, 1, false),
-                    1e-12);
+        // Profile rows are this exact deterministic call, so the values must
+        // match bit-for-bit.  EXPECT_DOUBLE_EQ also handles the non-finite
+        // Ne=1 case (segregating children have zero probability under
+        // complete drift), which EXPECT_NEAR would misreport as a NaN
+        // difference on gtest releases without the same-sign-infinity
+        // special case.
+        EXPECT_DOUBLE_EQ(profile[index].mmle_log_lik,
+                         NeEstimator::compute_global_ll_parallel(
+                             ne, data, lf, 1, false));
     }
 }
 
