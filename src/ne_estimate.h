@@ -28,9 +28,13 @@
  * Maximising this composite marginal likelihood over Ne yields the
  * Maximum Marginal Likelihood Estimator (MMLE) reported by this tool.
  *
- * The maternal p_mother is taken as the point estimate m_alt / m_dp
- * (at typical mtDNA depths >= 100 this is virtually identical to the
- * fully marginalised integral over a Beta posterior).
+ * The maternal p_mother is taken as the point estimate m_alt / m_dp.
+ * Synthetic validation shows the plug-in is well calibrated at typical
+ * mtDNA depths (>= ~1000x): at 500x the MMLE is biased down by ~3% and
+ * at 100x by more than 10%, because the sampling noise of p_mother is
+ * misread as drift.  The trio path instead marginalises p_mother over
+ * its posterior (compute_ll_trio_gauss_jacobi), which attenuates but
+ * does not fully remove the low-depth bias.
  *
  * This continuous model treats Ne as an apparent, variance-matching
  * effective bottleneck. It may absorb bottleneck sampling, vegetative

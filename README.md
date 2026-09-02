@@ -297,12 +297,15 @@ mitoquest subsam \
 ## `mitoquest copynum` — mtDNA copy-number estimation
 
 `mitoquest copynum` estimates **per-chromosome relative copy number** from a
-sorted/indexed BAM or CRAM file. The autosomal chromosomes serve as the
-diploid baseline (CN = 2); the mitochondrial chromosome is reported on the
-same scale, i.e. the expected number of mtDNA molecules per diploid cell.
-The output is a TSV with fragment counts, GC content, length-normalized
-fragment ratio, and the copy-number mean + 95% confidence interval for
-every contig in the BAM header.
+sorted/indexed BAM or CRAM file. The mean autosomal length-normalized
+fragment density is the reference value: autosomal `CopyNum` values are
+reported relative to that reference (near 1), whereas mitochondrial values
+are multiplied by 2 so that equal autosomal and mtDNA molecular densities
+map to 2 mtDNA copies per diploid autosomal baseline. This is a relative
+library-depth calibration, not an absolute molecule count or a GC-corrected
+quantification. The output TSV reports fragment counts, GC content as a
+diagnostic, length-normalized fragment ratio, and copy-number mean + 95%
+confidence interval for every contig in the BAM header.
 
 ### Full parameter reference
 
@@ -322,7 +325,8 @@ Options:
                          separated list (e.g. 'chrM:1-300,chrM:16000-16569')
                          or as a path to a file (one region per line, in
                          either 'chr:start-end' samtools form or BED-style
-                         'chr<TAB>start<TAB>end' triples; '#' starts a
+                         whitespace-delimited `chr start end` triples; '#'
+                         starts a
                          comment). The intervals REPLACE the whole-
                          chromosome window for the chromosomes they cover;
                          chromosomes not mentioned keep their full-length
@@ -465,9 +469,10 @@ FAM_ID  CHILD_ID  FATHER_ID  MOTHER_ID  SEX  PHENOTYPE
 ### Output TSV columns
 
 One row is emitted per (transmission-pair, ALT allele) combination.
-Multi-allelic sites produce one row per ALT.  When `--gm-fam` is
-specified the output switches to a wide 22-column format that includes
-grandmother genotype fields and a `HAS_G` flag.
+Multi-allelic sites produce one row per ALT. The output always uses the
+wide schema with grandmother genotype fields and a `HAS_G` flag: without a
+matched `--gm-fam` relationship, the grandmother fields are `NA`/zero and
+`HAS_G=0`.
 
 | Column         | Type   | Description                                          |
 | -------------- | ------ | ---------------------------------------------------- |
@@ -494,9 +499,11 @@ grandmother genotype fields and a `HAS_G` flag.
 | `CHILD_VAF`    | float  | `CHILD_AD_ALT / CHILD_DP`.                           |
 | `QC`           | string | `PASS`, `LOW_DEPTH`, or other failure reason.        |
 
-The `GRANDMOTHER_*` columns and `HAS_G` are present only when `--gm-fam`
-is used; legacy 16-column TSVs (without `--gm-fam`) are still read
-correctly by `ne-estimate`.
+Legacy 16-column TSVs without the grandmother fields are still accepted by
+`ne-estimate`; a TSV that contains any trio column must contain all of
+`HAS_G`, `GRANDMOTHER_DP`, and `GRANDMOTHER_AD_ALT`. Declared trio rows with
+invalid grandmother counts are excluded rather than silently treated as
+ordinary mother-child rows.
 A leading provenance comment line (`#mitoquest_trans_prep_command=...`)
 records the exact CLI invocation for reproducibility.
 
@@ -582,10 +589,16 @@ present* in a sample's GT yields **0 supporting reads** for that
 sample (this is the canonical "transmission-loss" case where a
 heteroplasmic mother transmits homoplasmic REF or ALT to the child).
 
-Any `Number=` declaration on `FORMAT/AD` is accepted (`R`, `A`, `.`)
-because AD is always decoded via GT.  Standard `Number=R` AD
-(REF + all ALTs, fixed width per record) is also handled correctly
-as a special case where every sample's GT lists every allele.
+`mitoquest trans-prep` supports three explicit `FORMAT/AD` layouts:
+
+| Header declaration | Interpretation |
+| --- | --- |
+| `Number=.` | MitoQuest GT-aligned variable-length values |
+| `Number=R` | Standard fixed-width REF plus all ALT depths by allele index |
+| `Number=A` | Standard fixed-width ALT depths by allele index; REF is inferred as `DP - sum(AD_ALT)` |
+
+The `Number=A` inference requires non-negative ALT depths whose sum does not
+exceed `DP`; otherwise the affected transmission row is dropped as malformed.
 
 ### Missing genotypes (`GT='.'`)
 
@@ -607,18 +620,66 @@ sample disagree (which prevents an unambiguous GT-aligned AD lookup).
 
 `mitoquest ne-estimate` fits the mitochondrial **transmission bottleneck
 size** Ne from the per-allele TSV produced by `mitoquest trans-prep`,
-using a Beta-Binomial **Maximum Marginal Likelihood Estimator (MMLE)**.
-The latent maternal / child true allele frequencies are analytically
-integrated out (Beta-Binomial conjugacy), and pairs are treated as
-independent (composite / pseudo-likelihood), so the global objective is
-the sum of per-pair *marginal* log-likelihoods that depends only on Ne
-and the observed counts.  We label the resulting estimator **MMLE** in
-the code, output, and documentation to keep the assumptions explicit
-(rather than the looser "MLE" used in v1.8.5 and earlier).
+using a count-based **Maximum Marginal Likelihood Estimator (MMLE)**. The
+default continuous model plugs the maternal count frequency into a working
+Beta transition model and analytically marginalizes the child's latent
+frequency; the alternative discrete model also integrates a maternal Beta
+posterior. Rows are treated as independent working observations, so the
+global objective is a composite log likelihood. We label the resulting
+estimator **MMLE** to keep those assumptions explicit.
 
 ### Statistical model
 
-For each transmission pair the model assumes:
+#### Default continuous working Beta transition model
+
+For each mother-child (M-C) row, the default `--model continuous` uses the
+count-derived maternal plug-in frequency
+
+$$
+\hat p_M=\frac{k_M}{d_M},
+$$
+
+then models the child as
+
+```txt
+  p_child | p_hat_mother ~ Beta(p_hat_mother × (Ne − 1),
+                                 (1 − p_hat_mother) × (Ne − 1))
+  c_alt   | p_child      ~ Binomial(c_dp, p_child)
+```
+
+Marginalizing $p_C$ gives the per-row Beta-Binomial likelihood
+
+$$
+P(k_C\mid\hat p_M,N_e)=
+\binom{d_C}{k_C}
+\frac{B\{\hat p_M(N_e-1)+k_C,\ (1-\hat p_M)(N_e-1)+d_C-k_C\}}
+{B\{\hat p_M(N_e-1),\ (1-\hat p_M)(N_e-1)\}}.
+$$
+
+This is a mean/variance-matched working transition approximation, not the
+stationary distribution or exact transient density of a Wright-Fisher
+diffusion. At $N_e=1$ it has its exact absorbing-state limit:
+
+$$
+P(k_C=0)=1-\hat p_M,\qquad P(k_C=d_C)=\hat p_M,
+$$
+
+and any interior child count has probability zero. If no candidate in the
+configured range has finite likelihood, `ne-estimate` exits with an error
+rather than reporting a fictitious optimum.
+
+The cohort objective is the sum of these row log likelihoods. The optimizer
+scans all integer candidates, preserves an exact constrained optimum at a
+search boundary, and otherwise refines the neighboring interval with a
+golden-section search. Its nominal 95% profile interval is the connected
+region satisfying $\log L(N_e)\ge\log L(\widehat N_e)-1.92$; because this
+is a composite likelihood, it is model-based rather than automatically
+calibrated for linkage or repeated-family dependence.
+
+#### Alternative discrete model
+
+`--model discrete` retains the older hard-bottleneck model for specialised
+fixed-inoculum experiments:
 
 ```txt
   Maternal true VAF p0 ~ Beta(alpha = m_alt + 1,
@@ -636,13 +697,9 @@ so the per-pair likelihood collapses to a finite sum over `k = 0..Ne`:
                           * Binom(c_alt | c_dp, k/Ne)
 ```
 
-The global log-likelihood is the sum across independent transmission
-pairs. The optimum is found by a **brute-force integer scan** over
-`[--min-ne, --max-ne]` (the discrete LL is *not* unimodal in `Ne` —
-fitted `Ne = k * true_Ne` aligns with the observed VAF grid and
-produces secondary local maxima, so golden-section search is unsafe);
-the 95% confidence interval is the contiguous range of `Ne` where
-`logL >= logL_max - 1.92` (profile likelihood, `chi2_{1, 0.95} / 2`).
+The discrete likelihood is scanned on integers only because its grid can
+produce secondary local maxima. It does not support `HAS_G=1` trio rows,
+and `--per-family` currently requires the continuous model.
 
 ### Three-generation G-M-C trios (`--gm-fam`)
 
@@ -655,29 +712,43 @@ switches each trio row to a three-generation marginal likelihood.
 
 For a G-M-C trio the grandmother’s observed VAF
 `p̂_G = g_ad_alt / g_dp` serves as the founder allele frequency.
-The mother’s latent heteroplasmy `p_M` is drawn from the Kimura
-diffusion `Beta(p̂_G·(Ne−1), (1−p̂_G)·(Ne−1))`. Given `p_M`, the
+The mother’s latent heteroplasmy `p_M` follows the same working Beta
+transition approximation, `Beta(p̂_G·(Ne−1), (1−p̂_G)·(Ne−1))`. Given `p_M`, the
 mother’s read count `k_M ~ Bin(d_M, p_M)` and the child’s read
 count `k_C ~ BetaBin(d_C, p_M·(Ne−1), (1−p_M)·(Ne−1))` are
-conditionally independent. The mother’s latent `p_M` is
-analytically marginalised, giving the closed-form trio marginal
-likelihood:
+conditionally independent. After analytically marginalising the
+child frequency, the remaining mother-frequency marginal is:
 
 ```txt
-I_trio(Ne) = C(d_M, k_M) · C(d_C, k_C)
-           · B(α_G + k_M + k_C, β_G + (d_M − k_M) + (d_C − k_C))
-           / B(α_G, β_G)
+I_trio(Ne) = C(d_M, k_M) · C(d_C, k_C) / B(α_G, β_G)
+           · integral_0^1 [
+               p_M^(α_G+k_M-1) · (1-p_M)^(β_G+d_M-k_M-1)
+               · B((Ne-1)p_M+k_C, (Ne-1)(1-p_M)+d_C-k_C)
+               / B((Ne-1)p_M, (Ne-1)(1-p_M))
+             ] dp_M
 
 where  α_G = p̂_G · (Ne − 1),   β_G = (1 − p̂_G) · (Ne − 1)
 ```
 
-The composite log-likelihood sums the per-row contributions:
-trio rows use `log I_trio`, pair rows use the standard 2-gen
-Beta-Binomial log-likelihood. Homoplasmic grandmothers
-(`p̂_G ∈ {0, 1}`) contribute 0 (Ne-independent constant). The
-mixed-pedigree MMLE is consistent for Ne under the standard
-Kimura assumptions and reduces exactly to the 2-gen MMLE when
-no trio rows are present.
+This is not a single conjugate Beta-function ratio: the child
+Beta-Binomial factor depends on `p_M` through rising factorials.
+`ne-estimate` evaluates the integral with adaptive Gauss-Jacobi
+quadrature, using the grandmother-plus-maternal-read posterior Beta density
+as its weight.
+The implementation begins at 16 nodes, refines until stable, and caps
+the order at the polynomial-exact value `ceil((d_C + 1) / 2)`.
+Low-depth finite-sum identities and 80-decimal `mpmath` calculations
+are used in the test suite as independent references.
+
+The composite log-likelihood sums these trio contributions with the
+standard 2-gen Beta-Binomial row likelihoods. For `HAS_G = 0`, the
+code uses exactly the 2-gen path. Homoplasmic grandmothers and `Ne = 1`
+are evaluated as the corresponding degenerate G-M-C probabilities,
+rather than discarded as uninformative. The discrete model rejects
+declared trio rows. As with other composite
+likelihood analyses, independence and neutral-drift assumptions should
+be assessed before interpreting profile intervals as calibrated
+frequentist confidence intervals.
 
 Example:
 
@@ -686,7 +757,7 @@ Example:
 mitoquest trans-prep \
     -v cohort.vcf.gz \
     -f mc_pairs.fam \
-    -g gm_pairs.fam \        # grandmother-mother FAM
+  -g gm_pairs.fam \
     -o trio_pairs.tsv
 
 # ne-estimate auto-detects HAS_G and dispatches accordingly
@@ -714,10 +785,12 @@ reasons:
    (small `p0`). Plugging a noisy point estimate biases `Ne` downward
    for low-VAF pairs and underestimates the CI width.
 
-Using raw `(DP, AD)` and marginalising the maternal posterior is the
-**exact discrete-Wright-Fisher likelihood** for a single transmission;
-any method that uses `AF` as if it were the truth is an approximation
-to this.
+The continuous default still uses the count-derived $\hat p_M$ as a plug-in
+rather than treating the VCF `AF` text as a truth parameter, and it retains
+the Beta-Binomial child-read likelihood. The discrete alternative additionally
+marginalizes a maternal Beta posterior. Neither branch lets a stale or
+non-finite `MOTHER_VAF` text value change the fitted rows: the VAF gate is
+recomputed from validated `MOTHER_AD_ALT/MOTHER_DP` counts.
 
 ### Comparison with the deCODE 2024 *Cell* paper
 
@@ -731,25 +804,22 @@ Methodologically, deCODE uses the Wonnapinij bottleneck parameter `b`
 (based on the Kimura diffusion; Wonnapinij 2008/2010) fitted to the
 *variance* of frequency changes between relatives.
 
-Since v1.8.2, `mitoquest ne-estimate` uses a **continuous Beta-diffusion
-MMLE** as the default model.  This models the child's true heteroplasmy
-as a Kimura-diffusion draw:
+Since v1.8.2, `mitoquest ne-estimate` uses a **continuous working Beta
+transition MMLE** as the default model:
 
 ```txt
 p_child | p_mother  ~  Beta(p_m × (Ne − 1), (1 − p_m) × (Ne − 1))
 c_alt   | p_child   ~  BetaBinomial(c_dp, p_m × (Ne − 1), (1 − p_m) × (Ne − 1))
 ```
 
-The continuous MMLE and the Wonnapinij/Kimura cross-check are
-**theoretically consistent**: both estimate the same Ne from the same
-Kimura diffusion (Var = p(1−p)/Ne), differing only in statistical
-method — full marginal likelihood (MMLE) vs method-of-moments (Kimura).  On
-well-behaved mtDNA data they agree closely (both yielding Ne ≈ 1–10
-in human cohorts, consistent with deCODE).
-
-For multi-generation pedigrees (e.g. cousins, deeper relatives)
-Wonnapinij/Kimura is the better framework because it natively handles
-`g > 1` generations of drift.
+The continuous MMLE and the Wonnapinij/Kimura cross-check share the
+one-generation drift-variance target $p(1-p)/N_e$, but they are not the
+same likelihood or interchangeable estimators. Agreement is a useful
+diagnostic, not proof that all model assumptions hold. The current Kimura
+calculation uses the mother-child contrast on every row; it does not fit an
+explicit two-transition G-M-C likelihood or a general generation-count
+parameter. For declared G-M-C trios, use the continuous scorer described
+above.
 
 ### Why two MMLE models?
 
@@ -777,53 +847,52 @@ physical inoculum count is the target).
 
 | Estimator | Role | Strengths | Limitations |
 |-----------|------|-----------|-------------|
-| **Continuous MMLE** (default) | Primary | Real-valued Ne, Cramér-Rao efficient, tighter CI, handles per-read sampling uncertainty, robust to moderate outliers | Assumes single-generation bottleneck (`g = 1`) |
-| **Kimura cross-check** (`--cross-check kimura`) | Secondary validator | Method-of-moments (fast), independent confirmation, natively supports multi-generational pedigrees (`g > 1`) | Wider CI, sensitive to outliers without `--kimura-trim` |
-| **Discrete MMLE** (`--model discrete`) | Specialised | Exact for virus-passage / fixed-inoculum experiments | Systematic upward bias on mtDNA at high DP; integer-only grid |
+| **Continuous MMLE** (default) | Primary | Real-valued parameter and full child count likelihood | Plug-in maternal frequency, working Beta transition, composite-likelihood interval |
+| **Kimura cross-check** (`--cross-check kimura`) | Secondary diagnostic | Sampling-error-corrected ratio of sums; fast and interpretable | Uses only corrected M-C shifts; sensitive to outliers and does not fit explicit trio transitions |
+| **Discrete MMLE** (`--model discrete`) | Specialised | Finite hard-bottleneck model for fixed-inoculum experiments | Integer grid, can inflate on deep mtDNA data, and rejects declared trio rows |
 
 **Decision rule:**
 
 1. Use the **continuous MMLE** as the reported Ne (default behaviour).
 2. Run `--cross-check kimura --kimura-trim 0.10` as a sanity check.
-3. When the two agree (CI overlap), confidence is high.
-4. When they disagree (MMLE >> Kimura), inspect outlier pairs with
+3. Treat agreement or CI overlap as a diagnostic consistency check, not an
+  independent validation of the shared assumptions.
+4. When they disagree materially, inspect outlier pairs with
    `--top-drift-k 20` — a handful of high-drift pairs (NUMTs /
-   sequencing errors) can collapse the variance-based Kimura estimate
-   while the marginal-likelihood-based MMLE is robust.
-5. For multi-generation pedigree data (`g > 1`), prefer the Kimura
-   framework which supports generation-adjusted Ne.
+  sequencing errors) can collapse the variance-based Kimura estimate.
+5. For G-M-C data, use `--model continuous`; `--model discrete` rejects
+  `HAS_G=1`, and the Kimura cross-check remains an M-C diagnostic.
 
-#### Why Ne_MMLE is often smaller than Ne_Kimura
+#### Why Ne_MMLE and Ne_Kimura can differ
 
-On real mtDNA data it is common to observe `Ne_MMLE < Ne_Kimura` (e.g.,
-Ne_MMLE ≈ 2.7 vs Ne_Kimura ≈ 3.7).  This is **expected behaviour**, not a
-bug, and the MMLE estimate is the more accurate of the two.  The gap arises
-from several statistical effects:
+There is no fixed ordering between the continuous MMLE and the Kimura
+moment estimate. Their difference can arise from finite-sample behavior,
+outliers, input quality, or failure of the working one-generation model:
 
 1. **Jensen's inequality bias in the Kimura ratio estimator.**
-   The Kimura formula computes `Ne = 1/V` where `V = Σ(d_i − s_i) / Σw_i`.
+  The Kimura formula computes `Ne = 1/V` where `V = Σ(d_i − s_i) / Σw_i`.
    Because `1/x` is a convex function, the estimator `1/V̂` is biased
    *upward* by Jensen's inequality: `E[1/V̂] > 1/E[V̂]`.  With large
    cohorts (hundreds of pairs) the CIs are tight enough to expose this
    systematic upward bias in Ne_Kimura.
 
 2. **Full distribution vs. second moment only.**
-   The MMLE fits the entire BetaBinomial shape (all moments), while the
+  The MMLE fits the entire Beta-Binomial count shape, while the
    Kimura estimator uses only the second central moment (variance).  At
    small Ne the Beta distribution is highly non-Gaussian (often U-shaped),
    so the higher-order information captured by the MMLE carries real signal
    that the variance-only Kimura discards.
 
-3. **Information-optimal weighting.**
-   The MMLE weights each pair by its Fisher information (how much that
-   pair's specific depths and counts reveal about Ne).  The Kimura method
-   weights pairs only by `p_m(1 − p_m)`, ignoring how informative the
-   child observation actually is.
+3. **Different use of depth and count information.**
+  The likelihood responds to each row's count distribution, while the
+  Kimura estimate aggregates a corrected squared shift divided by the
+  maternal variance scale.
 
 4. **Plug-in sampling correction noise.**
-   The Kimura correction term `s_i = p̂_m(1−p̂_m)/m_dp + p̂_c(1−p̂_c)/c_dp`
-   uses noisy point estimates; the MMLE avoids this by marginalising the
-   read-sampling process analytically via the BetaBinomial.
+  The implemented finite-depth correction is
+  $s_i=\hat p_M(1-\hat p_M)/(d_M-1)+\hat p_C(1-\hat p_C)/(d_C-1)$.
+  It excludes rows with maternal or child depth at most one, and still
+  uses plug-in frequencies.
 
 **Is it always MMLE < Kimura?**  No — when high-drift outliers (NUMTs,
 sequencing errors) dominate, they inflate V and collapse Ne_Kimura *below*
@@ -831,15 +900,14 @@ Ne_MMLE.  The direction depends on the data:
 
 | Scenario | Typical relationship |
 | :----------: | :---------------------: |
-| Clean cohort, large N, small Ne | Ne_MMLE ≲ Ne_Kimura (Jensen's bias dominates) |
-| High-drift outliers present | Ne_MMLE > Ne_Kimura (outliers collapse Kimura) |
-| Perfect synthetic data | Ne_MMLE ≈ Ne_Kimura within ~10–20% |
+| Clean, adequately powered simulation under the working model | Often similar, but no fixed ordering is guaranteed |
+| High-drift outliers present | Kimura may be pulled downward by inflated corrected drift |
+| Sparse or shallow data | Either estimate can be unstable or boundary-clipped |
 
-**Bottom line:** Trust the continuous MMLE as the primary Ne estimate; treat
-Ne_Kimura as a qualitative confirmation that Ne is in the same order of
-magnitude.  Non-overlapping CIs between the two estimators (with the MMLE
-lower) is a well-understood property of method-of-moments vs.
-marginal-likelihood estimators, not a sign of data problems.
+**Bottom line:** Use the continuous MMLE as the configured primary estimate
+and treat Ne_Kimura as a qualitative diagnostic. Material disagreement is a
+reason to inspect data and assumptions; it is neither automatic evidence of
+a data problem nor a reason to choose an estimator solely by direction.
 
 ### Full parameter reference of `ne-estimate`
 
@@ -857,7 +925,7 @@ Optional options:
       --min-vaf   FLOAT  Lower maternal VAF gate, inclusive [0.10].
       --max-vaf   FLOAT  Upper maternal VAF gate, inclusive [0.90].
       --min-ne    INT    Smallest Ne value to consider [1].
-      --max-ne    INT    Largest Ne value to consider  [200].
+      --max-ne    INT    Largest Ne value to consider  [100].
   -t, --threads   INT    Worker threads for the inner sum [1].
       --cross-check NAME   Optional secondary estimator alongside the
                            MMLE. Supported value: `kimura`, which computes
@@ -889,7 +957,8 @@ Optional options:
       --per-family             Enable per-family Ne estimation.
                                Groups pairs by FAM_ID + MOTHER_ID and
                                estimates Ne independently for each family
-                               using the continuous MMLE.
+                               using the continuous MMLE; rejected with
+                               `--model discrete`.
       --min-family-sites INT   Minimum informative sites (mother VAF in
                                (0, 1)) required per family [3].
                                Families below this threshold are skipped
@@ -917,7 +986,7 @@ Optional options:
   "Min_VAF":         0.10,
   "Max_VAF":         0.90,
   "Search_Min_Ne":   1,
-  "Search_Max_Ne":   200,
+  "Search_Max_Ne":   100,
   "Kimura_Cross_Check": {
     "b":             0.732,
     "Ne_Kimura":     3.731,
@@ -953,8 +1022,11 @@ and `--top-drift-k > 0`, respectively.
 - `CI_Low_Clipped` / `CI_High_Clipped` flag confidence-interval bounds
   that hit the search boundary (`--min-ne` / `--max-ne`); when either is
   `true` you should re-run with a wider search range.
-- A leading provenance comment (`#mitoquest_ne_estimate_command=...`) is
-  written before the JSON when the output file is written explicitly.
+- Every invocation writes a leading provenance comment
+  (`#mitoquest_ne_estimate_command=...`) before the JSON object. After that
+  one line is removed, the object is strict JSON: dynamic strings are
+  escaped and any non-finite optional diagnostic is represented as a quoted
+  string such as `"Infinity"` or `"NaN"`, never as a bare JSON token.
 
 ### Usage example for `trans-prep`
 
@@ -1016,13 +1088,14 @@ family** in the cohort. This is enabled by the `--per-family` flag.
 
 Per-family mode groups the transmission pairs by `(FAM_ID, MOTHER_ID)`
 (columns emitted by `mitoquest trans-prep`) and runs the continuous
-Beta-diffusion MMLE on each group separately. The results are reported
-as:
+working-Beta MMLE on each group separately. It requires `--model continuous`.
+The results are reported as:
 
 - A **per-family TSV** (`--per-family-output FILE`) with one row per
   family, including: family identifiers, number of children, number of
   pairs, number of informative sites, Ne estimate with 95% CI, mean
-  depth, and optional Kimura cross-check columns.
+  depth, optional Kimura cross-check columns, and, when bootstrapping is
+  enabled, Kimura percentile-CI columns.
 - A `Per_Family_Estimates` array and `Per_Family_Summary` block in the
   main JSON output.
 
@@ -1032,8 +1105,13 @@ message. This prevents unreliable estimates from very small families.
 
 > **Note:** Per-family Ne estimation on a single family with only a
 > handful of variant sites will typically produce a very wide CI. This
-> is expected — the Beta-diffusion MMLE is statistically consistent but
+> is expected — the working-Beta MMLE is statistically consistent but
 > needs sufficient heteroplasmic sites to resolve Ne precisely.
+
+The point estimate remains a row-summed composite likelihood. For its
+family-specific Kimura CI, observations sharing the same `CHROM`, `POS`, and
+`ALT` are resampled together as a locus cluster; legacy inputs without all
+three fields fall back to row clusters and are annotated in the Kimura note.
 
 #### Per-family usage example
 
@@ -1073,6 +1151,9 @@ The `--per-family-output` TSV has one row per family:
 | `KIMURA_b`         | Kimura bottleneck parameter *b* (only when `--cross-check kimura`) |
 | `KIMURA_NE`        | Kimura-implied Ne (only when `--cross-check kimura`)          |
 | `KIMURA_N_INFORMATIVE` | Kimura informative pair count                             |
+| `KIMURA_B_CI_95_LOW`, `KIMURA_B_CI_95_HIGH` | Bootstrap percentile interval for $b$ (when computed) |
+| `KIMURA_NE_CI_95_LOW`, `KIMURA_NE_CI_95_HIGH` | Bootstrap percentile interval for Kimura Ne (when computed) |
+| `KIMURA_N_BOOTSTRAP`, `KIMURA_BOOTSTRAP_SEED` | Bootstrap settings used for the family CI |
 | `SKIPPED`          | `TRUE` when family has too few informative sites               |
 | `WARNING`          | Free-text warning (e.g. "small sample", "CI clipped")          |
 
