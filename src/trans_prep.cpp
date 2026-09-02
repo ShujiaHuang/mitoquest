@@ -384,6 +384,88 @@ void TransmissionPrep::_print_matching_report(std::ostream& os) const {
 }
 
 // ---------------------------------------------------------------------
+// detect_gt_aligned_ad()
+// ---------------------------------------------------------------------
+// When the header declares AD as Number=R or Number=A, verify the data
+// actually follow that layout before trusting the declaration.  Legacy
+// mitoquest caller versions (<= v1.10.x) declared Number=R while writing
+// GT-aligned values (one entry per called allele), so trusting the header
+// makes every site fail the length check and silently drops all records.
+//
+// Voting rule, per non-missing sample at each record:
+//   declared R: ad_len == n_alleles  (and != gt_len)  -> declared-layout vote
+//   declared A: ad_len == n_alleles-1 (and != gt_len) -> declared-layout vote
+//   either:     ad_len == gt_len (and != declared_len) -> GT-aligned vote
+//   all other samples (incl. those where the two layouts coincide) abstain.
+// The GT-aligned layout wins only with at least one vote and no fewer votes
+// than the declared layout, so standard Number=R / Number=A files (where
+// every homoplasmic sample votes for the declared layout) are unaffected.
+bool TransmissionPrep::detect_gt_aligned_ad() const {
+    ngslib::VCFFile reader(_config.vcf_path);
+    if (!reader.is_open()) return false;
+    ngslib::VCFHeader& hdr = reader.header();
+
+    const ngslib::VCFHeader::FieldNumber ad_number_type = hdr.format_number("AD");
+    const bool ad_is_number_r = ad_number_type == ngslib::VCFHeader::FieldNumber::R;
+    const bool ad_is_number_a = ad_number_type == ngslib::VCFHeader::FieldNumber::A;
+    if (!ad_is_number_r && !ad_is_number_a) return false;
+
+    const int n_samples = hdr.n_samples();
+    if (n_samples <= 0) return false;
+
+    long long votes_declared = 0;
+    long long votes_gt       = 0;
+    long long records_seen   = 0;
+    const long long kMaxProbeRecords = 5000;  // cap; a chrM VCF is far smaller
+
+    std::vector<int32_t> ad_all;
+    std::vector<int32_t> gt_all;
+    ngslib::VCFRecord rec;
+    while (reader.read(rec) >= 0 && records_seen < kMaxProbeRecords) {
+        rec.unpack(ngslib::VCFRecord::UNPACK_ALL);
+        if (rec.n_alt() == 0) continue;
+
+        const int ad_per_sample = rec.get_format_int(hdr, "AD", ad_all);
+        const int gt_ploidy     = rec.get_format_int(hdr, "GT", gt_all);
+        if (ad_per_sample <= 0 || gt_ploidy <= 0) continue;
+
+        const int n_alleles    = rec.n_alt() + 1;
+        const int declared_len = ad_is_number_r ? n_alleles : n_alleles - 1;
+        ++records_seen;
+
+        for (int s = 0; s < n_samples; ++s) {
+            // Per-sample GT width (stop at the vector-end padding).
+            const int32_t* g = gt_all.data() + s * gt_ploidy;
+            int gt_len = 0;
+            bool gt_missing = false;
+            for (int p = 0; p < gt_ploidy; ++p) {
+                if (g[p] == ngslib::VCFRecord::INT32_VECTOR_END) break;
+                if (ngslib::VCFRecord::gt_is_missing(g[p])) { gt_missing = true; break; }
+                ++gt_len;
+            }
+            if (gt_missing || gt_len == 0) continue;   // abstain
+
+            // Per-sample AD width.
+            const int32_t* d = ad_all.data() + s * ad_per_sample;
+            int ad_len = 0;
+            for (int p = 0; p < ad_per_sample; ++p) {
+                if (d[p] == ngslib::VCFRecord::INT32_VECTOR_END) break;
+                ++ad_len;
+            }
+            if (ad_len == 0) continue;                 // abstain
+
+            if (ad_len == declared_len && ad_len != gt_len) {
+                ++votes_declared;
+            } else if (ad_len == gt_len && ad_len != declared_len) {
+                ++votes_gt;
+            }
+        }
+    }
+
+    return votes_gt > 0 && votes_gt >= votes_declared;
+}
+
+// ---------------------------------------------------------------------
 // run()
 // ---------------------------------------------------------------------
 
@@ -396,8 +478,23 @@ long long TransmissionPrep::run() {
     _validate_vcf_format(hdr);
     
     const ngslib::VCFHeader::FieldNumber ad_number_type = hdr.format_number("AD");
-    const bool ad_is_number_r = ad_number_type == ngslib::VCFHeader::FieldNumber::R;
-    const bool ad_is_number_a = ad_number_type == ngslib::VCFHeader::FieldNumber::A;
+    bool ad_is_number_r = ad_number_type == ngslib::VCFHeader::FieldNumber::R;
+    bool ad_is_number_a = ad_number_type == ngslib::VCFHeader::FieldNumber::A;
+
+    // The declared Number= may not match the data: legacy caller output
+    // declares Number=R but writes GT-aligned values.  When the probe says
+    // the data are GT-aligned, fall back to the GT-aligned decode so those
+    // files are not silently emptied (see detect_gt_aligned_ad).
+    if (ad_is_number_r || ad_is_number_a) {
+        if (detect_gt_aligned_ad()) {
+            std::cerr << "[trans-prep] WARNING: AD is declared as Number="
+                      << (ad_is_number_r ? "R" : "A")
+                      << " but the data look GT-aligned (legacy caller "
+                      << "layout); decoding AD via FORMAT/GT instead.\n";
+            ad_is_number_r = false;
+            ad_is_number_a = false;
+        }
+    }
 
     std::vector<Trio> trios = parse_fam(_config.fam_path, hdr, _stats);
 

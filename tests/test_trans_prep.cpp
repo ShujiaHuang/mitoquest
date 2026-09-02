@@ -428,6 +428,97 @@ TEST(TransPrepRun, ChildGtZeroYieldsAltCountZero) {
     std::remove(out_path.c_str());
 }
 
+// Legacy mitoquest caller (<= v1.10.x) output: AD is *declared* as Number=R
+// but the values are GT-aligned (one entry per called allele, so homoplasmic
+// samples carry a single value).  Trusting the declaration would make every
+// site fail the ad_len == n_alleles check and silently drop all records;
+// the layout probe must fall back to the GT-aligned decode instead.
+const char* TEST_VCF_LEGACY_NUMBER_R = R"(##fileformat=VCFv4.2
+##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
+##FORMAT=<ID=DP,Number=1,Type=Integer,Description="Total depth">
+##FORMAT=<ID=AD,Number=R,Type=Integer,Description="Allelic depth for each allele, in the order listed by GT">
+##contig=<ID=chrM,length=16569>
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	mom_a	child_a	unrelated
+chrM	1200	.	A	G	30	PASS	.	GT:DP:AD	0/1:1000:800,200	0:900:900	1:1100:1100
+)";
+
+TEST(TransPrepRun, LegacyNumberRWithGtAlignedDataFallsBack) {
+    const std::string vcf_path = "tp_legacy_nr.vcf";
+    const std::string fam_path = "tp_legacy_nr.fam";
+    const std::string out_path = "tp_legacy_nr.tsv";
+    write_tmp(vcf_path, TEST_VCF_LEGACY_NUMBER_R);
+    write_tmp(fam_path, TEST_FAM);
+
+    TransmissionPrep::Config cfg;
+    cfg.vcf_path     = vcf_path;
+    cfg.fam_path     = fam_path;
+    cfg.output_file  = out_path;
+    cfg.min_depth    = 0;
+    cfg.require_pass = true;
+    cfg.snv_only     = true;
+
+    TransmissionPrep tp(cfg);
+    long long pass_rows = tp.run();
+
+    auto rows = read_pairs_tsv(out_path);
+    // Without the fallback this row would be dropped entirely (ad_len !=
+    // n_alleles for the homoplasmic samples).  Mother is het (800,200),
+    // child is homoplasmic REF with a single AD value.
+    EXPECT_EQ(pass_rows, 1);
+    ASSERT_EQ(rows.size(), 1u);
+    EXPECT_EQ(rows[0].pos,      1200);
+    EXPECT_EQ(rows[0].m_ad_alt, 200);
+    EXPECT_EQ(rows[0].c_ad_alt, 0);
+
+    std::remove(vcf_path.c_str());
+    std::remove(fam_path.c_str());
+    std::remove(out_path.c_str());
+}
+
+// Same probe behaviour for a Number=A declaration over GT-aligned data:
+// the het sample (ad_len=2 != n_alleles-1=1, == gt_len) votes GT-aligned and
+// must trigger the fallback.
+const char* TEST_VCF_LEGACY_NUMBER_A = R"(##fileformat=VCFv4.2
+##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
+##FORMAT=<ID=DP,Number=1,Type=Integer,Description="Total depth">
+##FORMAT=<ID=AD,Number=A,Type=Integer,Description="Allelic depth">
+##contig=<ID=chrM,length=16569>
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	mom_a	child_a	unrelated
+chrM	1300	.	A	G	30	PASS	.	GT:DP:AD	0/1:1000:800,200	0:900:900	0:1100:1100
+)";
+
+TEST(TransPrepRun, LegacyNumberAWithGtAlignedDataFallsBack) {
+    const std::string vcf_path = "tp_legacy_na.vcf";
+    const std::string fam_path = "tp_legacy_na.fam";
+    const std::string out_path = "tp_legacy_na.tsv";
+    write_tmp(vcf_path, TEST_VCF_LEGACY_NUMBER_A);
+    write_tmp(fam_path, TEST_FAM);
+
+    TransmissionPrep::Config cfg;
+    cfg.vcf_path     = vcf_path;
+    cfg.fam_path     = fam_path;
+    cfg.output_file  = out_path;
+    cfg.min_depth    = 0;
+    cfg.require_pass = true;
+    cfg.snv_only     = true;
+
+    TransmissionPrep tp(cfg);
+    long long pass_rows = tp.run();
+
+    auto rows = read_pairs_tsv(out_path);
+    // Without the fallback, the het mother would be decoded as if AD were
+    // Number=A (ad_len=2 != n_alleles-1=1 -> missing) and the row dropped.
+    EXPECT_EQ(pass_rows, 1);
+    ASSERT_EQ(rows.size(), 1u);
+    EXPECT_EQ(rows[0].pos,      1300);
+    EXPECT_EQ(rows[0].m_ad_alt, 200);
+    EXPECT_EQ(rows[0].c_ad_alt, 0);
+
+    std::remove(vcf_path.c_str());
+    std::remove(fam_path.c_str());
+    std::remove(out_path.c_str());
+}
+
 // Standard VCF AD uses Number=R: every sample records REF and all ALT depths
 // regardless of its haploid GT. trans-prep must use allele-index lookup rather
 // than requiring the AD and GT vector lengths to match.

@@ -164,6 +164,16 @@ private:
     // Number=. GT-aligned layout or standard Number=R / Number=A layouts.
     static void _validate_vcf_format(const ngslib::VCFHeader& hdr);
 
+    // Probe the actual AD layout when the header declares Number=R or
+    // Number=A. Legacy mitoquest caller versions (<= v1.10.x) declared
+    // AD as Number=R while writing GT-aligned values (one entry per called
+    // allele, so homoplasmic samples carry a single value); trusting the
+    // declaration there makes every site fail the length check and silently
+    // empties the output.  Returns true when the per-sample votes favour the
+    // GT-aligned layout over the declared one (ties / no evidence keep the
+    // declared interpretation).
+    bool detect_gt_aligned_ad() const;
+
     Config        _config;
     MatchingStats _stats;
     std::string   _cmdline_string;
