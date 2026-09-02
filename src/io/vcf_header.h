@@ -226,6 +226,48 @@ namespace ngslib {
         std::string to_string() const;
 
         /**
+         * @brief Cardinality (Number=...) of a header INFO/FORMAT field,
+         *        mirroring htslib's BCF_VL_* encoding so callers need not
+         *        include <htslib/vcf.h>. Variable-length types map to the
+         *        BCF_VL_* constants; a fixed-count field (Number=N) is
+         *        returned by format_number() as the count itself (the same
+         *        ambiguity as htslib's bcf_hdr_id2length).
+         */
+        enum class FieldNumber : int {
+            VAR     = BCF_VL_VAR,  ///< 1; variable number (Number=.)
+            A       = BCF_VL_A,    ///< 2; one value per ALT allele (Number=A)
+            G       = BCF_VL_G,    ///< 3; one value per possible genotype (Number=G)
+            R       = BCF_VL_R,    ///< 4; one value per allele incl. REF (Number=R)
+            P       = BCF_VL_P,    ///< 5; one value per allele listed in GT (Number=P)
+            LA      = BCF_VL_LA,   ///< 6; as A, restricted to LAA
+            LG      = BCF_VL_LG,   ///< 7; as G, restricted to LAA
+            LR      = BCF_VL_LR,   ///< 8; as R, restricted to LAA
+            UNKNOWN = -1           ///< tag not defined in header or lookup failed
+        };
+
+        /**
+         * @brief Checks if an INFO tag is defined in the header.
+         * @param tag The INFO tag name (e.g., "DP").
+         * @return True if the tag is defined, false otherwise.
+         */
+        bool has_info_tag(const std::string& tag) const;
+
+        /**
+         * @brief Checks if a FORMAT tag is defined in the header.
+         * @param tag The FORMAT tag name (e.g., "GT").
+         * @return True if the tag is defined, false otherwise.
+         */
+        bool has_format_tag(const std::string& tag) const;
+
+        /**
+         * @brief Gets the declared cardinality (Number=...) of a FORMAT field.
+         * @param tag The FORMAT tag name (e.g., "AF").
+         * @return The field cardinality, or FieldNumber::UNKNOWN if the tag
+         *         is undefined or the header is invalid.
+         */
+        FieldNumber format_number(const std::string& tag) const;
+
+        /**
          * @brief Gets the htslib version used.
          * @return A string containing the htslib version.
          */

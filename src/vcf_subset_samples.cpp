@@ -3,6 +3,18 @@
 // Date: 2025-04-27
 #include "vcf_subset_samples.h"
 
+#include <getopt.h>
+#include <iostream>
+#include <set>
+#include <map>
+#include <cmath>
+#include <stdexcept>
+
+#include "version.h"
+#include "algorithm.h"
+#include "io/vcf.h"
+#include "io/utils.h"
+
 // Function to print usage information for the 'subsam' command
 void VCFSubsetSamples::print_usage() {
     std::cerr << "Usage: mitoquest subsam [options] -i <input.vcf> -o <output.vcf> [-s <samplelist>] [<sample1> <sample2> ...]\n";
@@ -123,7 +135,7 @@ VCFSubsetSamples::VCFSubsetSamples(int argc, char* argv[]) {
 // Updated based on logic from MtVariantCaller::_joint_variant_in_pos
 bool VCFSubsetSamples::recalculate_info(const ngslib::VCFHeader& hdr, ngslib::VCFRecord& rec) {
     // Requires GT field in FORMAT, and record unpacked for FORMAT and INFO
-    if (rec.unpack(BCF_UN_FMT | BCF_UN_INFO) < 0) {
+    if (rec.unpack(ngslib::VCFRecord::UNPACK_FMT | ngslib::VCFRecord::UNPACK_INFO) < 0) {
             std::cerr << "Warning: Failed to unpack record for INFO recalculation at "
                       << rec.chrom(hdr) << ":" << (rec.pos() + 1) 
                       << ". Skipping INFO update.\n";
@@ -131,7 +143,7 @@ bool VCFSubsetSamples::recalculate_info(const ngslib::VCFHeader& hdr, ngslib::VC
     }
 
     int n_alt = rec.n_alt(); // Number of ALT alleles (without REF), 0 if none
-    if (n_alt == 0) return true; // No ALT alleles, nothing to count, keep as is.
+    if (n_alt == 0) return _keep_all_site;
 
     // 1. Get genotypes for all samples
     std::vector<std::vector<int>> genotypes;
@@ -146,10 +158,12 @@ bool VCFSubsetSamples::recalculate_info(const ngslib::VCFHeader& hdr, ngslib::VC
 
     int n_samples = genotypes.size();
 
-    // 2. Get Depth (DP) from FORMAT for all samples
-    std::vector<int> fmt_dp_vec;
+    // 2. Get Depth (DP) from FORMAT for all samples. DP is optional for
+    // generic VCFs; it is only needed for MitoQuest-specific summaries.
+    std::vector<int32_t> fmt_dp_vec;
     int n_dp_per_sample = rec.get_format_int(hdr, "DP", fmt_dp_vec);
-    if (n_dp_per_sample < 0 || n_dp_per_sample > 1) {
+    const bool has_dp = n_dp_per_sample == 1 && fmt_dp_vec.size() == static_cast<size_t>(n_samples);
+    if (n_dp_per_sample > 1) {
         throw std::runtime_error("[Error]: Error reading DP FORMAT field at "
                                  + rec.chrom(hdr) + ":" + std::to_string(rec.pos() + 1));
     }
@@ -157,34 +171,14 @@ bool VCFSubsetSamples::recalculate_info(const ngslib::VCFHeader& hdr, ngslib::VC
     // 3. Get AF from FORMAT for all samples
     std::vector<float> fmt_af_vec;
     int n_af_per_sample = rec.get_format_float(hdr, "AF", fmt_af_vec);
-// For debug
-// std::cerr << rec.chrom(hdr) << ":" << (rec.pos() + 1) << ", n_af_per_sample=" << n_af_per_sample << ", fmt_af_vec: " << ngslib::join(fmt_af_vec, ",") << "\n";
-    if (fmt_af_vec.size() != n_samples * n_af_per_sample) {
+    if (n_af_per_sample > 0 && fmt_af_vec.size() != static_cast<size_t>(n_samples * n_af_per_sample)) {
         throw std::runtime_error(
             "[Error]: Mismatch in AF FORMAT field size at "
             + rec.chrom(hdr) + ":" + std::to_string(rec.pos() + 1)
         );
     }
-    if (n_af_per_sample < 0) {
-        throw std::runtime_error(
-            "[Error]: Error reading AF FORMAT field at "
-            + rec.chrom(hdr) + ":" + std::to_string(rec.pos() + 1)
-        );
-
-    } else if (n_af_per_sample == 0) {
-        // AF field not present, we cannot recalculate allele frequencies
-        // Proceed without updating INFO
-        std::cerr << "Warning: AF FORMAT field not present at "
-                  << rec.chrom(hdr) << ":" << (rec.pos() + 1) 
-                  << ". Skipping INFO update.\n";
-        return true;  // Keep original INFO
-
-    } else if (n_af_per_sample < n_alt) { 
-        // 无需操作，记录这个是为了防止自己忘记
-        // 由于 mitoquest 对每个样本的 GT 计算都是动态的，也就是说它的倍体和 n_alt 可以不相等，
-        // 比如 n_alt 可以是 3，但是每个样本的倍体可以都是 1 或 2 或 3 等，所以 n_af_per_sample < n_alt 
-        // 是完全合理的，不需要报错。
-    }
+    const bool has_af = n_af_per_sample > 0;
+    const ngslib::VCFHeader::FieldNumber af_number_type = hdr.format_number("AF");
 
     // --- Statistics Containers ---
     int ref_ind_count = 0;  // Count of individuals with REF allele
@@ -199,30 +193,35 @@ bool VCFSubsetSamples::recalculate_info(const ngslib::VCFHeader& hdr, ngslib::VC
     // VAF collectors: [allele_index][sample_values]
     std::vector<std::vector<double>> alt_all_freqs(n_alt); // any sample with non-missing VAF
     std::vector<std::vector<double>> alt_het_freqs(n_alt); // only het samples
+    std::vector<int32_t> allele_counts(static_cast<size_t>(n_alt) + 1, 0);
+    int32_t standard_an = 0;
+    int32_t standard_ns = 0;
 
     // --- Loop through Samples ---
     for (size_t i = 0; i < n_samples; ++i) { // `i` is the index of sample
         // Get the genotype for this sample
         const std::vector<int>& gt = genotypes[i];
         std::vector<int> non_missing_al; // Non-missing alleles for this sample
-        std::map<size_t, size_t> al_to_idx;
+        std::map<int, size_t> al_to_gt_index;
 
         // Process GT
-        for (int j(0); j < gt.size(); ++j) { // Allele code (0=REF, 1=ALT1, ...), may be < 1 if error
-            if (gt[j] >= 0) {  // Check if allele is not missing (-1)
+        for (size_t j = 0; j < gt.size(); ++j) { // Allele code (0=REF, 1=ALT1, ...), may be < 1 if error
+            if (gt[j] >= 0 && gt[j] <= n_alt) {
                 non_missing_al.push_back(gt[j]); // Add non-missing allele
-                al_to_idx[gt[j]] = j; // 对于 MitoQuest 的 mtDNA 突变数据，al_to_idx 这个设计非常重要。
+                al_to_gt_index[gt[j]] = j;
+                ++allele_counts[static_cast<size_t>(gt[j])];
+                ++standard_an;
             }
         }
 
         // Logic from MtVariantCaller: only count non-missing genotype
         if (non_missing_al.size() > 0) {
             available_ind_count++;  // has non-missing
+            ++standard_ns;
             // collect DP
-            if (n_dp_per_sample > 0) {
-                if (std::isnan(fmt_dp_vec[i])) continue; // DP is missing for this sample, skip
-                if (fmt_dp_vec[i] != ngslib::VCFRecord::INT_MISSING &&
-                    fmt_dp_vec[i] != ngslib::VCFRecord::INT_VECTOR_END) {
+            if (has_dp) {
+                if (fmt_dp_vec[i] != ngslib::VCFRecord::INT32_MISSING &&
+                    fmt_dp_vec[i] != ngslib::VCFRecord::INT32_VECTOR_END) {
                     all_available_dp.push_back(fmt_dp_vec[i]); // Store DP, usually one per sample
                 }
             }
@@ -252,21 +251,54 @@ bool VCFSubsetSamples::recalculate_info(const ngslib::VCFHeader& hdr, ngslib::VC
                 }
             }
 
-            // Collect VAFs if AF FORMAT is available (Number = A or R)
-            for (int al: non_missing_al) {
-                if (al == 0) continue; // Skip REF allele
+            // Collect each non-reference allele at most once per sample. AF
+            // uses standard Number=A/R indexing when declared that way; only
+            // MitoQuest's Number=. layout is aligned to GT positions.
+            //
+            // MitoQuest caller also writes AF GT-aligned (one value per GT
+            // entry, in GT order) even when older headers declare Number=A/R
+            // (e.g. tests/data/t.vcf.gz). Detect the actual layout: a
+            // per-sample value count that differs from the declared
+            // cardinality, or equals the sample's GT entry count, means
+            // GT-aligned, and the value must then be looked up by GT
+            // position (al_to_gt_index) instead of by allele index.
+            const bool af_gt_aligned = [&]() {
+                if (af_number_type == ngslib::VCFHeader::FieldNumber::VAR ||
+                    af_number_type == ngslib::VCFHeader::FieldNumber::UNKNOWN) return true;
+                const int cardinality = (af_number_type == ngslib::VCFHeader::FieldNumber::A) ? n_alt : n_alt + 1;
+                if (n_af_per_sample != cardinality) return true;
+                for (size_t s = 0; s < n_samples; ++s) {
+                    int n_vals = n_af_per_sample;
+                    for (int j = 0; j < n_af_per_sample; ++j) {
+                        const float v = fmt_af_vec[s * static_cast<size_t>(n_af_per_sample) + static_cast<size_t>(j)];
+                        if (ngslib::VCFRecord::is_float_vector_end(v)) { n_vals = j; break; }
+                    }
+                    if (n_vals > 0 && n_vals == static_cast<int>(genotypes[s].size())) return true;
+                }
+                return false;
+            }();
 
-                // Calculate index in flattened array: sample_idx * n_values + al_to_idx[al]
-                // 使用 al_to_idx[al] 来跟踪坐标是必需的。举例：MitoQuest 的 mtDNA VCF 中，假设有两个样本：
-                // 样本 1 GT:AF = 0:0.992048
-                // 样本 2 GT:AF = 1/2:367:0.230337,0.0955056
-                // 以上计算得到的 fmt_af_vec 是：{0.992048,nan,0.230337,0.0955056}，n_af_per_sample=2
-                // 也就是说依据 GT idx 是不能得到对应样本正确 alt allele 的 AF 的，必需用 al_to_idx 定位.
-                size_t af_idx = i * n_af_per_sample + al_to_idx[al];
+            std::set<int> seen_alt_alleles;
+            for (int al: non_missing_al) {
+                if (al == 0 || !seen_alt_alleles.insert(al).second || !has_af) continue;
+
+                size_t af_offset = 0;
+                if (af_gt_aligned) {
+                    const auto gt_position = al_to_gt_index.find(al);
+                    if (gt_position == al_to_gt_index.end()) continue;
+                    af_offset = gt_position->second;
+                } else if (af_number_type == ngslib::VCFHeader::FieldNumber::A) {
+                    af_offset = static_cast<size_t>(al - 1);
+                } else {
+                    af_offset = static_cast<size_t>(al);  // R layout (FieldNumber::R)
+                }
+                if (af_offset >= static_cast<size_t>(n_af_per_sample)) continue;
+                const size_t af_idx = i * static_cast<size_t>(n_af_per_sample) + af_offset;
                 float val = fmt_af_vec[af_idx];
-                if (std::isnan(val)) continue;
-                if (val != ngslib::VCFRecord::FLOAT_MISSING && 
-                    val != ngslib::VCFRecord::FLOAT_VECTOR_END) {
+                if (std::isfinite(val) &&
+                    !ngslib::VCFRecord::is_float_missing(val) &&
+                    !ngslib::VCFRecord::is_float_vector_end(val)) 
+                {
                     // store the VAF for this allele
                     alt_all_freqs[al - 1].push_back(val);
                     if (is_het_sample) {
@@ -276,8 +308,11 @@ bool VCFSubsetSamples::recalculate_info(const ngslib::VCFHeader& hdr, ngslib::VC
             }
         } // End of non-missing GT processing
     } // End of sample loop
+    
     // --- Check Validity ---
-    if ((!_keep_all_site) && all_available_dp.empty()) {
+    // DP is an optional FORMAT field (absent in generic VCFs), so the
+    // "no usable sample" gate must key on non-missing GTs, not on DP.
+    if ((!_keep_all_site) && available_ind_count == 0) {
         std::cerr << "[INFO] No valid genotypes for any kept samples at " 
                   << rec.chrom(hdr) << ":" << (rec.pos() + 1) 
                   << ". Skipping this record.\n";
@@ -286,6 +321,31 @@ bool VCFSubsetSamples::recalculate_info(const ngslib::VCFHeader& hdr, ngslib::VC
     if ((!_keep_all_site) && (hom_ind_count + het_ind_count == 0)) return false;  // Non variants on this site
 
     // --- Update INFO ---
+    // Recalculate existing standard VCF summaries from the subset GTs.
+    // MitoQuest's AN is explicitly documented as a sample count, so retain
+    // that convention only when its companion custom INFO schema is present.
+    const bool mitoquest_info_schema = hdr.has_info_tag("PT") && hdr.has_info_tag("REF_N") &&
+        hdr.has_info_tag("HET_N") && hdr.has_info_tag("HOM_N") && hdr.has_info_tag("VAF_MEAN");
+    if (!mitoquest_info_schema && hdr.has_info_tag("AN")) {
+        rec.update_info_int(hdr, "AN", &standard_an, 1);
+    }
+    if (hdr.has_info_tag("AC")) {
+        rec.update_info_int(hdr, "AC", allele_counts.data() + 1, n_alt);
+    }
+    if (hdr.has_info_tag("AF")) {
+        std::vector<float> standard_af(static_cast<size_t>(n_alt), 0.0f);
+        if (standard_an > 0) {
+            for (int allele = 0; allele < n_alt; ++allele) {
+                standard_af[static_cast<size_t>(allele)] = static_cast<float>(
+                    static_cast<double>(allele_counts[static_cast<size_t>(allele) + 1]) /
+                    static_cast<double>(standard_an));
+            }
+        }
+        rec.update_info_float(hdr, "AF", standard_af.data(), n_alt);
+    }
+    if (hdr.has_info_tag("NS")) {
+        rec.update_info_int(hdr, "NS", &standard_ns, 1);
+    }
 
     // Determine Plasmic Type (PT)
     std::string pt; // plasmic type
@@ -300,29 +360,49 @@ bool VCFSubsetSamples::recalculate_info(const ngslib::VCFHeader& hdr, ngslib::VC
     } else {
         pt = "Unknown"; // Fallback case
     }
-    // Update PT in the record's INFO field
-    rec.update_info_string(hdr, "PT", pt.c_str());
-
-    // Update AN, REF_N, HET_N, HOM_N in the record's INFO field
-    rec.update_info_int(hdr, "AN",    &available_ind_count, 1);
-    rec.update_info_int(hdr, "REF_N", &ref_ind_count, 1);
-    rec.update_info_int(hdr, "HET_N", &het_ind_count, 1);
-    rec.update_info_int(hdr, "HOM_N", &hom_ind_count, 1);
-
-    // Update DP_MEAN and DP_MEDIAN in the record's INFO field
-    int dp_mean = (!all_available_dp.empty()) ? static_cast<int>(mean(all_available_dp)) : 0;
-    int dp_median = (!all_available_dp.empty()) ? static_cast<int>(median(all_available_dp)) : 0;
-    rec.update_info_int(hdr, "DP_MEAN", &dp_mean, 1);
-    rec.update_info_int(hdr, "DP_MEDIAN", &dp_median, 1);
-
-    // Update VAF_*
-    std::vector<float> v_mean(n_alt), v_mean_het(n_alt);
-    for (int i = 0; i < n_alt; ++i) {
-        v_mean[i] = (!alt_all_freqs[i].empty()) ? static_cast<float>(sum(alt_all_freqs[i])/available_ind_count) : 0;
-        v_mean_het[i] = (!alt_het_freqs[i].empty()) ? static_cast<float>(mean(alt_het_freqs[i])) : 0;
+    if (hdr.has_info_tag("PT")) {
+        rec.update_info_string(hdr, "PT", pt.c_str());
     }
-    rec.update_info_float(hdr, "VAF_MEAN", v_mean.data(), n_alt);
-    rec.update_info_float(hdr, "VAF_MEAN_HET", v_mean_het.data(), n_alt);
+    if (mitoquest_info_schema) {
+        const int32_t custom_an = available_ind_count;
+        const int32_t custom_ns = available_ind_count;
+        const int32_t custom_ref_n = ref_ind_count;
+        const int32_t custom_het_n = het_ind_count;
+        const int32_t custom_hom_n = hom_ind_count;
+
+        // MitoQuest AN is a sample count; mirror it into the standard NS
+        // tag so downstream tools read a conventional sample-count field.
+        if (hdr.has_info_tag("AN")) {
+            rec.update_info_int(hdr, "AN", &custom_an, 1);
+        }
+        if (hdr.has_info_tag("NS")) {
+            rec.update_info_int(hdr, "NS", &custom_ns, 1);
+        }
+        rec.update_info_int(hdr, "REF_N", &custom_ref_n, 1);
+        rec.update_info_int(hdr, "HET_N", &custom_het_n, 1);
+        rec.update_info_int(hdr, "HOM_N", &custom_hom_n, 1);
+
+        if (has_dp) {
+            const int32_t dp_mean = (!all_available_dp.empty())
+                ? static_cast<int32_t>(mean(all_available_dp)) : 0;
+            const int32_t dp_median = (!all_available_dp.empty())
+                ? static_cast<int32_t>(median(all_available_dp)) : 0;
+            rec.update_info_int(hdr, "DP_MEAN", &dp_mean, 1);
+            rec.update_info_int(hdr, "DP_MEDIAN", &dp_median, 1);
+        }
+
+        if (has_af) {
+            std::vector<float> v_mean(n_alt), v_mean_het(n_alt);
+            for (int i = 0; i < n_alt; ++i) {
+                v_mean[i] = (!alt_all_freqs[i].empty())
+                    ? static_cast<float>(sum(alt_all_freqs[i]) / available_ind_count) : 0;
+                v_mean_het[i] = (!alt_het_freqs[i].empty())
+                    ? static_cast<float>(mean(alt_het_freqs[i])) : 0;
+            }
+            rec.update_info_float(hdr, "VAF_MEAN", v_mean.data(), n_alt);
+            rec.update_info_float(hdr, "VAF_MEAN_HET", v_mean_het.data(), n_alt);
+        }
+    }
 
     return true;
 }
@@ -386,7 +466,14 @@ void VCFSubsetSamples::run() {
             if (!subset_rec.cleanup_genotypes(subset_hdr)) { // 清理不再出现的 ALT 等位基因, 并对样本 Genotype 进行更新
                 throw std::runtime_error("Error cleaning up genotypes in subset record at "
                     + subset_rec.chrom(subset_hdr) + ":" + std::to_string(subset_rec.pos() + 1));
-            }  
+            }
+
+            // ALT trimming is independent of whether INFO is recalculated.
+            // Keep-all-site is the sole opt-in for retaining a record that
+            // became reference-only after sample subsetting.
+            if (!_keep_all_site && subset_rec.n_alt() == 0) {
+                continue;
+            }
 
             // Recalculate INFO fields (AN, VAF_MEAN, ...) based on the kept samples
             if (_update_info) {

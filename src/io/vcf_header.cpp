@@ -267,6 +267,33 @@ namespace ngslib {
         return result;
     }
 
+    // Checks if an INFO tag is defined in the header.
+    bool VCFHeader::has_info_tag(const std::string& tag) const {
+        if (!is_valid()) return false;
+        const int id = bcf_hdr_id2int(_hdr.get(), BCF_DT_ID, tag.c_str());
+        return id >= 0 && bcf_hdr_idinfo_exists(_hdr.get(), BCF_HL_INFO, id);
+    }
+
+    // Checks if a FORMAT tag is defined in the header.
+    bool VCFHeader::has_format_tag(const std::string& tag) const {
+        if (!is_valid()) return false;
+        const int id = bcf_hdr_id2int(_hdr.get(), BCF_DT_ID, tag.c_str());
+        return id >= 0 && bcf_hdr_idinfo_exists(_hdr.get(), BCF_HL_FMT, id);
+    }
+
+    // Gets the declared cardinality (Number=...) of a FORMAT field.
+    VCFHeader::FieldNumber VCFHeader::format_number(const std::string& tag) const {
+        if (!is_valid()) return FieldNumber::UNKNOWN;
+        const int id = bcf_hdr_id2int(_hdr.get(), BCF_DT_ID, tag.c_str());
+        if (id < 0 || !bcf_hdr_idinfo_exists(_hdr.get(), BCF_HL_FMT, id)) {
+            return FieldNumber::UNKNOWN;
+        }
+        // For variable-length types bcf_hdr_id2length returns the BCF_VL_*
+        // constant; for fixed-count fields it returns the count itself (the
+        // same ambiguity exists in htslib's bcf_hdr_id2length).
+        return static_cast<FieldNumber>(bcf_hdr_id2length(_hdr.get(), BCF_HL_FMT, id));
+    }
+
     // Friend function for output stream
     std::ostream& operator<<(std::ostream& os, const VCFHeader& hdr) {
         os << hdr.to_string();

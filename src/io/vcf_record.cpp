@@ -3,10 +3,13 @@
 // Date: 2025-04-17
 
 #include "vcf_record.h"
+
+#include <htslib/vcfutils.h>
 #include <htslib/vcf.h>
 #include <htslib/kstring.h> // For string manipulation if needed
 #include <vector>
 #include <string>
+#include <algorithm> // std::all_of
 #include <cstring> // For strcmp, strlen
 #include <cstdint> // For uint32_t
 #include <stdexcept>
@@ -35,6 +38,15 @@ namespace ngslib {
         uint32_t bits;
         std::memcpy(&bits, &value, sizeof(bits));
         return bits == static_cast<uint32_t>(bcf_float_missing);
+    }
+
+    bool VCFRecord::is_float_vector_end(float value) {
+        // Bit-pattern compare, same rationale as is_float_missing: the
+        // vector-end value is a NaN bit pattern, so a value comparison is
+        // always false.
+        uint32_t bits;
+        std::memcpy(&bits, &value, sizeof(bits));
+        return bits == static_cast<uint32_t>(bcf_float_vector_end);
     }
 
     // --- Constructors & Destructor ---
@@ -127,20 +139,20 @@ namespace ngslib {
         if (!is_valid_unsafe()) return STRING_MISSING;
         // Ensure shared fields are unpacked before accessing id
         // Although bcf_get_id doesn't strictly require it, it's good practice
-        unpack(BCF_UN_SHR); // Caller should ensure this if needed
+        unpack(UNPACK_SHR); // Caller should ensure this if needed
         return (_b->d.id ? std::string(_b->d.id) : STRING_MISSING);
     }
 
     std::string VCFRecord::ref() const {
         if (!is_valid_unsafe() || _b->n_allele == 0) return "";
-        unpack(BCF_UN_STR); // Alleles are usually available without unpack
+        unpack(UNPACK_STR); // Alleles are usually available without unpack
         return (_b->d.allele[0] ? std::string(_b->d.allele[0]) : "");
     }
 
     std::vector<std::string> VCFRecord::alt() const {
         std::vector<std::string> alleles;
         if (!is_valid_unsafe() || _b->n_allele <= 1) return alleles;
-        unpack(BCF_UN_STR); // Alleles usually available
+        unpack(UNPACK_STR); // Alleles usually available
         alleles.reserve(_b->n_allele - 1);
         for (int i = 1; i < _b->n_allele; ++i) {
              alleles.push_back(_b->d.allele[i] ? std::string(_b->d.allele[i]) : "");
@@ -152,13 +164,20 @@ namespace ngslib {
          return is_valid_unsafe() ? (_b->n_allele > 0 ? _b->n_allele - 1 : 0) : 0;
      }
 
+    bool VCFRecord::has_snv() const {
+        if (!is_valid_unsafe()) return false;
+        // Wrap htslib's bcf_has_variant_types; VCF_SNP with overlap match
+        // is true when any allele is a SNP.
+        return bcf_has_variant_types(_b.get(), VCF_SNP, bcf_match_overlap) > 0;
+    }
+
     float VCFRecord::qual() const {
         if (!is_valid_unsafe()) return FLOAT_MISSING; // Or std::numeric_limits<float>::quiet_NaN();
-        return bcf_float_is_missing(_b->qual) ? FLOAT_MISSING : _b->qual;
+        return is_float_missing(_b->qual) ? FLOAT_MISSING : _b->qual;
     }
 
     int VCFRecord::n_filter() const {
-        // Requires BCF_UN_FLT
+        // Requires UNPACK_FLT
         if (!is_valid_unsafe()) return -1;
         return _b->d.n_flt; // Returns number of filters, or -1 if not unpacked
     }
@@ -185,27 +204,21 @@ namespace ngslib {
 
      bool VCFRecord::passed_filters(const VCFHeader& hdr) const {
         int n = n_filter();
-        if (n < 0) return false; // Not unpacked or invalid
-        if (n == 0) return true;  // No filters applied means PASS
+        if (n != 1) return false; // Missing, unfiltered, or multi-filter records are not PASS.
 
-        // Check if the only filter is PASS
-        if (n == 1) {
-            const char* name = bcf_hdr_int2id(hdr.hts_header(), BCF_DT_ID, _b->d.flt[0]);
-            return (name && strcmp(name, "PASS") == 0);
-        }
-        // Multiple filters, or filters other than PASS
-        return false;
+        const char* name = bcf_hdr_int2id(hdr.hts_header(), BCF_DT_ID, _b->d.flt[0]);
+        return name && strcmp(name, "PASS") == 0;
     }
 
     int VCFRecord::n_info() const {
-        // Requires BCF_UN_INFO
+        // Requires UNPACK_INFO
         if (!is_valid_unsafe()) return 0;
         // Access internal structure - check if info is populated
         return _b->n_info;
     }
 
     int VCFRecord::n_format() const {
-        // Requires BCF_UN_FMT
+        // Requires UNPACK_FMT
         if (!is_valid_unsafe()) return 0;
         return _b->n_fmt;
     }
@@ -261,14 +274,14 @@ namespace ngslib {
         if (!is_valid_unsafe() || !hdr.is_valid()) return BCF_ERR_TAG_INVALID; // Indicate error
 
         // Need to unpack INFO first
-        if (!(_b->unpacked & BCF_UN_INFO)) {
+        if (!(_b->unpacked & UNPACK_INFO)) {
              // Attempt to unpack if not already done (const_cast needed for unpack)
              // Note: Modifying unpack status in a const method is tricky.
              // Ideally, unpack should be called by the user beforehand.
              // We'll proceed assuming it might be unpacked, but this isn't ideal const-correctness.
              // A better design might involve a non-const getter or requiring prior unpack.
-            //  if (bcf_unpack(const_cast<bcf1_t*>(_b.get()), BCF_UN_INFO) != 0) {
-             if (unpack(BCF_UN_INFO) != 0) {
+            //  if (bcf_unpack(const_cast<bcf1_t*>(_b.get()), UNPACK_INFO) != 0) {
+             if (unpack(UNPACK_INFO) != 0) {
                  // Consider logging a warning here instead of returning an error code,
                  // as the failure might be due to the const context.
                  // For now, return an error code consistent with htslib.
@@ -329,8 +342,8 @@ namespace ngslib {
             return -1;
         
         // 无需在此确保 FORMAT 字段是否已解包, bcf_get_genotypes 会处理
-        // if (!((_b->unpacked & BCF_UN_FMT))) {
-        //     if (unpack(BCF_UN_FMT) < 0) {
+        // if (!((_b->unpacked & UNPACK_FMT))) {
+        //     if (unpack(UNPACK_FMT) < 0) {
         //         return -1;
         //     }
         // }
@@ -360,11 +373,11 @@ namespace ngslib {
                 int32_t allele_val = gt_arr[i * ploidy + j];
 
                 // if true, the sample has smaller ploidy
-                if (allele_val == bcf_int32_vector_end) {
+                if (allele_val == INT32_VECTOR_END) {
                     break; // 处理向量结束
                 }
 
-                genotypes[i].push_back(bcf_gt_allele(allele_val));
+                genotypes[i].push_back(gt_allele(allele_val));
             }
         }
     
@@ -464,7 +477,7 @@ namespace ngslib {
     //      'P' 'A' 'S' 'S' '\0' 'F' 'A' 'I' 'L' '\0' '.' '\0' ?   ?   ?
     //      └───── 样本0 ─────┘  └───── 样本1 ─────┘  └─ 样本2 ─┘
      *
-     */
+     **/
     int VCFRecord::get_format_string(const VCFHeader& hdr, const std::string& tag, std::vector<std::string>& values) const {
         values.clear();
         if (!is_valid_unsafe() || !hdr.is_valid() || n_samples() == 0) {
@@ -527,8 +540,8 @@ namespace ngslib {
         }
     
         // 确保 FORMAT 字段已解包
-        if (!(_b->unpacked & BCF_UN_FMT)) {
-            if (unpack(BCF_UN_FMT) < 0) {
+        if (!(_b->unpacked & UNPACK_FMT)) {
+            if (unpack(UNPACK_FMT) < 0) {
                 return -1;
             }
         }
@@ -575,9 +588,9 @@ namespace ngslib {
             actual_ploidy = j; \
         }
         switch (fmt_gt->type) {
-            case BCF_BT_INT8:  BRANCH(int8_t,  le_to_i8,  bcf_int8_vector_end); break;
-            case BCF_BT_INT16: BRANCH(int16_t, le_to_i16, bcf_int16_vector_end); break;
-            case BCF_BT_INT32: BRANCH(int32_t, le_to_i32, bcf_int32_vector_end); break;
+            case BCF_BT_INT8:  BRANCH(int8_t,  le_to_i8,  INT8_VECTOR_END); break;
+            case BCF_BT_INT16: BRANCH(int16_t, le_to_i16, INT16_VECTOR_END); break;
+            case BCF_BT_INT32: BRANCH(int32_t, le_to_i32, INT32_VECTOR_END); break;
             default:
                 throw std::runtime_error("Unexpected case: " + std::to_string(fmt_gt->type) + "\n"); 
         }
@@ -693,13 +706,13 @@ namespace ngslib {
         int filter_id = bcf_hdr_id2int(hdr.hts_header(), BCF_DT_ID, filter_name.c_str());
         if (filter_id < 0) return -1; // Filter not defined in header
         // Signature: bcf_add_filter(const bcf_hdr_t *hdr, bcf1_t *line, int filter_id)
-        // Requires BCF_UN_FLT
+        // Requires UNPACK_FLT
         return bcf_add_filter(hdr.hts_header(), _b.get(), filter_id);
     }
 
     int VCFRecord::set_filters(const VCFHeader& hdr, const std::vector<std::string>& filter_names) {
         if (!is_valid_unsafe() || !hdr.is_valid()) return -1;
-        // Requires BCF_UN_FLT
+        // Requires UNPACK_FLT
         std::vector<int32_t> filter_ids;
         filter_ids.reserve(filter_names.size());
         for(const auto& name : filter_names) {
@@ -708,7 +721,7 @@ namespace ngslib {
             filter_ids.push_back(id);
         }
         // Correct signature: bcf_update_filter(const bcf_hdr_t *hdr, bcf1_t *line, const int *filter_ids, int n_filters)
-        // Requires BCF_UN_FLT
+        // Requires UNPACK_FLT
         // Use int32_t* for htslib - need to cast or copy if filter_ids is std::vector<int>
         // Safest is to copy to a temporary int32_t vector if needed, but htslib often uses int internally here.
         // Let's assume int* is acceptable based on common usage, but be wary.
@@ -719,28 +732,28 @@ namespace ngslib {
     int VCFRecord::clear_filters(const VCFHeader& hdr) {
         if (!is_valid_unsafe() || !hdr.is_valid()) return -1;
         // Correct signature: bcf_update_filter(const bcf_hdr_t *hdr, bcf1_t *line, const int *filter_ids, int n_filters)
-        // Requires BCF_UN_FLT
+        // Requires UNPACK_FLT
         return bcf_update_filter(hdr.hts_header(), _b.get(), nullptr, 0);
     }
 
     int VCFRecord::update_info_int(const VCFHeader& hdr, const std::string& tag, const int32_t* values, int n_values) {
         if (!is_valid_unsafe() || !hdr.is_valid()) return -1;
         // Correct signature: bcf_update_info_int32(const bcf_hdr_t *hdr, bcf1_t *line, const char *key, const int32_t *values, int n)
-        // Requires BCF_UN_INFO
+        // Requires UNPACK_INFO
         return bcf_update_info_int32(hdr.hts_header(), _b.get(), tag.c_str(), values, n_values);
     }
 
     int VCFRecord::update_info_float(const VCFHeader& hdr, const std::string& tag, const float* values, int n_values) {
         if (!is_valid_unsafe() || !hdr.is_valid()) return -1;
         // Correct signature: bcf_update_info_float(const bcf_hdr_t *hdr, bcf1_t *line, const char *key, const float *values, int n)
-        // Requires BCF_UN_INFO
+        // Requires UNPACK_INFO
         return bcf_update_info_float(hdr.hts_header(), _b.get(), tag.c_str(), values, n_values);
     }
 
     int VCFRecord::update_info_flag(const VCFHeader& hdr, const std::string& tag, bool set) {
         if (!is_valid_unsafe() || !hdr.is_valid()) return -1;
         // Correct signature: bcf_update_info_flag(const bcf_hdr_t *hdr, bcf1_t *line, const char *key, const void *values, int n)
-        // Requires BCF_UN_INFO
+        // Requires UNPACK_INFO
         // Pass NULL data pointer and set n=1 to set flag, n=0 to remove flag
         return bcf_update_info_flag(hdr.hts_header(), _b.get(), tag.c_str(), nullptr, set ? 1 : 0);
     }
@@ -748,7 +761,7 @@ namespace ngslib {
     int VCFRecord::update_info_string(const VCFHeader& hdr, const std::string& tag, const char* value) {
         if (!is_valid_unsafe() || !hdr.is_valid()) return -1;
         // Correct signature: bcf_update_info_string(const bcf_hdr_t *hdr, bcf1_t *line, const char *key, const char *values)
-        // Requires BCF_UN_INFO
+        // Requires UNPACK_INFO
         // Pass NULL value to remove the tag
         return bcf_update_info_string(hdr.hts_header(), _b.get(), tag.c_str(), (value && strlen(value) > 0) ? value : nullptr);
     }
@@ -756,21 +769,21 @@ namespace ngslib {
     int VCFRecord::update_format_int(const VCFHeader& hdr, const std::string& tag, const int32_t* values, int n_values_per_sample) {
         if (!is_valid_unsafe() || !hdr.is_valid()) return -1;
         // Correct signature: bcf_update_format_int32(const bcf_hdr_t *hdr, bcf1_t *line, const char *key, const int32_t *values, int n)
-        // Requires BCF_UN_FMT
+        // Requires UNPACK_FMT
         return bcf_update_format_int32(hdr.hts_header(), _b.get(), tag.c_str(), values, n_samples() * n_values_per_sample);
     }
 
     int VCFRecord::update_format_float(const VCFHeader& hdr, const std::string& tag, const float* values, int n_values_per_sample) {
         if (!is_valid_unsafe() || !hdr.is_valid()) return -1;
         // Correct signature: bcf_update_format_float(const bcf_hdr_t *hdr, bcf1_t *line, const char *key, const float *values, int n)
-        // Requires BCF_UN_FMT
+        // Requires UNPACK_FMT
         return bcf_update_format_float(hdr.hts_header(), _b.get(), tag.c_str(), values, n_samples() * n_values_per_sample);
     }
 
     int VCFRecord::update_format_string(const VCFHeader& hdr, const std::string& tag, const char** values) {
         if (!is_valid_unsafe() || !hdr.is_valid()) return -1;
         // Correct signature: bcf_update_format_string(const bcf_hdr_t *hdr, bcf1_t *line, const char *key, const char **values, int n_sample)
-        // Requires BCF_UN_FMT
+        // Requires UNPACK_FMT
         return bcf_update_format_string(hdr.hts_header(), _b.get(), tag.c_str(), values, n_samples());
     }
 
@@ -811,94 +824,301 @@ namespace ngslib {
         return subset_rec;
     }
 
+    // --- helpers for cleanup_genotypes ---------------------------------------
+    // MitoQuest caller emits "GT-aligned" FORMAT fields: each sample carries
+    // one value per GT entry, in GT order (AF/AQ/LAF/FS/SOR, and AD in older
+    // headers). The per-sample count therefore varies and does not obey the
+    // standard Number=A/R cardinality, which makes htslib's bcf_trim_alleles
+    // reject the record ("Unexpected number of values in FORMAT/...").
+    // We detect this layout per field and, for numeric fields, blank out
+    // values whose GT entry points at an allele that is about to be removed.
+    // Values are position-bound: a surviving allele keeps its slot, only the
+    // GT index is remapped, so no value needs to move.
+    namespace {
+
+    // 矩形化 FORMAT 数据中第 sample 个样本的实际值数：htslib 解包把变长
+    // 字段矩形化（每样本 fmt->n 个值），短样本右填充 vector-end 哨兵；
+    // 扫描哨兵得到真实长度。
+    int count_sample_values(const bcf_fmt_t* fmt, const int32_t* values, int sample) {
+        const int32_t* p = values + static_cast<size_t>(sample) * static_cast<size_t>(fmt->n);
+        for (int j = 0; j < fmt->n; ++j) {
+            if (p[j] == VCFRecord::INT32_VECTOR_END) return j;
+        }
+        return fmt->n;
+    }
+
+    int count_sample_values(const bcf_fmt_t* fmt, const float* values, int sample) {
+        const float* p = values + static_cast<size_t>(sample) * static_cast<size_t>(fmt->n);
+        for (int j = 0; j < fmt->n; ++j) {
+            if (VCFRecord::is_float_vector_end(p[j])) return j;
+        }
+        return fmt->n;
+    }
+
+    // 逐样本核对字段值数是否与 GT 条目数一致（vector-end 截断后的值数）。
+    // Number=A/R 字段在标准布局下每样本值数固定为声明基数，与 GT 条目数
+    // 无关；值数恰好等于 GT 条目数说明是 GT 对齐布局。
+    // min_values: Number=. 字段需要 > 1 才构成信号（单值字段无法区分）。
+    bool field_values_match_gt_length(const bcf_hdr_t* hdr, bcf1_t* rec,
+                                      const bcf_fmt_t* fmt, const char* key,
+                                      const std::vector<std::vector<int>>& genotypes,
+                                      int min_values) {
+        if (fmt->type == BCF_BT_INT8 || fmt->type == BCF_BT_INT16 || fmt->type == BCF_BT_INT32) {
+            int32_t* buffer = nullptr;
+            int capacity = 0;
+            const int total = bcf_get_format_int32(hdr, rec, key, &buffer, &capacity);
+            if (total < 0 || buffer == nullptr) { free(buffer); return false; }
+            for (size_t s = 0; s < genotypes.size(); ++s) {
+                const int n = count_sample_values(fmt, buffer, static_cast<int>(s));
+                if (n >= min_values && n == static_cast<int>(genotypes[s].size())) { free(buffer); return true; }
+            }
+            free(buffer);
+            return false;
+        }
+        if (fmt->type == BCF_BT_FLOAT) {
+            float* buffer = nullptr;
+            int capacity = 0;
+            const int total = bcf_get_format_float(hdr, rec, key, &buffer, &capacity);
+            if (total < 0 || buffer == nullptr) { free(buffer); return false; }
+            for (size_t s = 0; s < genotypes.size(); ++s) {
+                const int n = count_sample_values(fmt, buffer, static_cast<int>(s));
+                if (n >= min_values && n == static_cast<int>(genotypes[s].size())) { free(buffer); return true; }
+            }
+            free(buffer);
+            return false;
+        }
+        return false;
+    }
+
+    // 检测记录中是否存在 GT-aligned FORMAT 字段；存在时顺带完成重排：
+    // 把"指向将被删除等位基因的 GT 位置"对应的值置为缺失。
+    // 返回 true 表示该记录采用 GT-aligned 布局（需要走自研清理路径）。
+    //
+    // `mitoquest_schema`: 该 VCF 是否为 MitoQuest caller 输出（header 含
+    // PT/REF_N/HET_N/HOM_N/VAF_MEAN INFO schema）。仅此类 VCF 在"值数恰好
+    // 等于声明基数"时做逐样本歧义判定（legacy caller 把 Number=A/R 字段
+    // 写成 GT 对齐布局）；标准第三方 VCF 值数等于基数时按标准布局处理，
+    // 交给 htslib 的 bcf_trim_alleles 正确重排。
+    bool remap_gt_aligned_format_fields(const bcf_hdr_t* hdr, bcf1_t* rec,
+                                        int gt_tag_id, int n_alt,
+                                        const std::vector<std::vector<int>>& genotypes,
+                                        const std::vector<bool>& allele_used,
+                                        bool mitoquest_schema) {
+        bool found = false;
+        for (int i = 0; i < rec->n_fmt; ++i) {
+            bcf_fmt_t* fmt = &rec->d.fmt[i];
+            if (fmt->id == gt_tag_id) continue;
+
+            // Number=A / Number=R：标准 VCF 每样本固定 n_alt / n_alt+1 个值，
+            // 值数不一致说明是 GT-aligned 布局；值数恰好等于基数时仍可能
+            // 是 GT-aligned（GT 条目数碰巧等于 ALT 数），仅 MitoQuest schema
+            // 下逐样本核对值数与 GT 条目数。Number=. 需扫描 vector-end。
+            const int number = bcf_hdr_id2length(hdr, BCF_HL_FMT, fmt->id);
+            bool gt_aligned = false;
+            if (number == BCF_VL_A || number == BCF_VL_R) {
+                const int cardinality = (number == BCF_VL_A) ? n_alt : n_alt + 1;
+                // A standard layout always carries exactly `cardinality`
+                // values per sample, so any deviation is a reliable
+                // GT-aligned signal (and exactly the case htslib rejects).
+                gt_aligned = (fmt->n != cardinality);
+                // Ambiguous case: value count == cardinality.  Legacy
+                // MitoQuest caller VCFs declared Number=A/R but wrote
+                // GT-aligned values, so keep the per-sample check for them
+                // (v1.11.3-compatible).  Standard third-party VCFs must NOT
+                // be reclassified here: removing an unused ALT would then
+                // leave dangling values exceeding the declared cardinality.
+                if (!gt_aligned && mitoquest_schema) {
+                    const char* key = bcf_hdr_int2id(hdr, BCF_DT_ID, fmt->id);
+                    gt_aligned = (key != nullptr) && field_values_match_gt_length(
+                        hdr, rec, fmt, key, genotypes, /*min_values=*/1);
+                }
+            } else if (number == BCF_VL_VAR) {
+                const char* key = bcf_hdr_int2id(hdr, BCF_DT_ID, fmt->id);
+                gt_aligned = (key != nullptr) && field_values_match_gt_length(
+                    hdr, rec, fmt, key, genotypes, /*min_values=*/2);
+            }
+            if (!gt_aligned) continue;
+            found = true;
+
+            const char* key = bcf_hdr_int2id(hdr, BCF_DT_ID, fmt->id);
+            if (key == nullptr) continue;
+
+            if (fmt->type == BCF_BT_INT8 || fmt->type == BCF_BT_INT16 || fmt->type == BCF_BT_INT32) {
+                int32_t* buffer = nullptr;
+                int capacity = 0;
+                const int total = bcf_get_format_int32(hdr, rec, key, &buffer, &capacity);
+                if (total < 0 || buffer == nullptr) { free(buffer); continue; }
+
+                bool modified = false;
+                for (size_t s = 0; s < genotypes.size(); ++s) {
+                    int32_t* p = buffer + static_cast<size_t>(s) * static_cast<size_t>(fmt->n);
+                    const auto& gt = genotypes[s];
+                    for (size_t j = 0; j < gt.size() && j < static_cast<size_t>(fmt->n); ++j) {
+                        const int g = gt[j];
+                        if (g >= 0 && g < static_cast<int>(allele_used.size())
+                            && !allele_used[static_cast<size_t>(g)]) {
+                            p[j] = VCFRecord::INT32_MISSING;
+                            modified = true;
+                        }
+                    }
+                }
+                if (modified) bcf_update_format_int32(hdr, rec, key, buffer, total);
+                free(buffer);
+            } else if (fmt->type == BCF_BT_FLOAT) {
+                float* buffer = nullptr;
+                int capacity = 0;
+                const int total = bcf_get_format_float(hdr, rec, key, &buffer, &capacity);
+                if (total < 0 || buffer == nullptr) { free(buffer); continue; }
+
+                bool modified = false;
+                for (size_t s = 0; s < genotypes.size(); ++s) {
+                    float* p = buffer + static_cast<size_t>(s) * static_cast<size_t>(fmt->n);
+                    const auto& gt = genotypes[s];
+                    for (size_t j = 0; j < gt.size() && j < static_cast<size_t>(fmt->n); ++j) {
+                        const int g = gt[j];
+                        if (g >= 0 && g < static_cast<int>(allele_used.size())
+                            && !allele_used[static_cast<size_t>(g)]) {
+                            p[j] = VCFRecord::FLOAT_MISSING;
+                            modified = true;
+                        }
+                    }
+                }
+                if (modified) bcf_update_format_float(hdr, rec, key, buffer, total);
+                free(buffer);
+            }
+        }
+        return found;
+    }
+
+    }  // namespace
+
     bool VCFRecord::cleanup_genotypes(const ngslib::VCFHeader& hdr) {
         // 1. 基本检查
         if (!is_valid_unsafe() || !hdr.is_valid()) return false;
-    
+
+        // if (unpack(UNPACK_ALL) < 0) return false;
+        // // bcf_trim_alleles removes ALT alleles unused in GT and, crucially,
+        // // remaps GT plus every standard Number-A/R/G INFO and FORMAT field.
+        // // Hand-editing REF/ALT and GT alone corrupts values for surviving
+        // // non-leading alternate alleles.
+        // 这个函数不会对 REF 和 ALT 进行修剪，只会删除未使用的等位基因
+        // return bcf_trim_alleles(hdr.hts_header(), _b.get()) >= 0;
+
         // 2. 确保记录已解包
-        if (!(_b->unpacked & BCF_UN_STR)) {
-            if (unpack(BCF_UN_STR) < 0) {
+        if (!(_b->unpacked & UNPACK_STR)) {
+            if (unpack(UNPACK_STR) < 0) {
                 return false;
             }
         }
-    
+
         // 3. 获取当前的等位基因信息
         std::string current_ref = ref();
         std::vector<std::string> current_alts = alt();
         if (current_ref.empty()) return false;
-    
+
         // 4. 获取基因型数据
         std::vector<std::vector<int>> genotypes;
         int max_ploidy = get_genotypes(hdr, genotypes);
         if (max_ploidy <= 0) return false;
-    
+
         // 5. 标记使用的等位基因
         std::vector<bool> allele_used(1 + current_alts.size(), false);
         allele_used[0] = true;  // REF 总是保留
         for (const auto& sample_gt : genotypes) {
             for (int gt : sample_gt) {
-                if (gt >= 0 && static_cast<size_t>(gt) < allele_used.size()) {
-                    allele_used[gt] = true;
+                if (gt >= 0 && gt < static_cast<int>(allele_used.size())) {
+                    allele_used[static_cast<size_t>(gt)] = true;
                 }
             }
         }
-    
+
         // 6. 检查是否需要清理
         bool all_alleles_used = std::all_of(allele_used.begin(), allele_used.end(), [](bool v){ return v; });
         bool all_single_base = (current_ref.length() == 1) && std::all_of(
             current_alts.begin(), current_alts.end(), [](const std::string& alt)
             { return alt.length() == 1; }
         );
-                              
         if (all_alleles_used && all_single_base) {
             return true;  // 所有等位基因都在使用且都是单碱基，无需清理
         }
-    
-        // 7. 创建新的等位基因列表
+
+        const bcf_hdr_t* bcf_hdr = hdr.hts_header();
+        const int gt_tag_id = bcf_hdr_id2int(bcf_hdr, BCF_DT_ID, "GT");
+        const int n_alt = static_cast<int>(current_alts.size());
+
+        // MitoQuest caller INFO schema: distinguishes caller VCFs (whose
+        // FORMAT layout is GT-aligned) from standard third-party VCFs.
+        const bool mitoquest_info_schema =
+            hdr.has_info_tag("PT") && hdr.has_info_tag("REF_N") &&
+            hdr.has_info_tag("HET_N") && hdr.has_info_tag("HOM_N") &&
+            hdr.has_info_tag("VAF_MEAN");
+
+        // 7. GT-aligned 布局检测 + 字段重排。
+        // MitoQuest caller 的 FORMAT 字段（AF/AQ/LAF/FS/SOR 等）与 GT 位置
+        // 对齐，声明却可能是 Number=A/R，htslib 的 bcf_trim_alleles 会因
+        // 值数不匹配报错退出（"Unexpected number of values in FORMAT/..."）。
+        // 这类记录走自研路径（v1.11.3 行为 + 数值字段重排）；标准 VCF 走
+        // htslib 路径，由 bcf_trim_alleles 正确重排 Number=A/R/G 的
+        // INFO/FORMAT 字段。
+        const bool gt_aligned = remap_gt_aligned_format_fields(
+            bcf_hdr, _b.get(), gt_tag_id, n_alt, genotypes, allele_used,
+            mitoquest_info_schema);
+
+        if (!gt_aligned) {
+            // 标准 VCF：htslib 删除未用 ALT 并重排标准字段，随后再归一化
+            // REF/ALT（共同前缀/后缀修剪 + POS 移位）。
+            if (bcf_trim_alleles(bcf_hdr, _b.get()) < 0) return false;
+            std::string trimmed_ref = ref();
+            std::vector<std::string> trimmed_alts = alt();
+            if (!trimmed_alts.empty() && update_alleles(hdr, trimmed_ref, trimmed_alts) < 0) {
+                return false;
+            }
+            return true;
+        }
+
+        // 8. 自研路径：创建新的等位基因列表
         std::vector<std::string> new_alts;
         std::vector<int> allele_map(allele_used.size(), -1);
         allele_map[0] = 0;  // REF 映射到自身
         int new_index = 1;
-        
+
         for (size_t i = 0; i < current_alts.size(); ++i) {
             if (allele_used[i + 1]) {
                 new_alts.push_back(current_alts[i]);
                 allele_map[i + 1] = new_index++;
             }
         }
-    
-        // 8. 更新基因型数据
+
+        // 9. 更新基因型数据（重映射保留的等位基因，被删等位基因位置置缺失）
         std::vector<std::vector<int>> new_genotypes;
         new_genotypes.reserve(genotypes.size());
         for (const auto& sample_gt : genotypes) {
             std::vector<int> new_gt;
             new_gt.reserve(sample_gt.size());
-            for (int gt : sample_gt) {  
-
-                // Bounds-check BEFORE indexing: `gt` may be missing (-1),
-                // and `allele_used[gt]` first would index out of range.
-                if (gt >= 0 && gt < static_cast<int>(allele_used.size()) &&
-                    allele_used[gt]) 
-                {
-                    new_gt.push_back(allele_map[gt]);  // 映射到新的等位基因索引
+            for (int gt : sample_gt) {
+                // 先做范围检查：缺失 GT 解码为 -1，不能用于下标访问。
+                // （v1.11.3 原实现先访问 allele_used[gt] 再检查 gt >= 0，
+                // gt == -1 时越界读取，此处一并修复。）
+                if (gt >= 0 && gt < static_cast<int>(allele_used.size())
+                    && allele_used[static_cast<size_t>(gt)]) {
+                    new_gt.push_back(allele_map[static_cast<size_t>(gt)]);  // 映射到新的等位基因索引
                 } else {
                     new_gt.push_back(-1);  // 标记缺失值
                 }
             }
             new_genotypes.push_back(std::move(new_gt));
         }
-    
-        // 9. 更新记录
-        // 先更新等位基因列表
+
+        // 10. 更新记录：先更新等位基因列表（含共同前缀/后缀修剪与 POS 移位）
         if (!new_alts.empty() && update_alleles(hdr, current_ref, new_alts) < 0) {
             return false;
         }
-    
+
         // 然后更新基因型数据
         if (update_genotypes(hdr, new_genotypes) < 0) {
             return false;
         }
-    
+
         return true;
     }
 
@@ -908,8 +1128,8 @@ namespace ngslib {
         if (!is_valid_unsafe() || !hdr.is_valid() || alts.empty()) return -1;
         
         // 2. 确保记录已解包
-        if (!(_b->unpacked & BCF_UN_STR)) {
-            if (unpack(BCF_UN_STR) < 0) {
+        if (!(_b->unpacked & UNPACK_STR)) {
+            if (unpack(UNPACK_STR) < 0) {
                 return -1;
             }
         }
@@ -1002,8 +1222,8 @@ namespace ngslib {
         if (!is_valid_unsafe() || !hdr.is_valid()) return -1;
         
         // 2. 确保 FORMAT 字段已解包
-        if (!((_b->unpacked & BCF_UN_FMT))) {
-            if (unpack(BCF_UN_FMT) < 0) {
+        if (!((_b->unpacked & UNPACK_FMT))) {
+            if (unpack(UNPACK_FMT) < 0) {
                 return -1;
             }
         }
@@ -1039,15 +1259,15 @@ namespace ngslib {
                 if (j < sample_gt.size()) {
                     // 实际的基因型值
                     if (sample_gt[j] < 0) {
-                        curr_sample[j] = bcf_gt_missing;  // 标记缺失的基因型，输出为 ‘.’
+                        curr_sample[j] = GT_MISSING;  // 标记缺失的基因型，输出为 ‘.’
                     } else {
-                        // 入参为已解码的等位基因索引（get_genotypes 通过 bcf_gt_allele
-                        // 去除了相位信息），不能对纯索引做 bcf_gt_is_phased 判断，
+                        // 入参为已解码的等位基因索引（get_genotypes 通过 gt_allele
+                        // 去除了相位信息），不能对纯索引做 gt_is_phased 判断，
                         // 否则奇数索引(1,3,...)的 bit0 会被误判为 phased 而错误输出 '|'。
                         // 相位无法经由该接口往返，统一按 unphased 编码。
                         /**
                          * @brief 
-                         *  原本这句代码是错误的：curr_sample[j] = bcf_gt_is_phased(sample_gt[j]) ? bcf_gt_phased(sample_gt[j]) : bcf_gt_unphased(sample_gt[j]);
+                         *  原本这句代码是错误的：curr_sample[j] = gt_is_phased(sample_gt[j]) ? gt_phased(sample_gt[j]) : gt_unphased(sample_gt[j]);
                          *  但这句错误代码的影响范围不大 —— 只对 / | 的分隔符有影响，且只在奇数索引的等位基因上发生。
                          *
                          *   raw indices    | BUGGY out  | FIXED out  | differs?
@@ -1061,16 +1281,16 @@ namespace ngslib {
                          *   0,1,.          | 0|1/.      | 0/1/.      | *** YES
                          *   0,.            | 0/.        | 0/.        | no
                          *
-                         *   Note: bcf_gt_allele(buggy) == bcf_gt_allele(fixed) for every case,
+                         *   Note: gt_allele(buggy) == gt_allele(fixed) for every case,
                          *   i.e. the numeric allele values are IDENTICAL; only the '/' vs '|'
                          *   phase separator can differ (and only for odd-index alleles at pos >= 2).
                          */
                         // 统一按 unphased 编码
-                        curr_sample[j] = bcf_gt_unphased(sample_gt[j]);
+                        curr_sample[j] = gt_unphased(sample_gt[j]);
                     }
                 } else {
                     // 对于倍性较低的样本，用向量结束标记填充
-                    curr_sample[j] = bcf_int32_vector_end;
+                    curr_sample[j] = INT32_VECTOR_END;
                 }
             }
         }

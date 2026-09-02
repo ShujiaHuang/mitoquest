@@ -14,13 +14,51 @@
 
 #include <gtest/gtest.h>
 
+#include <cstdio>
 #include <cmath>
+#include <fstream>
+#include <limits>
 #include <random>
+#include <string>
 #include <vector>
 #include <numeric>
 
 #include "variant_qc.h"
 #include "log_factorial.h"
+
+namespace {
+
+void write_text_file(const std::string& path, const std::string& content) {
+    std::ofstream output(path);
+    ASSERT_TRUE(output.is_open());
+    output << content;
+}
+
+std::string read_text_file(const std::string& path) {
+    std::ifstream input(path);
+    return std::string(std::istreambuf_iterator<char>(input),
+                       std::istreambuf_iterator<char>());
+}
+
+VariantQC::Config make_variant_qc_config(const std::string& input,
+                                         const std::string& output_vcf,
+                                         const std::string& output_tsv) {
+    VariantQC::Config config{};
+    config.input_vcf = input;
+    config.output_vcf = output_vcf;
+    config.output_tsv = output_tsv;
+    config.max_alt_alleles = 2;
+    config.dp_threshold = 1;
+    config.hq_threshold = 20;
+    config.bins = 100;
+    config.pi = 5e-8 * 16569;
+    config.threshold = 0.9;
+    config.max_iter = 1;
+    config.convergence_eps = 0.001;
+    return config;
+}
+
+}  // namespace
 
 // =====================================================================
 // log_beta_fn
@@ -191,6 +229,17 @@ TEST(VariantQCFitting, BetaBinomMLEEmptyInput) {
     EXPECT_GT(params.beta, 0.0);
 }
 
+TEST(VariantQCFitting, BetaBinomMLERejectsMismatchedOrInvalidObservations) {
+    mitoquest::LogFactorial lf(100);
+    EXPECT_THROW(VariantQC::fit_betabinom_mle({0.2}, {}, {}, lf),
+                 std::invalid_argument);
+    EXPECT_THROW(VariantQC::fit_betabinom_mle({0.2}, {2}, {1}, lf),
+                 std::invalid_argument);
+    EXPECT_THROW(VariantQC::fit_betabinom_mle(
+                     {std::numeric_limits<double>::quiet_NaN()}, {1}, {10}, lf),
+                 std::invalid_argument);
+}
+
 // =====================================================================
 // bayesian_filter
 // =====================================================================
@@ -332,6 +381,133 @@ TEST(VariantQCBlacklist, NonBlacklistedPositions) {
     EXPECT_FALSE(VariantQC::is_blacklisted(1000));
     EXPECT_FALSE(VariantQC::is_blacklisted(5000));
     EXPECT_FALSE(VariantQC::is_blacklisted(16569));
+}
+
+TEST(VariantQCConfig, RejectsNonPositiveBinCounts) {
+    VariantQC::Config config{};
+    config.bins = 0;
+    EXPECT_THROW((void)VariantQC{config}, std::invalid_argument);
+    config.bins = -1;
+    EXPECT_THROW((void)VariantQC{config}, std::invalid_argument);
+}
+
+TEST(VariantQCConfig, RejectsNonFiniteOrOutOfRangeStatisticalOptions) {
+    VariantQC::Config config = make_variant_qc_config("input.vcf", "output.vcf", "output.tsv");
+    config.pi = std::numeric_limits<double>::quiet_NaN();
+    EXPECT_THROW((void)VariantQC{config}, std::invalid_argument);
+
+    config.pi = 0.5;
+    config.threshold = 1.1;
+    EXPECT_THROW((void)VariantQC{config}, std::invalid_argument);
+
+    config.threshold = 0.9;
+    config.convergence_eps = std::numeric_limits<double>::infinity();
+    EXPECT_THROW((void)VariantQC{config}, std::invalid_argument);
+}
+
+TEST(VariantQCPipeline, ReferenceOnlyCleanSitePasses) {
+    const std::string input = "/tmp/mitoquest_variant_qc_reference_only.vcf";
+    const std::string output_vcf = "/tmp/mitoquest_variant_qc_reference_only_out.vcf";
+    const std::string output_tsv = "/tmp/mitoquest_variant_qc_reference_only_out.tsv";
+    write_text_file(input, R"(##fileformat=VCFv4.2
+##contig=<ID=chrM,length=16569>
+##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
+##FORMAT=<ID=DP,Number=1,Type=Integer,Description="Depth">
+##FORMAT=<ID=AD,Number=.,Type=Integer,Description="Depths">
+##FORMAT=<ID=AF,Number=.,Type=Float,Description="Frequencies">
+##FORMAT=<ID=AQ,Number=.,Type=Integer,Description="Allele quality">
+##FORMAT=<ID=FS,Number=.,Type=Float,Description="Fisher strand">
+##FORMAT=<ID=SOR,Number=.,Type=Float,Description="Strand odds ratio">
+##FORMAT=<ID=SB,Number=1,Type=String,Description="Strand counts">
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	ref_only
+chrM	100	.	A	G	60	PASS	.	GT:DP:AD:AF:AQ:FS:SOR:SB	0:500:500:1:30:0:0:250,250
+)");
+
+    VariantQC quality_control(make_variant_qc_config(input, output_vcf, output_tsv));
+    quality_control.run();
+
+    const std::string output = read_text_file(output_vcf);
+    // A clean reference-only sample is a confident call (posterior 1.0), so
+    // the site passes; it has no real ALT allele, so no TSV row is emitted.
+    EXPECT_NE(output.find("\tPASS\t"), std::string::npos);
+    EXPECT_EQ(output.find("\tLOW_QUALITY\t"), std::string::npos);
+    EXPECT_NE(output.find(":1:True"), std::string::npos);
+    EXPECT_EQ(read_text_file(output_tsv).find("ref_only\t"), std::string::npos);
+
+    std::remove(input.c_str());
+    std::remove(output_vcf.c_str());
+    std::remove(output_tsv.c_str());
+}
+
+TEST(VariantQCPipeline, BlacklistSkippedRecordsUsePosOnlyFilter) {
+    const std::string input = "/tmp/mitoquest_variant_qc_blacklist_overlap.vcf";
+    const std::string output_vcf = "/tmp/mitoquest_variant_qc_blacklist_overlap_out.vcf";
+    const std::string output_tsv = "/tmp/mitoquest_variant_qc_blacklist_overlap_out.tsv";
+    write_text_file(input, R"(##fileformat=VCFv4.2
+##contig=<ID=chrM,length=16569>
+##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
+##FORMAT=<ID=DP,Number=1,Type=Integer,Description="Depth">
+##FORMAT=<ID=AD,Number=.,Type=Integer,Description="Depths">
+##FORMAT=<ID=AF,Number=.,Type=Float,Description="Frequencies">
+##FORMAT=<ID=AQ,Number=.,Type=Integer,Description="Allele quality">
+##FORMAT=<ID=FS,Number=.,Type=Float,Description="Fisher strand">
+##FORMAT=<ID=SOR,Number=.,Type=Float,Description="Strand odds ratio">
+##FORMAT=<ID=SB,Number=1,Type=String,Description="Strand counts">
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	sample
+chrM	298	.	AC	A	60	PASS	.	GT:DP:AD:AF:AQ:FS:SOR:SB	0/1:200:100,100:0.5,0.5:30,30:0,0:0,0:50,50;50,50
+chrM	316	.	T	C	60	PASS	.	GT:DP:AD:AF:AQ:FS:SOR:SB	0/1:200:100,100:0.5,0.5:30,30:0,0:0,0:50,50;50,50
+)");
+
+    VariantQC quality_control(make_variant_qc_config(input, output_vcf, output_tsv));
+    quality_control.run();
+
+    const std::string output = read_text_file(output_vcf);
+    // Both records are skipped by the QC loop (298 spans blacklisted 299;
+    // 316 is itself blacklisted), so no PP/GOOD_CALL is added. The FILTER
+    // uses the pos-only check: 298 -> LOW_QUALITY, 316 -> BLACKLISTED_SITE.
+    EXPECT_NE(output.find("\tLOW_QUALITY\t"), std::string::npos);
+    EXPECT_NE(output.find("\tBLACKLISTED_SITE\t"), std::string::npos);
+    EXPECT_EQ(output.find(":PP"), std::string::npos); // FORMAT untouched
+    EXPECT_EQ(output.find(":True"), std::string::npos);
+    EXPECT_EQ(output.find(":False"), std::string::npos);
+    // No QC results -> no TSV rows.
+    EXPECT_EQ(read_text_file(output_tsv).find("\tchrM\t"), std::string::npos);
+
+    std::remove(input.c_str());
+    std::remove(output_vcf.c_str());
+    std::remove(output_tsv.c_str());
+}
+
+TEST(VariantQCPipeline, MissingStrandBiasFieldSuppressesBayesianCall) {
+    const std::string input = "/tmp/mitoquest_variant_qc_missing_sb.vcf";
+    const std::string output_vcf = "/tmp/mitoquest_variant_qc_missing_sb_out.vcf";
+    const std::string output_tsv = "/tmp/mitoquest_variant_qc_missing_sb_out.tsv";
+    write_text_file(input, R"(##fileformat=VCFv4.2
+##contig=<ID=chrM,length=16569>
+##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
+##FORMAT=<ID=DP,Number=1,Type=Integer,Description="Depth">
+##FORMAT=<ID=AD,Number=.,Type=Integer,Description="Depths">
+##FORMAT=<ID=AF,Number=.,Type=Float,Description="Frequencies">
+##FORMAT=<ID=AQ,Number=.,Type=Integer,Description="Allele quality">
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	ref_sample	alt_sample
+chrM	100	.	A	G	60	PASS	.	GT:DP:AD:AF:AQ	0:500:500:1:30	1:500:200:0.4:30
+)");
+
+    VariantQC quality_control(make_variant_qc_config(input, output_vcf, output_tsv));
+    quality_control.run();
+
+    const std::string vcf_output = read_text_file(output_vcf);
+    // With SB absent from the FORMAT header, no sample gets an SRF value, so
+    // the Bayesian call is suppressed (posterior 0) for every sample: the
+    // site is LOW_QUALITY and no TSV row is emitted.
+    EXPECT_NE(vcf_output.find("\tLOW_QUALITY\t"), std::string::npos);
+    EXPECT_EQ(vcf_output.find("\tPASS\t"), std::string::npos);
+    EXPECT_NE(vcf_output.find(":0:False"), std::string::npos);
+    EXPECT_EQ(read_text_file(output_tsv).find("\tchrM\t"), std::string::npos);
+
+    std::remove(input.c_str());
+    std::remove(output_vcf.c_str());
+    std::remove(output_tsv.c_str());
 }
 
 

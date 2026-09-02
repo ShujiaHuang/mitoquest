@@ -38,10 +38,24 @@ namespace ngslib {
         bool is_valid_unsafe() const { return _b != nullptr; }
 
     public:
-        // Constants for missing values (matching htslib conventions)
-        // Note: float constants cannot be constexpr as bcf_float_* might be functions/macros
-        static constexpr int INT_MISSING    = bcf_int32_missing;
-        static constexpr int INT_VECTOR_END = bcf_int32_vector_end;
+        // Missing-value / vector-end sentinel constants (wrap htslib's
+        // bcf_*_missing / bcf_*_vector_end macros so callers need not
+        // include <htslib/vcf.h> directly).  Vector-end marks the end of a
+        // sample's real values inside a rectangular FORMAT buffer; missing
+        // marks a missing element.  Names carry the integer width, matching
+        // the htslib family (int8/int16/int32/int64).
+        // Note: float constants cannot be constexpr as bcf_float_* are
+        // uint32 bit patterns planted via memcpy in the cpp file.
+        static constexpr int INT8_VECTOR_END  = bcf_int8_vector_end;
+        static constexpr int INT16_VECTOR_END = bcf_int16_vector_end;
+        static constexpr int INT32_VECTOR_END = bcf_int32_vector_end;
+        static constexpr long long INT64_VECTOR_END = bcf_int64_vector_end;
+
+        static constexpr int INT8_MISSING     = bcf_int8_missing;
+        static constexpr int INT16_MISSING    = bcf_int16_missing;
+        static constexpr int INT32_MISSING    = bcf_int32_missing;
+        static constexpr long long INT64_MISSING = bcf_int64_missing;
+        
         static const float FLOAT_MISSING;        // Initialized in cpp file
         static const float FLOAT_VECTOR_END;     // Initialized in cpp file
         static const std::string STRING_MISSING; // Initialized in cpp file
@@ -50,6 +64,20 @@ namespace ngslib {
         /// FLOAT_MISSING is a NaN bit pattern (0x7F800001), so a `==`
         /// comparison is always false; the check must compare raw bits.
         static bool is_float_missing(float value);
+
+        /// True if `value` carries the htslib float vector-end bit pattern.
+        /// FLOAT_VECTOR_END is a NaN bit pattern (0x7F800002), so the check
+        /// must compare raw bits.
+        static bool is_float_vector_end(float value);
+
+        // Unpack flag constants (wrap htslib's BCF_UN_* macros so callers
+        // need not include <htslib/vcf.h> directly).
+        static constexpr int UNPACK_STR  = BCF_UN_STR;  // up to ALT inclusive
+        static constexpr int UNPACK_FLT  = BCF_UN_FLT;  // up to FILTER
+        static constexpr int UNPACK_INFO = BCF_UN_INFO; // up to INFO
+        static constexpr int UNPACK_SHR  = BCF_UN_SHR;  // shared fields (STR|FLT|INFO)
+        static constexpr int UNPACK_FMT  = BCF_UN_FMT;  // FORMAT and samples
+        static constexpr int UNPACK_ALL  = BCF_UN_ALL;  // everything
 
         // === Genotype (GT) encoding utilities ===
         // These wrap htslib's bcf_gt_* macros so callers need not include
@@ -63,6 +91,9 @@ namespace ngslib {
         static int gt_allele(int gt) { return bcf_gt_allele(gt); }
         /// True if the GT integer carries the phased bit.
         static bool gt_is_phased(int gt) { return bcf_gt_is_phased(gt) != 0; }
+        /// True if the GT integer is the missing-genotype code ('.'); wrap
+        /// of bcf_gt_is_missing.
+        static bool gt_is_missing(int gt) { return bcf_gt_is_missing(gt) != 0; }
         /// Encoded GT value for a missing allele ('.'); wrap of bcf_gt_missing.
         static constexpr int GT_MISSING = bcf_gt_missing;
 
@@ -153,10 +184,10 @@ namespace ngslib {
         /**
          * @brief Unpacks specific fields in the BCF record for access.
          * Call this before accessing fields like FILTER, INFO, or FORMAT.
-         * @param which Fields to unpack (e.g., BCF_UN_ALL, BCF_UN_FLT, BCF_UN_INFO, BCF_UN_SHR, BCF_UN_FMT).
-         *              BCF_UN_SHR unpacks shared fields (FILTER, INFO).
-         *              BCF_UN_FMT unpacks FORMAT fields.
-         *              BCF_UN_ALL unpacks all.
+         * @param which Fields to unpack (e.g., UNPACK_ALL, UNPACK_FLT, UNPACK_INFO, UNPACK_SHR, UNPACK_FMT).
+         *              UNPACK_SHR unpacks shared fields (FILTER, INFO).
+         *              UNPACK_FMT unpacks FORMAT fields.
+         *              UNPACK_ALL unpacks all.
          * @return 0 on success, negative on error.
          */
         int unpack(int which) const;
@@ -208,46 +239,53 @@ namespace ngslib {
         int n_alt() const;
 
         /**
+         * @brief Checks if at least one allele is a SNP.
+         * @return True if any allele is a SNP, false if the record is
+         *         invalid or no allele is a SNP.
+         */
+        bool has_snv() const;
+
+        /**
          * @brief Gets the quality score (QUAL).
          * @return The quality score. Returns FLOAT_MISSING if missing or invalid.
          */
         float qual() const;
 
         /**
-         * @brief Gets the number of filters applied. Requires unpack(BCF_UN_FLT).
+         * @brief Gets the number of filters applied. Requires unpack(UNPACK_FLT).
          * @return The number of filters, or -1 if invalid or not unpacked.
          */
         int n_filter() const;
 
         /**
-         * @brief Gets the filter IDs. Requires unpack(BCF_UN_FLT).
+         * @brief Gets the filter IDs. Requires unpack(UNPACK_FLT).
          * Use VCFHeader::id2int(BCF_DT_ID, filter_id) to get the string name.
          * @return A vector of integer filter IDs. Returns empty vector if invalid, no filters, or not unpacked.
          */
         std::vector<int> filter_ids() const;
 
         /**
-         * @brief Gets the filter names as strings. Requires unpack(BCF_UN_FLT).
+         * @brief Gets the filter names as strings. Requires unpack(UNPACK_FLT).
          * @param hdr The VCFHeader associated with this record.
          * @return A vector of strings containing the filter names (e.g., "PASS", "q10").
          */
         std::vector<std::string> filter_names(const VCFHeader& hdr) const;
 
         /**
-         * @brief Checks if the record has the "PASS" filter or no filters applied. Requires unpack(BCF_UN_FLT).
+         * @brief Checks if the record has exactly the "PASS" filter. Requires unpack(UNPACK_FLT).
          * @param hdr The VCFHeader associated with this record.
          * @return True if the record passed filters, false otherwise.
          */
         bool passed_filters(const VCFHeader& hdr) const;
 
         /**
-         * @brief Gets the number of INFO fields present in the record. Requires unpack(BCF_UN_INFO).
+         * @brief Gets the number of INFO fields present in the record. Requires unpack(UNPACK_INFO).
          * @return The number of INFO fields, or 0 if invalid or not unpacked.
          */
         int n_info() const;
 
         /**
-         * @brief Gets the number of FORMAT fields present. Requires unpack(BCF_UN_FMT).
+         * @brief Gets the number of FORMAT fields present. Requires unpack(UNPACK_FMT).
          * @return The number of FORMAT fields, or 0 if invalid or not unpacked.
          */
         int n_format() const;
@@ -261,7 +299,7 @@ namespace ngslib {
 
 
         // === INFO Field Accessors ===
-        // Note: These require unpack(BCF_UN_INFO) to have been called.
+        // Note: These require unpack(UNPACK_INFO) to have been called.
         // They return default/missing values if the tag is not present or the record is invalid.
 
         /**
@@ -304,7 +342,7 @@ namespace ngslib {
 
 
         // === FORMAT Field Accessors ===
-        // Note: These require unpack(BCF_UN_FMT) to have been called.
+        // Note: These require unpack(UNPACK_FMT) to have been called.
         // They return default/missing values if the tag is not present, the sample index is invalid, or the record is invalid.
 
         /**
@@ -312,8 +350,8 @@ namespace ngslib {
          * Special helper function for the common GT field.
          * @param hdr VCFHeader for tag ID lookup.
          * @param genotypes Vector to store retrieved genotypes. Each inner vector represents a sample's genotype (e.g., {0, 1} for het). 
-         *                  Missing alleles are represented by negative values (e.g., bcf_gt_missing). Phasing is stored separately 
-         *                  if needed (use bcf_gt_is_phased).
+         *                  Missing alleles are represented by negative values (e.g., GT_MISSING). Phasing is stored separately 
+         *                  if needed (use gt_is_phased()).
          * @return The ploidy (number of alleles per sample, e.g., 2 for diploid), or a negative value on error.
          */
         int get_genotypes(const VCFHeader& hdr, std::vector<std::vector<int>>& genotypes) const;
@@ -424,7 +462,7 @@ namespace ngslib {
         void set_id(const VCFHeader& hdr, const std::string& id_str);
 
         /**
-         * @brief Adds a filter ID to the record. Requires unpack(BCF_UN_FLT).
+         * @brief Adds a filter ID to the record. Requires unpack(UNPACK_FLT).
          * @param hdr The VCFHeader containing the filter definition.
          * @param filter_name The name of the filter to add (must be defined in header).
          * @return 0 on success, negative on error (e.g., filter not defined).
@@ -432,7 +470,7 @@ namespace ngslib {
         int add_filter(const VCFHeader& hdr, const std::string& filter_name);
 
         /**
-         * @brief Sets the filters for the record, overwriting existing ones. Requires unpack(BCF_UN_FLT).
+         * @brief Sets the filters for the record, overwriting existing ones. Requires unpack(UNPACK_FLT).
          * @param hdr The VCFHeader containing the filter definitions.
          * @param filter_names Vector of filter names to set. Use an empty vector to clear filters. Use {"PASS"} for PASS.
          * @return 0 on success, negative on error.
@@ -447,7 +485,7 @@ namespace ngslib {
         int clear_filters(const VCFHeader& hdr);
 
         /**
-         * @brief Updates an integer INFO tag. Requires unpack(BCF_UN_INFO).
+         * @brief Updates an integer INFO tag. Requires unpack(UNPACK_INFO).
          * @param hdr VCFHeader for tag ID lookup.
          * @param tag The INFO tag name.
          * @param values Pointer to the integer data array.
@@ -457,7 +495,7 @@ namespace ngslib {
         int update_info_int(const VCFHeader& hdr, const std::string& tag, const int32_t* values, int n_values);
 
         /**
-         * @brief Updates a float INFO tag. Requires unpack(BCF_UN_INFO).
+         * @brief Updates a float INFO tag. Requires unpack(UNPACK_INFO).
          * @param hdr VCFHeader for tag ID lookup.
          * @param tag The INFO tag name.
          * @param values Pointer to the float data array.
@@ -467,7 +505,7 @@ namespace ngslib {
         int update_info_float(const VCFHeader& hdr, const std::string& tag, const float* values, int n_values);
 
         /**
-         * @brief Updates a flag INFO tag. Requires unpack(BCF_UN_INFO).
+         * @brief Updates a flag INFO tag. Requires unpack(UNPACK_INFO).
          * @param hdr VCFHeader for tag ID lookup.
          * @param tag The INFO flag name.
          * @param set Flag value (true to set, false to remove).
@@ -476,7 +514,7 @@ namespace ngslib {
         int update_info_flag(const VCFHeader& hdr, const std::string& tag, bool set);
 
         /**
-         * @brief Updates a string INFO tag. Requires unpack(BCF_UN_INFO).
+         * @brief Updates a string INFO tag. Requires unpack(UNPACK_INFO).
          * @param hdr VCFHeader for tag ID lookup.
          * @param tag The INFO tag name.
          * @param values Pointer to the C-string data. Use NULL or empty string to remove tag.
@@ -485,7 +523,7 @@ namespace ngslib {
         int update_info_string(const VCFHeader& hdr, const std::string& tag, const char* value);
 
         /**
-         * @brief Updates integer FORMAT tag values. Requires unpack(BCF_UN_FMT).
+         * @brief Updates integer FORMAT tag values. Requires unpack(UNPACK_FMT).
          * @param hdr VCFHeader for tag ID lookup.
          * @param tag The FORMAT tag name (e.g., "DP").
          * @param values Pointer to the integer data array (sample-major order). Size must be n_samples * number_per_sample.
@@ -495,7 +533,7 @@ namespace ngslib {
         int update_format_int(const VCFHeader& hdr, const std::string& tag, const int32_t* values, int n_values_per_sample);
 
         /**
-         * @brief Updates float FORMAT tag values. Requires unpack(BCF_UN_FMT).
+         * @brief Updates float FORMAT tag values. Requires unpack(UNPACK_FMT).
          * @param hdr VCFHeader for tag ID lookup.
          * @param tag The FORMAT tag name (e.g., "PL").
          * @param values Pointer to the float data array (sample-major order).
@@ -505,7 +543,7 @@ namespace ngslib {
         int update_format_float(const VCFHeader& hdr, const std::string& tag, const float* values, int n_values_per_sample);
 
         /**
-         * @brief Updates string FORMAT tag values. Requires unpack(BCF_UN_FMT).
+         * @brief Updates string FORMAT tag values. Requires unpack(UNPACK_FMT).
          * @param hdr VCFHeader for tag ID lookup.
          * @param tag The FORMAT tag name (e.g., "FT").
          * @param values Array of C-strings (one per sample). Size must be n_samples.
@@ -514,7 +552,7 @@ namespace ngslib {
         int update_format_string(const VCFHeader& hdr, const std::string& tag, const char** values);
 
         /**
-         * @brief Cleans up alleles (REF and ALT) to remove invalid or missing values.
+         * @brief Removes ALT alleles unused by GT and remaps standard allele-indexed fields.
          * @param hdr The VCFHeader associated with this record.
          * @return True if cleanup was successful, false if the record is invalid.
          */
@@ -530,9 +568,10 @@ namespace ngslib {
         int update_alleles(const VCFHeader& hdr, const std::string& ref, const std::vector<std::string>& alts);
 
         /**
-         * @brief Updates genotype (GT) FORMAT tag values. Requires unpack(BCF_UN_FMT).
+         * @brief Updates genotype (GT) FORMAT tag values. Requires unpack(UNPACK_FMT).
          * @param hdr VCFHeader for tag ID lookup.
-         * @param genotypes Vector of vectors containing genotype data (sample-major, allele-major within sample). Use bcf_gt_unphased() etc. to construct values.
+         * @param genotypes Vector of vectors containing genotype data (sample-major, allele-major within sample). 
+         *                  Use gt_unphased() etc. to construct values.
          * @return 0 on success, negative on error.
          */
         int update_genotypes(const VCFHeader& hdr, const std::vector<std::vector<int>>& genotypes);

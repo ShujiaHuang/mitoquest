@@ -10,11 +10,16 @@
 #include "mt_utils.h"
 #include "io/utils.h"
 
-#include <fstream>
+#include <getopt.h>
 #include <algorithm>
-#include <tuple>
-#include <stdexcept>
+#include <cmath>
+#include <cstddef>
 #include <cstring>
+#include <fstream>
+#include <iostream>
+#include <limits>
+#include <stdexcept>
+#include <tuple>
 
 // =====================================================================
 // Static member definitions
@@ -53,8 +58,6 @@ bool VariantQC::is_blacklisted(uint32_t pos) {
     return _blacklist.count(pos) > 0;
 }
 
-namespace {
-
 bool overlaps_blacklist(uint32_t position, size_t reference_length) {
     for (size_t offset = 0; offset < reference_length; ++offset) {
         if (VariantQC::is_blacklisted(position + static_cast<uint32_t>(offset))) {
@@ -88,8 +91,6 @@ void validate_config(const VariantQC::Config& config) {
         throw std::invalid_argument("[variant-qc] convergence_eps must be finite and in (0, 1].");
     }
 }
-
-}  // namespace
 
 // =====================================================================
 // Usage
@@ -383,7 +384,6 @@ VariantQC::BetaParams VariantQC::fit_beta_mle(const std::vector<double>& vafs) {
 // Beta-Binomial MLE fitting
 // =====================================================================
 
-namespace {
 struct BBMLEData {
     const std::vector<int>* k_obs;
     const std::vector<int>* n_obs;
@@ -407,7 +407,6 @@ double bb_nll_objective(double log_a, double log_b, const void* data) {
     }
     return nll;
 }
-} // anonymous namespace
 
 VariantQC::BetaParams VariantQC::fit_betabinom_mle(
     const std::vector<double>& vafs,
@@ -452,8 +451,8 @@ VariantQC::BetaParams VariantQC::fit_betabinom_mle(
                    &lf};
 
     NMResult res = nelder_mead_2d(bb_nll_objective, &data,
-                                   std::log(a_init), std::log(b_init),
-                                   /*max_iter=*/500, /*tol=*/1e-8);
+                                  std::log(a_init), std::log(b_init),
+                                  /*max_iter=*/500, /*tol=*/1e-8);
     double a = std::exp(res.x1);
     double b = std::exp(res.x2);
     a = std::max(0.01, std::min(a, 100.0));
@@ -515,10 +514,10 @@ double VariantQC::bayesian_filter(
 // =====================================================================
 // KL divergence
 // =====================================================================
-
-double VariantQC::kl_divergence(const std::vector<double>& vafs,
-                                 double q_alpha, double q_beta,
-                                 const std::vector<double>& bin_edges)
+double VariantQC::kl_divergence(
+    const std::vector<double>& vafs,
+    double q_alpha, double q_beta,
+    const std::vector<double>& bin_edges)
 {
     if (vafs.empty()) return 0.0;
     int n_bins = static_cast<int>(bin_edges.size()) - 1;
@@ -567,7 +566,7 @@ void VariantQC::_collect_samples_info(
     out.resize(n_samples);
 
     // Unpack FORMAT fields
-    rec.unpack(BCF_UN_FMT);
+    rec.unpack(ngslib::VCFRecord::UNPACK_FMT);
 
     // Extract GT
     std::vector<std::vector<int>> genotypes;
@@ -626,9 +625,7 @@ void VariantQC::_collect_samples_info(
         }
 
         // DP
-        si.dp = (s < static_cast<int>(dp_vals.size()) &&
-                 dp_vals[s] != ngslib::VCFRecord::INT_MISSING)
-                ? dp_vals[s] : -1;
+        si.dp = (s < static_cast<int>(dp_vals.size()) && dp_vals[s] != ngslib::VCFRecord::INT32_MISSING) ? dp_vals[s] : -1;
 
         // AD (per allele, variable length). FORMAT arrays are stored as a
         // rectangular matrix padded to the widest sample with vector-end
@@ -640,8 +637,8 @@ void VariantQC::_collect_samples_info(
             for (int j = 0; j < ad_per_sample; ++j) {
                 if (offset + j >= static_cast<int>(ad_values.size())) break;
                 int val = ad_values[offset + j];
-                if (val == ngslib::VCFRecord::INT_VECTOR_END) break;
-                si.ad.push_back(val == ngslib::VCFRecord::INT_MISSING ? -1 : val);
+                if (val == ngslib::VCFRecord::INT32_VECTOR_END) break;
+                si.ad.push_back(val == ngslib::VCFRecord::INT32_MISSING ? -1 : val);
             }
         }
 
@@ -652,8 +649,8 @@ void VariantQC::_collect_samples_info(
             for (int j = 0; j < af_per_sample; ++j) {
                 if (offset + j >= static_cast<int>(af_values.size())) break;
                 float val = af_values[offset + j];
-                if (bcf_float_is_vector_end(val)) break;
-                si.af.push_back(bcf_float_is_missing(val) ? -1.0 : static_cast<double>(val));
+                if (ngslib::VCFRecord::is_float_vector_end(val)) break;
+                si.af.push_back(ngslib::VCFRecord::is_float_missing(val) ? -1.0 : static_cast<double>(val));
             }
         }
 
@@ -664,8 +661,8 @@ void VariantQC::_collect_samples_info(
             for (int j = 0; j < aq_per_sample; ++j) {
                 if (offset + j >= static_cast<int>(aq_values.size())) break;
                 int val = aq_values[offset + j];
-                if (val == ngslib::VCFRecord::INT_VECTOR_END) break;
-                si.aq.push_back(val == ngslib::VCFRecord::INT_MISSING ? -1 : val);
+                if (val == ngslib::VCFRecord::INT32_VECTOR_END) break;
+                si.aq.push_back(val == ngslib::VCFRecord::INT32_MISSING ? -1 : val);
             }
         }
 
@@ -676,8 +673,8 @@ void VariantQC::_collect_samples_info(
             for (int j = 0; j < fs_per_sample; ++j) {
                 if (offset + j >= static_cast<int>(fs_values.size())) break;
                 float val = fs_values[offset + j];
-                if (bcf_float_is_vector_end(val)) break;
-                si.fs.push_back(bcf_float_is_missing(val) ? -1.0 : static_cast<double>(val));
+                if (ngslib::VCFRecord::is_float_vector_end(val)) break;
+                si.fs.push_back(ngslib::VCFRecord::is_float_missing(val) ? -1.0 : static_cast<double>(val));
             }
         }
 
@@ -688,8 +685,8 @@ void VariantQC::_collect_samples_info(
             for (int j = 0; j < sor_per_sample; ++j) {
                 if (offset + j >= static_cast<int>(sor_values.size())) break;
                 float val = sor_values[offset + j];
-                if (bcf_float_is_vector_end(val)) break;
-                si.sor.push_back(bcf_float_is_missing(val) ? -1.0 : static_cast<double>(val));
+                if (ngslib::VCFRecord::is_float_vector_end(val)) break;
+                si.sor.push_back(ngslib::VCFRecord::is_float_missing(val) ? -1.0 : static_cast<double>(val));
             }
         }
 
@@ -916,23 +913,18 @@ void VariantQC::_iterative_fit_and_call(
             std::vector<double> pps;
             for (int j = 0; j < n_alleles; ++j) {
                 double hq_val = (r.allele_aq[j] >= 0)
-                    ? static_cast<double>(r.allele_aq[j])
-                    : static_cast<double>(_config.hq_threshold);
-                double srf_val = (j < static_cast<int>(r.allele_srf.size()))
-                    ? r.allele_srf[j] : 0.5;
-                double pp = bayesian_filter(
-                    r.allele_depths[j], r.dp,
-                    srf_val, hq_val, _config.hq_threshold,
-                    r.q_alpha, r.q_beta,
-                    h1_params.alpha, h1_params.beta,
-                    _config.pi);
+                    ? static_cast<double>(r.allele_aq[j]) : static_cast<double>(_config.hq_threshold);
+                double srf_val = (j < static_cast<int>(r.allele_srf.size())) ? r.allele_srf[j] : 0.5;
+                double pp = bayesian_filter(r.allele_depths[j], r.dp,
+                                            srf_val, hq_val, _config.hq_threshold,
+                                            r.q_alpha, r.q_beta,
+                                            h1_params.alpha, h1_params.beta,
+                                            _config.pi);
                 pps.push_back(pp);
             }
 
-            double new_posterior = pps.empty() ? 0.0 :
-                *std::max_element(pps.begin(), pps.end());
+            double new_posterior = pps.empty() ? 0.0 : *std::max_element(pps.begin(), pps.end());
             bool new_is_mut = new_posterior > _config.threshold;
-
             if (new_is_mut != r.is_mutation) n_changed++;
 
             r.posterior = new_posterior;
@@ -1017,7 +1009,7 @@ void VariantQC::_process() {
 
     ngslib::VCFRecord rec;
     while (vcf_in.read(rec) >= 0) {
-        rec.unpack(BCF_UN_ALL);
+        rec.unpack(ngslib::VCFRecord::UNPACK_ALL);
         std::string chrom = rec.chrom(hdr);
         uint32_t pos = static_cast<uint32_t>(rec.pos() + 1); // 0->1 based
         std::string ref = rec.ref();
@@ -1169,7 +1161,7 @@ void VariantQC::_write_vcf(
 
     ngslib::VCFRecord rec;
     while (vcf_in.read(rec) >= 0) {
-        rec.unpack(BCF_UN_ALL);
+        rec.unpack(ngslib::VCFRecord::UNPACK_ALL);
         std::string chrom = rec.chrom(out_hdr);
         uint32_t pos = static_cast<uint32_t>(rec.pos() + 1);
 
@@ -1203,16 +1195,14 @@ void VariantQC::_write_vcf(
                     // during collection; write a fully missing GT for them,
                     // matching the Python reference. Others get the filtered GT
                     // (low-posterior alleles set to -1 -> '.').
-                    genotypes[s] = it->second.gt.empty()
-                        ? std::vector<int>{-1}
-                        : it->second.gt;
+                    genotypes[s] = it->second.gt.empty() ? std::vector<int>{-1} : it->second.gt;
                 }
             }
         }
 
         if (any_result) {
             rec.update_genotypes(out_hdr, genotypes);
-            rec.update_format_float(out_hdr, "PP", pp_values.data(), 1);
+            rec.update_format_float(out_hdr,  "PP", pp_values.data(), 1);
             rec.update_format_string(out_hdr, "GOOD_CALL", gc_values.data());
         }
 
@@ -1231,10 +1221,8 @@ void VariantQC::_write_vcf(
 
         // Set QUAL to KL divergence (rounded)
         auto kl_it = pos_kl_div.find({chrom, pos});
-        float qual_val = (kl_it != pos_kl_div.end())
-            ? static_cast<float>(std::round(kl_it->second)) : 0.0f;
+        float qual_val = (kl_it != pos_kl_div.end()) ? static_cast<float>(std::round(kl_it->second)) : 0.0f;
         rec.set_qual(qual_val);
-
         vcf_out.write(rec);
     }
     vcf_in.close();

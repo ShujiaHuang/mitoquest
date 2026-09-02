@@ -21,20 +21,13 @@
 #ifndef _VARIANT_QC_H_
 #define _VARIANT_QC_H_
 
-#include <getopt.h>
-#include <cstddef>
 #include <cstdint>
-#include <cmath>
-#include <iostream>
-#include <string>
-#include <vector>
-#include <set>
-#include <unordered_set>
 #include <map>
-#include <limits>
+#include <string>
+#include <unordered_set>
+#include <vector>
 
 #include "log_factorial.h"
-#include "version.h"
 
 // Forward declarations for ngslib VCF I/O types (defined in io/*.h)
 namespace ngslib {
@@ -92,8 +85,8 @@ public:
         uint32_t    pos;
         std::string ref;
         std::vector<std::string> alt;  // alleles corresponding to GT
-        std::vector<int>    gt;        // original or updated GT
-        std::vector<int>    original_gt; // GT as read from VCF (never modified during iteration)
+        std::vector<int>  gt;          // original or updated GT
+        std::vector<int>  original_gt; // GT as read from VCF (never modified during iteration)
         int    ploidy;
         int    dp;                     // total depth (DP field), used as denominator D in Bayesian filter
         double q_alpha;                // background noise Beta alpha at this site
@@ -126,7 +119,6 @@ public:
 
     /// Run the full QC pipeline: parse -> fit -> filter -> write.
     void run();
-
     const Config& config() const { return _config; }
 
     // -----------------------------------------------------------------
