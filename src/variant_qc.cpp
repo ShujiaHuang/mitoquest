@@ -8,10 +8,10 @@
 #include "variant_qc.h"
 #include "io/vcf.h"
 #include "mt_utils.h"
+#include "io/utils.h"
 
 #include <fstream>
 #include <algorithm>
-#include <numeric>
 #include <tuple>
 #include <stdexcept>
 #include <cstring>
@@ -30,9 +30,15 @@ void VariantQC::init_blacklist() {
 
     // Known problematic mtDNA regions (1-based, inclusive)
     static const std::pair<uint32_t, uint32_t> regions[] = {
-        {299, 317}, {511, 525}, {564, 571}, {952, 955},
-        {3105, 3108}, {5895, 5899}, {8268, 8279},
-        {13645, 13650}, {16180, 16187}
+        {299, 317}, 
+        {511, 525}, 
+        {564, 571}, 
+        {952, 955},
+        {3105, 3108}, 
+        {5895, 5899}, 
+        {8268, 8279},
+        {13645, 13650}, 
+        {16180, 16187}
     };
     for (const auto& [start, end] : regions) {
         for (uint32_t pos = start; pos <= end; ++pos) {
@@ -46,6 +52,44 @@ bool VariantQC::is_blacklisted(uint32_t pos) {
     if (!_blacklist_initialized) init_blacklist();
     return _blacklist.count(pos) > 0;
 }
+
+namespace {
+
+bool overlaps_blacklist(uint32_t position, size_t reference_length) {
+    for (size_t offset = 0; offset < reference_length; ++offset) {
+        if (VariantQC::is_blacklisted(position + static_cast<uint32_t>(offset))) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void validate_config(const VariantQC::Config& config) {
+    if (config.max_alt_alleles < 1) {
+        throw std::invalid_argument("[variant-qc] max_alt_alleles must be at least 1.");
+    }
+    if (config.dp_threshold < 0 || config.hq_threshold < 0) {
+        throw std::invalid_argument("[variant-qc] depth and allele-quality thresholds must be non-negative.");
+    }
+    if (config.bins < 1) {
+        throw std::invalid_argument("[variant-qc] bins must be at least 1.");
+    }
+    if (!std::isfinite(config.pi) || config.pi <= 0.0 || config.pi >= 1.0) {
+        throw std::invalid_argument("[variant-qc] pi must be finite and in (0, 1).");
+    }
+    if (!std::isfinite(config.threshold) || config.threshold < 0.0 || config.threshold > 1.0) {
+        throw std::invalid_argument("[variant-qc] posterior threshold must be finite and in [0, 1].");
+    }
+    if (config.max_iter < 1) {
+        throw std::invalid_argument("[variant-qc] max_iter must be at least 1.");
+    }
+    if (!std::isfinite(config.convergence_eps) || config.convergence_eps <= 0.0 ||
+        config.convergence_eps > 1.0) {
+        throw std::invalid_argument("[variant-qc] convergence_eps must be finite and in (0, 1].");
+    }
+}
+
+}  // namespace
 
 // =====================================================================
 // Usage
@@ -123,6 +167,7 @@ void VariantQC::_parse_args(int argc, char* argv[]) {
         usage();
         std::exit(EXIT_FAILURE);
     }
+    validate_config(_config);
 }
 
 // =====================================================================
@@ -141,6 +186,7 @@ VariantQC::VariantQC(int argc, char* argv[]) {
 
 VariantQC::VariantQC(Config config) : _config(std::move(config)) {
     init_blacklist();
+    validate_config(_config);
     _cmdline_string = "mitoquest variant-qc (programmatic)";
 }
 
@@ -369,6 +415,17 @@ VariantQC::BetaParams VariantQC::fit_betabinom_mle(
     const std::vector<int>& n_obs,
     const LogFactorial& lf)
 {
+    if (vafs.size() != k_obs.size() || vafs.size() != n_obs.size()) {
+        throw std::invalid_argument(
+            "[variant-qc] Beta-Binomial VAF, count, and depth vectors must have equal length.");
+    }
+    for (size_t index = 0; index < vafs.size(); ++index) {
+        if (!std::isfinite(vafs[index]) || vafs[index] < 0.0 || vafs[index] > 1.0 ||
+            n_obs[index] <= 0 || k_obs[index] < 0 || k_obs[index] > n_obs[index]) {
+            throw std::invalid_argument(
+                "[variant-qc] Beta-Binomial observations must have finite VAFs and valid counts.");
+        }
+    }
     if (vafs.empty()) {
         return {0.5, 0.2}; // default fallback
     }
@@ -390,8 +447,8 @@ VariantQC::BetaParams VariantQC::fit_betabinom_mle(
     double a_init = std::max(mu * common, 0.01);
     double b_init = std::max((1.0 - mu) * common, 0.01);
 
-    BBMLEData data{k_obs.empty() ? nullptr : &k_obs,
-                   n_obs.empty() ? nullptr : &n_obs,
+    BBMLEData data{&k_obs,
+                   &n_obs,
                    &lf};
 
     NMResult res = nelder_mead_2d(bb_nll_objective, &data,
@@ -659,7 +716,11 @@ void VariantQC::_collect_samples_info(
         }
 
         // Pre-filter: check for missing essential fields
-        if (si.dp < 0 || si.ploidy == 0) {
+        // A missing GT (ploidy 0) does NOT trigger the pre-filter: the
+        // Bayesian call can still be computed from AD/AF/AQ/SRF. The Python
+        // reference clears GT for samples with missing GT alleles but keeps
+        // the read-level fields and keeps computing PP/GOOD_CALL.
+        if (si.dp < 0) {
             si.pre_filtered = true;
             continue;
         }
@@ -711,11 +772,12 @@ std::vector<double> VariantQC::_fetch_background_error_rates(
 
         // Background error rate = 1 - (sum of called-allele frequencies), for
         // every qualifying haploid sample regardless of GT. Matches Python
-        // fetch_background_error_rates, which appends 1 - sum(AF) without checking
-        // GT and WITHOUT filtering exact 0/1 boundaries here: boundary values
-        // (e.g. perfect homoplasmy, error rate 0) are legitimate observations for
-        // the p_error mean. The Beta fit (fit_beta_mle) filters the (0,1) interior
-        // on its own, mirroring Python's estimate_background_noise.
+        // fetch_background_error_rates, which appends 1 - sum(AF) without
+        // checking GT and without filtering exact 0/1 boundaries here: boundary
+        // values (e.g. perfect homoplasmy, error rate 0) are legitimate
+        // observations for the p_error mean. The Beta fit (fit_beta_mle)
+        // filters the (0,1) interior on its own, mirroring Python's
+        // estimate_background_noise.
         if (!si.af.empty()) {
             double sum_af = 0.0;
             for (double a : si.af) sum_af += a;
@@ -876,10 +938,12 @@ void VariantQC::_iterative_fit_and_call(
             r.posterior = new_posterior;
             r.is_mutation = new_is_mut;
 
-            // Update GT: zero out alleles with low posterior
+            // Update GT: zero out alleles with low posterior. Matches the
+            // Python reference, which drops any allele (REF included) whose
+            // posterior falls below the call threshold.
             for (int j = 0; j < static_cast<int>(r.gt.size()) &&
                             j < static_cast<int>(pps.size()); ++j) {
-                if (pps[j] <= _config.threshold && r.gt[j] > 0) {
+                if (pps[j] <= _config.threshold && r.gt[j] >= 0) {
                     r.gt[j] = -1; // mark as filtered
                 }
             }
@@ -960,14 +1024,7 @@ void VariantQC::_process() {
         std::vector<std::string> alts = rec.alt();
 
         // Skip blacklisted positions
-        bool blacklisted = false;
-        for (size_t i = 0; i < ref.size(); ++i) {
-            if (is_blacklisted(pos + static_cast<uint32_t>(i))) {
-                blacklisted = true;
-                break;
-            }
-        }
-        if (blacklisted) continue;
+        if (overlaps_blacklist(pos, ref.size())) continue;
 
         // Skip sites with too many ALT alleles
         if (static_cast<int>(alts.size()) > _config.max_alt_alleles) continue;
@@ -1117,30 +1174,47 @@ void VariantQC::_write_vcf(
         uint32_t pos = static_cast<uint32_t>(rec.pos() + 1);
 
         int n_samp = out_hdr.n_samples();
-        std::vector<float> pp_values(n_samp, 0.0f);
-        std::vector<const char*> gc_values(n_samp, FALSE_STR);
+        // Defaults are "missing" and are only ever used if a record has
+        // partial QC coverage (which does not occur in practice: a processed
+        // site has one result per sample).
+        std::vector<float> pp_values(n_samp, ngslib::VCFRecord::FLOAT_MISSING);
+        std::vector<const char*> gc_values(n_samp, "."); // "." is the missing string marker
 
         // Read current genotypes so that samples we do not touch keep their
         // original GT; overwrite only samples present in the QC results.
         std::vector<std::vector<int>> genotypes;
         rec.get_genotypes(out_hdr, genotypes);
 
+        // Records with no QC result (e.g. sites skipped by the processing
+        // loop) keep their original FORMAT untouched, exactly like the
+        // Python reference, which only adds PP/GOOD_CALL to records that
+        // have at least one sample in its results table.
+        bool any_result = false;
         const std::vector<std::string>& snames = out_hdr.sample_names();
         for (int s = 0; s < n_samp; ++s) {
             const std::string& sname = snames[s];
             auto it = lookup.find({chrom, pos, sname});
             if (it != lookup.end()) {
+                any_result = true;
                 pp_values[s] = static_cast<float>(it->second.posterior);
                 gc_values[s] = it->second.is_mutation ? TRUE_STR : FALSE_STR;
-                if (!it->second.gt.empty() && s < static_cast<int>(genotypes.size())) {
-                    genotypes[s] = it->second.gt;  // filtered GT (low-posterior alleles set to -1 -> '.')
+                if (s < static_cast<int>(genotypes.size())) {
+                    // Samples with missing GT alleles had their GT cleared
+                    // during collection; write a fully missing GT for them,
+                    // matching the Python reference. Others get the filtered GT
+                    // (low-posterior alleles set to -1 -> '.').
+                    genotypes[s] = it->second.gt.empty()
+                        ? std::vector<int>{-1}
+                        : it->second.gt;
                 }
             }
         }
 
-        rec.update_genotypes(out_hdr, genotypes);
-        rec.update_format_float(out_hdr, "PP", pp_values.data(), 1);
-        rec.update_format_string(out_hdr, "GOOD_CALL", gc_values.data());
+        if (any_result) {
+            rec.update_genotypes(out_hdr, genotypes);
+            rec.update_format_float(out_hdr, "PP", pp_values.data(), 1);
+            rec.update_format_string(out_hdr, "GOOD_CALL", gc_values.data());
+        }
 
         // Set FILTER
         rec.clear_filters(out_hdr);
@@ -1178,7 +1252,7 @@ void VariantQC::_write_tsv(const std::vector<ResultRecord>& results) {
         throw std::runtime_error("Cannot open output TSV: " + _config.output_tsv);
     }
 
-    ofs << "sample\tchrom\tpos\tref\talt\tploidy\t"
+    ofs << "sample\tchrom\tpos\tref\talt\tploidy\tHQ\tSRF\t"
         << "q_alpha\tq_beta\tp_error\tposterior\tis_mutation\n";
 
     for (const auto& r : results) {
@@ -1192,12 +1266,18 @@ void VariantQC::_write_tsv(const std::vector<ResultRecord>& results) {
         if (!has_alt) continue;
         if (!r.is_mutation) continue;
 
+        // Per-allele HQ (AQ) and SRF values
+        std::string hq_str  = ngslib::join(r.allele_aq, ",");
+        std::string srf_str = ngslib::join(r.allele_srf, ",");
+
         ofs << r.sample_name << "\t"
             << r.chrom << "\t"
             << r.pos << "\t"
             << r.ref << "\t"
             << alt_str << "\t"
             << r.ploidy << "\t"
+            << hq_str << "\t"
+            << srf_str << "\t"
             << format_double(r.q_alpha, 4) << "\t"
             << format_double(r.q_beta, 4) << "\t"
             << format_double(r.p_error, 8) << "\t"
