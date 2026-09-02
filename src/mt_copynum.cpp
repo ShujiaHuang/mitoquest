@@ -420,11 +420,10 @@ void MtCopyNumber::_count_chrom_fragments(ChromosomeData &chrom_data,
             }
             if (rec.mapq() < _config.min_mapq) continue;
 
-            // Anchor each fragment by its 5' end (map_ref_start_pos is
-            // 0-based) so that a fragment is counted at most once across
-            // the union of intervals, even though the BAM iterator may
-            // return reads whose alignment extends across an interval edge.
-            hts_pos_t anchor0 = rec.map_ref_start_pos();
+            // Anchor each fragment by its 5' end so that a fragment is
+            // counted at most once across the union of intervals. Reverse
+            // reads begin at their rightmost aligned reference base.
+            hts_pos_t anchor0 = rec.is_mapped_reverse() ? rec.map_ref_end_pos() - 1 : rec.map_ref_start_pos();
             if (anchor0 < 0) continue;
             uint32_t anchor1 = static_cast<uint32_t>(anchor0) + 1;
             if (anchor1 < iv.start || anchor1 > iv.end) continue;
@@ -432,7 +431,7 @@ void MtCopyNumber::_count_chrom_fragments(ChromosomeData &chrom_data,
             if (seq_type == SeqType::SE) {
                 ++chrom_data.count;
             } else {
-                if (rec.is_read1()) {
+                if (rec.is_read1() || (rec.is_paired() && !rec.is_mate_mapped())) {
                     ++chrom_data.count;
                 } else if (!rec.is_paired()) {
                     std::string qn = rec.qname();
@@ -547,9 +546,10 @@ void MtCopyNumber::_calculate_gc_content(std::vector<ChromosomeData> &chromosome
         // Length-weighted GC across all measured sub-intervals.
         int64_t gc = 0, valid = 0;
         for (const auto &iv : chrom.regions) {
-            // Fasta::fetch(chr, start, end) takes 1-based start, 1-based end inclusive
-            // per faidx semantics in this codebase.
-            std::string seq = reference.fetch(chrom.name, iv.start, iv.end);
+            // Fasta::fetch(chr, start, end) forwards to faidx_fetch_seq,
+            // which accepts 0-based inclusive coordinates. Regions are
+            // stored as 1-based inclusive, so convert the left endpoint.
+            std::string seq = reference.fetch(chrom.name, iv.start - 1, iv.end - 1);
             for (char c : seq) {
                 char u = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
                 if (u == 'N') continue;
@@ -634,32 +634,24 @@ std::vector<ngslib::GenomeRegion> MtCopyNumber::parse_regions_arg(
             trim_inplace(line);
             if (line.empty()) continue;
 
-            // Auto-detect BED form: at least one tab AND at least three
-            // tab-separated fields whose 2nd and 3rd parse as integers.
-            if (line.find('\t') != std::string::npos) {
-                std::vector<std::string> cols;
-                std::string cur;
-                for (char c : line) {
-                    if (c == '\t') { cols.push_back(cur); cur.clear(); }
-                    else           { cur.push_back(c); }
-                }
-                if (!cur.empty()) cols.push_back(cur);
-                if (cols.size() >= 3) {
-                    try {
-                        uint32_t s0 = static_cast<uint32_t>(std::stoul(cols[1])); // 0-based start
-                        uint32_t e0 = static_cast<uint32_t>(std::stoul(cols[2])); // 0-based half-open end
-                        if (e0 <= s0) {
-                            throw std::invalid_argument("[copynum] empty BED interval in '" + line + "'");
-                        }
-                        std::string chrom = cols[0];
-                        trim_inplace(chrom);
-                        out.emplace_back(chrom, s0 + 1u, e0);  // BED -> 1-based inclusive
-                        continue;
-                    } catch (const std::invalid_argument &) {
-                        // Not actually BED; fall through to samtools-style parser below.
-                    } catch (const std::out_of_range &) {
-                        throw std::runtime_error("[copynum] BED interval out of range: " + line);
+            // Accept conventional tab-delimited BED and whitespace-delimited
+            // BED-like triples. A one-field line remains samtools-style.
+            std::istringstream fields(line);
+            std::vector<std::string> cols;
+            for (std::string field; fields >> field; ) cols.push_back(field);
+            if (cols.size() >= 3) {
+                try {
+                    uint32_t s0 = static_cast<uint32_t>(std::stoul(cols[1])); // 0-based start
+                    uint32_t e0 = static_cast<uint32_t>(std::stoul(cols[2])); // 0-based half-open end
+                    if (e0 <= s0 || s0 == std::numeric_limits<uint32_t>::max()) {
+                        throw std::invalid_argument("[copynum] empty or out-of-range BED interval in '" + line + "'");
                     }
+                    out.emplace_back(cols[0], s0 + 1u, e0);  // BED -> 1-based inclusive
+                    continue;
+                } catch (const std::invalid_argument &) {
+                    // Not a numeric BED triple; fall through to samtools-style parsing.
+                } catch (const std::out_of_range &) {
+                    throw std::runtime_error("[copynum] BED interval out of range: " + line);
                 }
             }
             // samtools-style "chr:start-end" per-line form.

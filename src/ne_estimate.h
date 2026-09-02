@@ -9,19 +9,16 @@
  * ====================================================================
  *
  * For each independent mother-child (M-C) transmission pair the child's
- * heteroplasmy is modelled as a Kimura-diffusion draw from the maternal
- * heteroplasmy after a single-generation bottleneck of Ne transmitting
- * units:
+ * heteroplasmy is modelled with a working Beta transition approximation
+ * matched to the mean and one-generation variance of neutral drift:
  *
- *   p_child | p_mother  ~  Beta( p_mother * (Ne - 1),
- *                                (1 - p_mother) * (Ne - 1) )
+ *   p_child | p_mother  ~  Beta(p_mother * (Ne - 1), (1 - p_mother) * (Ne - 1))
  *
  *   c_alt | p_child     ~  Binomial(c_dp, p_child)
  *
  * After analytically marginalising out the latent p_child:
  *
- *   c_alt | p_mother    ~  BetaBinomial(c_dp, p_mother * (Ne - 1),
- *                                             (1 - p_mother) * (Ne - 1))
+ *   c_alt | p_mother    ~  BetaBinomial(c_dp, p_mother * (Ne - 1), (1 - p_mother) * (Ne - 1))
  *
  * yielding the per-pair *marginal* likelihood that depends only on Ne
  * and the observed counts.  Because the M-C pairs are treated as
@@ -35,11 +32,11 @@
  * (at typical mtDNA depths >= 100 this is virtually identical to the
  * fully marginalised integral over a Beta posterior).
  *
- * This continuous model is appropriate for mtDNA transmission because
- * the child's actual heteroplasmy is shaped not only by the initial
- * bottleneck sampling but also by post-bottleneck vegetative
- * segregation during cell division.  The Kimura diffusion captures
- * *all* these sources of variance as a single effective Ne.
+ * This continuous model treats Ne as an apparent, variance-matching
+ * effective bottleneck. It may absorb bottleneck sampling, vegetative
+ * segregation, and unmodelled biological or technical variability; it is
+ * not a literal molecule count or the exact transient density of a
+ * Wright-Fisher diffusion.
  *
  * The previous discrete model (k ~ BetaBin, c ~ Bin(c_dp, k/Ne))
  * restricted child heteroplasmy to the coarse grid {0, 1/Ne, ..., 1}
@@ -110,6 +107,20 @@ public:
         std::string fam_id;
         std::string mother_id;
         std::string child_id;
+        // Stable CHROM/POS/ALT key when the input TSV supplies all three;
+        // used to resample all children of one locus together in a family.
+        std::string locus_id;
+    };
+
+    /// Loading diagnostics collected by load_pairs.  Trio rows whose
+    /// grandmother is homoplasmic are absorbing G->M->C states and are
+    /// dropped at load time: compatible all-homoplasmic descendants
+    /// contribute a Ne-independent constant (log 1 = 0), while
+    /// incompatible segregating descendants are impossible (-inf) under
+    /// the model and would abort the whole fit if passed through.
+    struct LoadStats {
+        size_t trio_founder_hom_skipped      = 0; // G hom, descendants all-hom
+        size_t trio_founder_mismatch_skipped = 0; // G hom, descendants segregating
     };
 
     /// Optional Wonnapinij/Kimura cross-check output.
@@ -204,6 +215,9 @@ public:
         KimuraCheck kimura;               // populated only when requested
         // Per-family results (populated only when --per-family is set).
         std::vector<FamilyResult> family_results;
+
+        // Loading diagnostics (trio founder-homoplasmy filters etc.).
+        LoadStats load_stats;
     };
 
     // CLI configuration parsed from argv.
@@ -304,9 +318,12 @@ public:
     // -----------------------------------------------------------------
 
     // Read the TSV produced by `mitoquest trans-prep`, applying the
-    // QC == "PASS" gate and the maternal-VAF window.
+    // QC == "PASS" gate and the maternal-VAF window.  Trio rows with a
+    // homoplasmic grandmother are dropped here (see LoadStats); pass
+    // `stats` to receive the skip counters for logging / JSON output.
     static std::vector<PairData> load_pairs(const std::string& tsv_path,
-                                            double min_vaf, double max_vaf);
+                                            double min_vaf, double max_vaf,
+                                            LoadStats* stats = nullptr);
 
     // Per-pair log-likelihood (discrete bottleneck model).
     static double compute_ll_single(const PairData& pd, int ne,
@@ -325,7 +342,7 @@ public:
 
     // Per-row marginal log-likelihood for a three-generation G-M-C trio
     // under the continuous Beta-diffusion model.  The mother's latent
-    // heteroplasmy p_M is integrated out analytically:
+    // heteroplasmy p_M is integrated with adaptive Gauss-Jacobi quadrature:
     //
     //   I(Ne) = int_0^1 Beta(p_M | alpha_G, beta_G)
     //                  * Bin(k_M | d_M, p_M)
@@ -333,35 +350,35 @@ public:
     //           dp_M
     //
     // where alpha_G = p_hat_G * (Ne - 1) and beta_G = (1 - p_hat_G) * (Ne - 1)
-    // with p_hat_G = g_ad_alt / g_dp.  The closed form is:
-    //
-    //   I(Ne) = C(d_M, k_M) C(d_C, k_C)
-    //           * B(alpha_G + k_M + k_C,
-    //               beta_G  + (d_M - k_M) + (d_C - k_C))
-    //           / B(alpha_G, beta_G)
+    // with p_hat_G = g_ad_alt / g_dp.  The child Beta-Binomial factor is not
+    // conjugate in p_M, so this integral cannot be reduced to one Beta ratio.
+    // The Gauss-Jacobi rule absorbs the maternal Beta posterior weight and is
+    // refined until stable, with a polynomial-exact order cap.
     //
     // When pd.has_g == 0 (i.e. the row is a two-generation MC pair), this
     // function falls back to the standard two-generation continuous
-    // likelihood (compute_ll_single_continuous).  When the grandmother is
-    // homoplasmic (p_hat_G in {0, 1}) the row is non-informative for Ne
-    // and the function returns 0.0 (a Ne-independent constant).
+    // likelihood (compute_ll_single_continuous).  At Ne == 1 and for a
+    // homoplasmic grandmother, the exact degenerate G-M-C probabilities are
+    // evaluated instead of discarding the row.
     static double compute_ll_trio_continuous(const PairData& pd, double ne,
                                              const LogFactorial& lf);
 
-    // Gauss-Legendre quadrature fallback for the trio marginal likelihood.
-    // Used by the unit tests to validate the closed-form formula; not the
-    // default path in the optimiser.
+    // Diagnostic Gauss-Legendre evaluation of the trio marginal likelihood.
+    // It evaluates the correct integrand but does not handle endpoint-singular
+    // Beta weights as robustly as the production Gauss-Jacobi path.
     static double compute_ll_trio_quadrature(const PairData& pd, double ne,
                                              const LogFactorial& lf,
                                              int n_nodes = 64);
 
-    // Global log-likelihood (single-threaded).
+    // Global log-likelihood (single-threaded). When `continuous` is true,
+    // HAS_G rows dispatch to the G-M-C trio likelihood.
     static double compute_global_ll(int ne,
                                     const std::vector<PairData>& data,
                                     const LogFactorial& lf,
                                     bool continuous = false);
 
-    // Global log-likelihood with optional thread-pool parallelism.
+    // Global log-likelihood with optional thread-pool parallelism. When
+    // `continuous` is true, HAS_G rows dispatch to the G-M-C trio likelihood.
     // Falls back to sequential when `threads <= 1`.
     static double compute_global_ll_parallel(int ne,
                                              const std::vector<PairData>& data,
@@ -466,9 +483,8 @@ public:
                            double vaf_low, double vaf_high, int n_bins);
 
     /**
-     * @brief Score every candidate Ne in [min_ne, max_ne] (step `step`)
-     *        under both the MMLE marginal log-likelihood and the Kimura
-     *        sum-of-squared-residuals metric.
+    * @brief Score every candidate Ne under both the MMLE marginal log-
+    *        likelihood and the Kimura sum-of-squared-residuals metric.
      *
      * The MMLE column uses the continuous Beta-diffusion marginal log-
      * likelihood when `continuous == true` and the discrete Beta-Binomial
@@ -479,8 +495,9 @@ public:
      *     ssr(Ne)         =  Sigma_i residual_i(Ne)^2
      *
      * After the scan we normalise: `mmle_delta_2ll = -2 (LL - LL_max)` and
-     * `kimura_norm_ssr = ssr / ssr_min`.  The grid is clamped so that
-     * `step > 0` and `min_ne >= 1`.
+    * `kimura_norm_ssr = ssr / ssr_min`. The continuous model uses `step`;
+    * the discrete model evaluates and reports each integer Ne only. The
+    * grid is clamped so that `step > 0` and `min_ne >= 1`.
      */
     static std::vector<NeProfileRow>
     compute_ne_profile(const std::vector<PairData>& data,
@@ -511,7 +528,9 @@ public:
                           int min_family_sites,
                           int threads);
 
-    // Per-family Kimura cross-check (site-level bootstrap, not pair-level).
+    // Per-family Kimura cross-check. When locus_id is available, bootstrap
+    // resampling uses whole locus clusters so all child observations at that
+    // locus remain together; missing locus IDs fall back to row clusters.
     static KimuraCheck compute_family_kimura_check(
         const FamilyData& fam,
         int      n_bootstrap = 0,

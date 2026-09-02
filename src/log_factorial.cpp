@@ -36,7 +36,9 @@ double LogFactorial::log_comb(int n, int k) const {
 }
 
 double LogFactorial::log_binomial_pmf(int n, int k, double p) const {
-    if (k < 0 || k > n) return -std::numeric_limits<double>::infinity();
+    if (n < 0 || k < 0 || k > n || !std::isfinite(p)) {
+        return -std::numeric_limits<double>::infinity();
+    }
     if (p <= 0.0) return (k == 0) ? 0.0 : -std::numeric_limits<double>::infinity();
     if (p >= 1.0) return (k == n) ? 0.0 : -std::numeric_limits<double>::infinity();
     return log_comb(n, k)
@@ -47,7 +49,7 @@ double LogFactorial::log_binomial_pmf(int n, int k, double p) const {
 double LogFactorial::log_betabinom_pmf(int n, int k,
                                        double alpha, double beta) const {
     if (k < 0 || k > n || n < 0) return -std::numeric_limits<double>::infinity();
-    if (alpha <= 0.0 || beta <= 0.0) {
+    if (!std::isfinite(alpha) || !std::isfinite(beta) || alpha <= 0.0 || beta <= 0.0) {
         return -std::numeric_limits<double>::infinity();
     }
     // log Pr(k | n, a, b) = log C(n, k)

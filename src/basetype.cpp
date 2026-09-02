@@ -8,6 +8,27 @@
  */
 #include "basetype.h"
 
+bool is_supported_caller_allele(const std::string& allele) {
+    if (allele.empty()) return false;
+
+    size_t sequence_start = 0;
+    if (allele.front() == '+' || allele.front() == '-') {
+        if (allele.size() == 1) return false;
+        sequence_start = 1;
+    } else if (allele.size() != 1) {
+        return false;
+    }
+
+    for (size_t index = sequence_start; index < allele.size(); ++index) {
+        const char base = allele[index];
+        if (base != 'A' && base != 'C' && base != 'G' && base != 'T') {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 //////////////////////////////////////////////////////////////
 //// The codes for the member function of BaseType class /////
 //////////////////////////////////////////////////////////////
@@ -28,12 +49,12 @@ BaseType::BaseType(const BatchInfo *smp_bi, double min_af) {
     tmp_bases.insert(tmp_bases.end(), BASIC_BASES.begin(), BASIC_BASES.end());
     _UNIQ_BASES = ngslib::get_unique_strings(tmp_bases);
 
-    // Remove bases that are not valid (e.g., 'N', '*')
+    // The caller is defined for canonical substitutions and canonical-sequence
+    // insertions/deletions only; do not promote ambiguity symbols to alleles.
     _UNIQ_BASES.erase(
         std::remove_if(_UNIQ_BASES.begin(), _UNIQ_BASES.end(),
             [](const std::string& base) {
-                return base[0] == 'N' || base[0] == 'n' || base[0] == '*';
-                // Add more conditions as needed
+                return !is_supported_caller_allele(base);
             }
         ),
         _UNIQ_BASES.end()
@@ -51,13 +72,10 @@ BaseType::BaseType(const BatchInfo *smp_bi, double min_af) {
     _total_depth = 0;
     _allele_likelihood.reserve(smp_bi->align_bases.size());
     for (size_t i(0); i < smp_bi->align_bases.size(); ++i) {
-
-        if (_bases2ref.find(smp_bi->align_bases[i]) == _bases2ref.end()) {
-            _bases2ref.insert({smp_bi->align_bases[i], smp_bi->ref_bases[i]});
-        }
-
-        if (smp_bi->align_bases[i][0] != 'N' && smp_bi->align_bases[i][0] != 'n') { 
-            // ignore all the 'N' bases
+        if (is_supported_caller_allele(smp_bi->align_bases[i])) {
+            if (_bases2ref.find(smp_bi->align_bases[i]) == _bases2ref.end()) {
+                _bases2ref.insert({smp_bi->align_bases[i], smp_bi->ref_bases[i]});
+            }
             _total_depth++;
             _depth[smp_bi->align_bases[i]]++;
 

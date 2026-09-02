@@ -9,20 +9,18 @@
 #ifndef _MT_UTILS_H_
 #define _MT_UTILS_H_
 
-#include <cmath>   // use log function
-#include <sstream>
+// #include <cmath>   // use log function
+// #include <sstream>
 #include <string>
 #include <vector>
+#include <map>
 #include <regex>
 
 #include <htslib/bgzf.h>
 #include <htslib/tbx.h>
 
-#include "io/fasta.h"
-#include "io/iobgzf.h"
 #include "io/utils.h"
 #include "external/robin_hood.h"  // robin_hood::unordered_map, robin_hood::unordered_set
-#include "algorithm.h"
 
 // Enumeration for sequencing type
 enum class SeqType {
@@ -70,7 +68,7 @@ typedef robin_hood::unordered_map<uint32_t, AlignInfo> PosMap;  // key: ref_pos,
 typedef struct {
     int fwd, rev;
     double fs;   // Phred-scaled p-value using Fisher's exact test to detect strand bias
-    double sor;  // Strand bias estimated by the Symmetric Odds Ratio test
+    double sor;  // GATK-style symmetric strand odds ratio (natural-log scale)
 } StrandBiasInfo;
 
 struct VariantInfo {
@@ -108,7 +106,7 @@ struct VCFSampleAnnotation {
     std::vector<int> allele_depths;       //  AD, allele depth
     std::vector<int> aq;                  //  AQ, phred quality score of allele
     std::vector<double> allele_freqs;     //  AF, allele fraction
-    std::vector<double> logit_af;         // LAF, logit transformed allele fraction
+    std::vector<std::string> logit_af;    // LAF, logit transformed allele fraction or VCF missing value
     std::vector<std::string> ci_strings;
     std::vector<std::string> sb_strings;
     std::vector<std::string> fs_strings;
@@ -143,10 +141,8 @@ struct VCFRecord {
 
         // REF must be A,C,G,T,N or * for structural variants
         for (char c : ref) {
-            if (c != 'A' && c != 'C' && c != 'G' && c != 'T' && 
-                c != 'N' && c != '*' && 
-                c != 'a' && c != 'c' && c != 'g' && c != 't' && 
-                c != 'n') {
+            if (c != 'A' && c != 'C' && c != 'G' && c != 'T' && c != 'N' && c != '*' && 
+                c != 'a' && c != 'c' && c != 'g' && c != 't' && c != 'n') {
                 return false;
             }
         }

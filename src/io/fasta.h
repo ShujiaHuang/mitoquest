@@ -47,17 +47,24 @@ namespace ngslib {
          * @param  seq  Sequence name
          * @return      1 if present or 0 if absent
          */
-        bool has_seq(const std::string seq_id) const { return faidx_has_seq(fai, seq_id.c_str()); }
+        bool has_seq(const std::string seq_id) const {
+            return fai && faidx_has_seq(fai, seq_id.c_str());
+        }
 
         // Return number of sequences in fa index
-        int nseq() { return faidx_nseq(fai); }
+        int nseq() { return fai ? faidx_nseq(fai) : 0; }
 
         // Return name of i-th sequence
-        std::string iseq_name(int i) { return std::string(faidx_iseq(fai, i)); } 
+        std::string iseq_name(int i) {
+            const char* name = fai ? faidx_iseq(fai, i) : nullptr;
+            return name ? std::string(name) : std::string();
+        }
 
         // Return sequence length, -1 if not present
         uint32_t seq_length(const char *seq_id) const { 
-            return faidx_seq_len64(fai, seq_id) > 0 ? faidx_seq_len64(fai, seq_id) : 0; 
+            if (!fai || !seq_id) return 0;
+            const hts_pos_t length = faidx_seq_len64(fai, seq_id);
+            return length > 0 ? static_cast<uint32_t>(length) : 0;
         }
         uint32_t seq_length(const std::string seq_id) const { return seq_length(seq_id.c_str()); }
 
@@ -75,8 +82,8 @@ namespace ngslib {
 
         /** fetch a string from the fasta sequence
          * @param chromosome name of the reference to query
-         * @param start position.  1. Zero-based
-         * @param end position.    2. Zero-based
+         * @param start position, 0-based inclusive
+         * @param end position, 0-based inclusive
          *
          * @exception Throws an invalid_argument if start > end, chromosome not found, or seq not found
          * @note This is currently NOT thread safe

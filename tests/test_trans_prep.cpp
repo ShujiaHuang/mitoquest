@@ -428,6 +428,92 @@ TEST(TransPrepRun, ChildGtZeroYieldsAltCountZero) {
     std::remove(out_path.c_str());
 }
 
+// Standard VCF AD uses Number=R: every sample records REF and all ALT depths
+// regardless of its haploid GT. trans-prep must use allele-index lookup rather
+// than requiring the AD and GT vector lengths to match.
+const char* TEST_VCF_STANDARD_AD_R = R"(##fileformat=VCFv4.2
+##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
+##FORMAT=<ID=DP,Number=1,Type=Integer,Description="Total depth">
+##FORMAT=<ID=AD,Number=R,Type=Integer,Description="Allelic depths">
+##contig=<ID=chrM,length=16569>
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	mom_a	child_a	unrelated
+chrM	1100	.	A	G	30	PASS	.	GT:DP:AD	0:1000:800,200	1:900:700,200	0:1100:1100,0
+)";
+
+TEST(TransPrepRun, SupportsStandardNumberRAlleleDepths) {
+    const std::string vcf_path = "tp_standard_ad_r.vcf";
+    const std::string fam_path = "tp_standard_ad_r.fam";
+    const std::string out_path = "tp_standard_ad_r.tsv";
+    write_tmp(vcf_path, TEST_VCF_STANDARD_AD_R);
+    write_tmp(fam_path, TEST_FAM);
+
+    TransmissionPrep::Config cfg;
+    cfg.vcf_path = vcf_path;
+    cfg.fam_path = fam_path;
+    cfg.output_file = out_path;
+    cfg.min_depth = 0;
+    cfg.require_pass = true;
+    cfg.snv_only = true;
+
+    TransmissionPrep prep(cfg);
+    EXPECT_EQ(prep.run(), 1);
+    const auto rows = read_pairs_tsv(out_path);
+    ASSERT_EQ(rows.size(), 1u);
+    EXPECT_EQ(rows[0].pos, 1100);
+    EXPECT_EQ(rows[0].m_ad_alt, 200);
+    EXPECT_EQ(rows[0].c_ad_alt, 200);
+
+    std::remove(vcf_path.c_str());
+    std::remove(fam_path.c_str());
+    std::remove(out_path.c_str());
+}
+
+const char* TEST_VCF_STANDARD_AD_A = R"(##fileformat=VCFv4.2
+##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
+##FORMAT=<ID=DP,Number=1,Type=Integer,Description="Total depth">
+##FORMAT=<ID=AD,Number=A,Type=Integer,Description="Alternate allelic depths">
+##contig=<ID=chrM,length=16569>
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	mom_a	child_a	unrelated
+chrM	1200	.	A	G,T	30	PASS	.	GT:DP:AD	0/1:1000:200,50	0/2:900:100,300	0:1100:0,0
+)";
+
+TEST(TransPrepRun, SupportsStandardNumberAAlleleDepths) {
+    const std::string vcf_path = "tp_standard_ad_a.vcf";
+    const std::string fam_path = "tp_standard_ad_a.fam";
+    const std::string out_path = "tp_standard_ad_a.tsv";
+    write_tmp(vcf_path, TEST_VCF_STANDARD_AD_A);
+    write_tmp(fam_path, TEST_FAM);
+
+    TransmissionPrep::Config cfg;
+    cfg.vcf_path = vcf_path;
+    cfg.fam_path = fam_path;
+    cfg.output_file = out_path;
+    cfg.min_depth = 0;
+    cfg.require_pass = true;
+    cfg.snv_only = true;
+
+    TransmissionPrep prep(cfg);
+    EXPECT_EQ(prep.run(), 2);
+    const auto rows = read_pairs_tsv(out_path);
+    ASSERT_EQ(rows.size(), 2u);
+    const TsvRow* alt_g = nullptr;
+    const TsvRow* alt_t = nullptr;
+    for (const auto& row : rows) {
+        if (row.alt == "G") alt_g = &row;
+        if (row.alt == "T") alt_t = &row;
+    }
+    ASSERT_NE(alt_g, nullptr);
+    ASSERT_NE(alt_t, nullptr);
+    EXPECT_EQ(alt_g->m_ad_alt, 200);
+    EXPECT_EQ(alt_g->c_ad_alt, 100);
+    EXPECT_EQ(alt_t->m_ad_alt, 50);
+    EXPECT_EQ(alt_t->c_ad_alt, 300);
+
+    std::remove(vcf_path.c_str());
+    std::remove(fam_path.c_str());
+    std::remove(out_path.c_str());
+}
+
 TEST(TransPrepFormatRow, Roundtrip) {
     TransmissionPrep::PairRecord r{};
     r.chrom = "chrM"; r.pos = 7;

@@ -1,5 +1,24 @@
 #include "mt_variant_caller.h"
 
+#include <getopt.h>
+#include <algorithm>  // std::min, std::transform
+#include <cstdint>    // uint32_t
+#include <cstdlib>    // std::atoi, std::atof
+#include <ctime>      // time, ctime, time_t
+#include <functional> // std::bind, std::cref
+#include <future>     // std::future
+#include <iostream>   // std::cout, std::cerr
+#include <set>
+#include <stdexcept>  // std::runtime_error, std::invalid_argument
+#include <thread>     // std::thread
+#include <utility>    // std::pair
+
+#include "version.h"
+#include "algorithm.h"
+#include "io/bam.h"
+#include "io/iobgzf.h"
+#include "external/thread_pool.h"
+
 // MtVariantCaller implementation
 void MtVariantCaller::usage(const Config &config) const {
     std::cout << MITOQUEST_DESCRIPTION            << "\n"
@@ -240,11 +259,12 @@ void MtVariantCaller::_make_calling_interval() {
 
     _calling_intervals.clear();
     for (size_t i(0); i < regions.size(); ++i) {
-        uint32_t total_length = regions[i].end - regions[i].start + 1;
-        for (uint32_t j(0); j < total_length; j += _config.chunk_size) {
+        const hts_pos_t total_length = regions[i].end - regions[i].start + 1;
+        const hts_pos_t chunk_size = static_cast<hts_pos_t>(_config.chunk_size);
+        for (hts_pos_t offset(0); offset < total_length; offset += chunk_size) {
             // split region into small pieces by chunk_size
-            uint32_t start = regions[i].start + j;
-            uint32_t end = std::min(regions[i].end, start + _config.chunk_size - 1);
+            const hts_pos_t start = regions[i].start + offset;
+            const hts_pos_t end = std::min(regions[i].end, start + chunk_size - 1);
             _calling_intervals.push_back(ngslib::GenomeRegion(regions[i].chrom, start, end));
         }
     }
@@ -403,6 +423,7 @@ PosVariantMap MtVariantCaller::_call_variant_in_sample(const std::string sample_
         ngslib::BamRecord al;  // alignment read
         while (bf.next(al) >= 0) {  // -1 => hit the end of alignement file.
             if ((al.mapq() < this->_config.min_mapq) || al.is_duplicate() || al.is_qc_fail() ||
+                al.is_secondary() || al.is_supplementary() ||
                 (al.is_paired() && this->_config.proper_pairs_only && !al.is_proper_pair()))
             {
                 // std::cout << "[TEST] " << al.qname() << " al.mapq: " << al.mapq() << " al.is_duplicate: " 
@@ -469,9 +490,14 @@ void MtVariantCaller::_seek_position(const std::string &fa_seq,                 
         aligned_pairs = al.get_aligned_pairs(fa_seq);
         for (size_t i(0); i < aligned_pairs.size(); ++i) {
             map_ref_pos = aligned_pairs[i].ref_pos + 1;  // ref_pos is 0-based, convert to 1-based;
+            const bool is_indel = aligned_pairs[i].op == BAM_CINS || aligned_pairs[i].op == BAM_CDEL;
+            const uint32_t normalized_pos = (is_indel && map_ref_pos > 1) ? map_ref_pos - 1 : map_ref_pos;
 
-            if (map_ref_pos < gr.start) continue;
-            if (map_ref_pos > gr.end) break;
+            // Indels are later left-anchored for VCF output.  Assign each
+            // one to the chunk containing that normalized anchor, so an
+            // indel at an internal chunk boundary is emitted exactly once.
+            if (normalized_pos < gr.start) continue;
+            if (normalized_pos > gr.end) break;
 
             // 'BAM_XXX' are macros for CIGAR, which defined in 'htslib/sam.h'
             // Note: ReadAlignedPair now stores single-base fields as 'char' (ref_base/read_base/read_qual),
@@ -495,19 +521,9 @@ void MtVariantCaller::_seek_position(const std::string &fa_seq,                 
                 ab.ref_base  = "";
                 ab.read_base = "+" + std::string(1, aligned_pairs[i].read_base) + aligned_pairs[i].multi_base;
 
-                // Use upstream anchor base quality
-                if (i > 0) {
-                    ab.base_qual = aligned_pairs[i-1].read_qual;
-                } else {
-                    // Fallback: mean quality of insertion sequence
-                    double total_qual = (aligned_pairs[i].read_qual - 33);
-                    for (char q : aligned_pairs[i].multi_base) {
-                        total_qual += (q - 33);
-                    }
-                    size_t ins_len = 1 + aligned_pairs[i].multi_base.size();
-                    ab.base_qual = static_cast<char>(total_qual / ins_len + 33);
-                }
-                
+                // Mean quality of the whole insertion sequence, precomputed
+                // in BamRecord::get_aligned_pairs (v1.11.3 semantics).
+                ab.base_qual = aligned_pairs[i].read_qual;
             } else if (aligned_pairs[i].op == BAM_CDEL) {  /* CIGAR: D */
                 // Deletion.
                 if (aligned_pairs[i].read_base != '\0') {
@@ -668,20 +684,20 @@ bool MtVariantCaller::_variant_joint(const std::vector<PosVariantMap> &samples_v
 
             smp_pos_it = samples_var_v[i].find(pos);
             if (smp_pos_it != samples_var_v[i].end()) {
-
                 vvi.push_back(smp_pos_it->second);
                 if (is_empty) is_empty = false;
             } else {
-
                 VariantInfo vi(gr.chrom, pos, 0, 0); // Empty VariantInfo
                 vvi.push_back(vi);
             }
         }
 
         // ignore the position which no reads cover in all samples
-        if (!is_empty) { 
+        if (!is_empty) {
             // performance multi-thread per-position, return VCFRecord
-            results.emplace_back(thread_pool.submit(std::bind(&MtVariantCaller::_joint_variant_in_pos, this, vvi)));  
+            results.emplace_back(thread_pool.submit(
+                std::bind(&MtVariantCaller::_joint_variant_in_pos, this, vvi)
+            ));  
         }
     }
 
@@ -691,7 +707,9 @@ bool MtVariantCaller::_variant_joint(const std::vector<PosVariantMap> &samples_v
         if (p.valid()) {
             VCFRecord vcf_record = p.get();
             if (vcf_record.is_valid()) {
-                if (is_empty) is_empty = false;
+                if (is_empty) {
+                    is_empty = false;
+                }
                 OUT << vcf_record.to_string() << "\n";  // write to a file
             }
         }
@@ -718,6 +736,7 @@ VCFRecord MtVariantCaller::_joint_variant_in_pos(std::vector<VariantInfo> vvi) {
     vcf_record.pos   = vvi[0].ref_pos; // variant's reference position 
     vcf_record.ref   = ai.ref;         // the final REF (upper case) to be used in VCF
     vcf_record.alt   = ai.alts;        // have been uniqued and sorted by length and then by ASCII
+    vcf_record.filter = ".";
 
     std::vector<std::string> ref_alt_order = {ai.ref}; // First element must be REF allele
     ref_alt_order.insert(ref_alt_order.end(), ai.alts.begin(), ai.alts.end());
@@ -736,8 +755,14 @@ VCFRecord MtVariantCaller::_joint_variant_in_pos(std::vector<VariantInfo> vvi) {
         // Collect and format sample information 
         auto sa = process_sample_variant(smp_var_info, ref_alt_order, this->_config.heteroplasmy_threshold);
         
-        // Update variant quality
-        if (smp_var_info.qual > vcf_record.qual && smp_var_info.qual != 10000) {
+        // A site quality must be driven by evidence for a non-reference allele. 
+        const bool sample_has_non_reference = std::any_of(
+            sa.sample_alts.begin(), sa.sample_alts.end(),
+            [&](const std::string& allele) { return allele != ai.ref; }
+        );
+        if (sample_has_non_reference && smp_var_info.qual > vcf_record.qual) {
+            // The 10000 sentinel (mono-allelic site) is a valid QUAL and
+            // must participate in the max, not be filtered out.
             vcf_record.qual = smp_var_info.qual;
         }
 
@@ -814,7 +839,7 @@ VCFRecord MtVariantCaller::_joint_variant_in_pos(std::vector<VariantInfo> vvi) {
         pt = "Unknown"; // Fallback case
     }
 
-    vcf_record.info = "AN=" + std::to_string(all_available_dp.size()) + ";"
+    vcf_record.info = "NS=" + std::to_string(all_available_dp.size()) + ";"
                       "REF_N=" + std::to_string(ref_ind_count) + ";"
                       "HET_N=" + std::to_string(het_ind_count) + ";"
                       "HOM_N=" + std::to_string(hom_ind_count) + ";"

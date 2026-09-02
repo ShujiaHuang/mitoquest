@@ -8,20 +8,13 @@
 #ifndef _MT_VARIANT_CALLER_H_
 #define _MT_VARIANT_CALLER_H_
 
-#include <getopt.h>
 #include <string>
 #include <vector>
-#include <set>
-#include <ctime>  // clock, time_t
 
-#include "version.h"
 #include "io/fasta.h"
-#include "io/bam.h"
-#include "io/iobgzf.h"
 #include "io/utils.h"
-#include "external/thread_pool.h"
+#include "io/bam_record.h"
 
-#include "algorithm.h"
 #include "basetype.h"
 #include "mt_utils.h"
 

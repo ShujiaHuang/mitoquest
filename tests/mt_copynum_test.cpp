@@ -19,6 +19,9 @@
 #include <string>
 #include <vector>
 
+#include <htslib/faidx.h>
+#include <htslib/sam.h>
+
 #include "mt_copynum.h"
 #include "mt_utils.h"
 
@@ -436,6 +439,24 @@ TEST(MtCopyNumRegionsParse, FileBedForm) {
     EXPECT_EQ(regs[1].end,   16569u);
 }
 
+TEST(MtCopyNumRegionsParse, FileWhitespaceDelimitedBedForm) {
+    const std::string path = "data/__copynum_regions_whitespace_bed.txt";
+    {
+        std::ofstream ofs(path);
+        ASSERT_TRUE(ofs.is_open());
+        ofs << "chrM 0 300\n"
+            << "chrM    15999    16569\n";
+    }
+    const auto regs = MtCopyNumber::parse_regions_arg(path);
+    std::remove(path.c_str());
+    ASSERT_EQ(regs.size(), 2u);
+    EXPECT_EQ(regs[0].chrom, "chrM");
+    EXPECT_EQ(regs[0].start, 1u);
+    EXPECT_EQ(regs[0].end, 300u);
+    EXPECT_EQ(regs[1].start, 16000u);
+    EXPECT_EQ(regs[1].end, 16569u);
+}
+
 // =====================================================================
 //  End-to-end run() with -L/--regions populated.
 // =====================================================================
@@ -566,4 +587,89 @@ TEST(MtCopyNumRunE2E, RegionsAllUnmatchedThrows) {
     MtCopyNumber tool(cfg);
     EXPECT_THROW(tool.run(), std::runtime_error);
     std::remove(cfg.output_file.c_str());
+}
+
+TEST(MtCopyNumRunE2E, RegionsUseReverseReadFivePrimeAnchor) {
+    const std::string prefix = "/tmp/mitoquest-copynum-reverse-anchor";
+    const std::string fasta_path = prefix + ".fa";
+    const std::string sam_path = prefix + ".sam";
+    const std::string bam_path = prefix + ".bam";
+    const std::string output_path = prefix + ".tsv";
+    const std::string gc_output_path = prefix + ".gc.tsv";
+
+    {
+        std::ofstream fasta(fasta_path);
+        ASSERT_TRUE(fasta.is_open());
+        fasta << ">chr1\n" << std::string(200, 'A') << "\n"
+              << ">chrM\n" << "G" << std::string(199, 'A') << "\n";
+    }
+    ASSERT_EQ(fai_build(fasta_path.c_str()), 0);
+
+    {
+        std::ofstream sam(sam_path);
+        ASSERT_TRUE(sam.is_open());
+        sam << "@HD\tVN:1.6\tSO:coordinate\n"
+            << "@SQ\tSN:chr1\tLN:200\n"
+            << "@SQ\tSN:chrM\tLN:200\n"
+            << "chr1_read\t73\tchr1\t1\t60\t10M\t*\t0\t0\tAAAAAAAAAA\tIIIIIIIIII\n"
+            << "forward\t73\tchrM\t90\t60\t21M\t*\t0\t0\tAAAAAAAAAAAAAAAAAAAAA\tIIIIIIIIIIIIIIIIIIIII\n"
+            << "reverse\t89\tchrM\t90\t60\t21M\t*\t0\t0\tAAAAAAAAAAAAAAAAAAAAA\tIIIIIIIIIIIIIIIIIIIII\n"
+            << "orphan_read2\t153\tchrM\t90\t60\t21M\t*\t0\t0\tAAAAAAAAAAAAAAAAAAAAA\tIIIIIIIIIIIIIIIIIIIII\n";
+    }
+
+    samFile* sam_input = sam_open(sam_path.c_str(), "r");
+    ASSERT_NE(sam_input, nullptr);
+    sam_hdr_t* header = sam_hdr_read(sam_input);
+    ASSERT_NE(header, nullptr);
+    samFile* bam_output = sam_open(bam_path.c_str(), "wb");
+    ASSERT_NE(bam_output, nullptr);
+    ASSERT_EQ(sam_hdr_write(bam_output, header), 0);
+    bam1_t* record = bam_init1();
+    ASSERT_NE(record, nullptr);
+    while (sam_read1(sam_input, header, record) >= 0) {
+        ASSERT_GE(sam_write1(bam_output, header, record), 0);
+    }
+    bam_destroy1(record);
+    sam_close(bam_output);
+    sam_hdr_destroy(header);
+    sam_close(sam_input);
+    ASSERT_EQ(sam_index_build(bam_path.c_str(), 0), 0);
+
+    MtCopyNumber::Config config;
+    config.reference_file = fasta_path;
+    config.input_bam = bam_path;
+    config.output_file = output_path;
+    config.min_mapq = 0;
+    config.thread_count = 1;
+    config.seq_type = SeqType::PE;
+    config.regions_arg = "chrM:110-110";
+    config.regions = MtCopyNumber::parse_regions_arg(config.regions_arg);
+    MtCopyNumber tool(config);
+    ASSERT_NO_THROW(tool.run());
+
+    const auto rows = parse_tsv(output_path);
+    const auto chr_m = std::find_if(rows.begin(), rows.end(),
+                                    [](const TsvRow& row) { return row.chrom == "chrM"; });
+    ASSERT_NE(chr_m, rows.end());
+    EXPECT_EQ(chr_m->fragments, 2);
+
+    MtCopyNumber::Config gc_config = config;
+    gc_config.output_file = gc_output_path;
+    gc_config.regions_arg = "chrM:1-1";
+    gc_config.regions = MtCopyNumber::parse_regions_arg(gc_config.regions_arg);
+    MtCopyNumber gc_tool(gc_config);
+    ASSERT_NO_THROW(gc_tool.run());
+    const auto gc_rows = parse_tsv(gc_output_path);
+    const auto gc_chr_m = std::find_if(gc_rows.begin(), gc_rows.end(),
+                                       [](const TsvRow& row) { return row.chrom == "chrM"; });
+    ASSERT_NE(gc_chr_m, gc_rows.end());
+    EXPECT_DOUBLE_EQ(gc_chr_m->gc_content, 1.0);
+
+    std::remove(fasta_path.c_str());
+    std::remove((fasta_path + ".fai").c_str());
+    std::remove(sam_path.c_str());
+    std::remove(bam_path.c_str());
+    std::remove((bam_path + ".bai").c_str());
+    std::remove(output_path.c_str());
+    std::remove(gc_output_path.c_str());
 }

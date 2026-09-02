@@ -160,7 +160,8 @@ private:
     void _parse_args(int argc, char* argv[]);
     void _print_matching_report(std::ostream& os) const;
 
-    // Validate that the VCF declares FORMAT/AD with Number=R and FORMAT/DP.
+    // Validate the required GT/DP/AD fields. AD may use MitoQuest's
+    // Number=. GT-aligned layout or standard Number=R / Number=A layouts.
     static void _validate_vcf_format(const ngslib::VCFHeader& hdr);
 
     Config        _config;

@@ -18,6 +18,7 @@
 #include <cmath>
 #include <cstdio>
 #include <fstream>
+#include <limits>
 #include <random>
 #include <sstream>
 #include <vector>
@@ -66,6 +67,15 @@ TEST(NeEstLogFactorial, BinomialPmfBoundaries) {
     EXPECT_LT(lf.log_binomial_pmf(10, 5, 0.0), 0.0);
     // P(k=2 | n=4, p=0.5) = 6 * 0.5^4 = 0.375
     EXPECT_NEAR(std::exp(lf.log_binomial_pmf(4, 2, 0.5)), 0.375, 1e-9);
+}
+
+TEST(NeEstLogFactorial, RejectsNonFiniteProbabilityParameters) {
+    NeEstimator::LogFactorial lf(20);
+    const double neg_inf = -std::numeric_limits<double>::infinity();
+    EXPECT_EQ(lf.log_binomial_pmf(4, 2, std::numeric_limits<double>::quiet_NaN()), neg_inf);
+    EXPECT_EQ(lf.log_binomial_pmf(4, 4, std::numeric_limits<double>::infinity()), neg_inf);
+    EXPECT_EQ(lf.log_betabinom_pmf(4, 2, std::numeric_limits<double>::quiet_NaN(), 1.0), neg_inf);
+    EXPECT_EQ(lf.log_betabinom_pmf(4, 2, 1.0, std::numeric_limits<double>::infinity()), neg_inf);
 }
 
 // Analytic Beta-Binomial PMF for a few small values:
@@ -150,6 +160,25 @@ TEST(NeEstComputeLLSingle, BoundaryPairs) {
     const double ll1   = NeEstimator::compute_ll_single(pd_split, 1,   lf);
     const double ll100 = NeEstimator::compute_ll_single(pd_split, 100, lf);
     EXPECT_GT(ll1, ll100);
+}
+
+TEST(NeEstContinuousLikelihood, NeOneUsesContinuousAbsorbingLimit) {
+    NeEstimator::LogFactorial lf(200);
+    const NeEstimator::PairData child_ref{100, 20, 50, 0};
+    const NeEstimator::PairData child_alt{100, 20, 50, 50};
+    const NeEstimator::PairData child_heteroplasmic{100, 20, 50, 10};
+
+    EXPECT_NEAR(NeEstimator::compute_ll_single_continuous(child_ref, 1, lf),
+                std::log(0.8), 1e-12);
+    EXPECT_NEAR(NeEstimator::compute_ll_single_continuous(child_alt, 1, lf),
+                std::log(0.2), 1e-12);
+    const double impossible = NeEstimator::compute_ll_single_continuous(
+        child_heteroplasmic, 1, lf);
+    EXPECT_TRUE(std::isinf(impossible) && impossible < 0.0);
+
+    const double just_above_one = NeEstimator::compute_ll_single_continuous(
+        child_alt, 1.0 + 1e-7, lf);
+    EXPECT_NEAR(just_above_one, std::log(0.2), 1e-5);
 }
 
 // =====================================================================
@@ -257,8 +286,197 @@ TEST(NeEstEstimate, ReportsCIBracketingTruth) {
     EXPECT_FALSE(r.ci_high_clipped);
 }
 
+TEST(NeEstEstimate, ContinuousModelReturnsExactLowerBoundaryMaximum) {
+    const std::vector<NeEstimator::PairData> data = {
+        {100, 50, 100, 100},
+    };
+    const NeEstimator::Result result = NeEstimator::estimate(
+        data, /*min_ne=*/1, /*max_ne=*/4, /*threads=*/1, /*continuous=*/true);
+
+    EXPECT_DOUBLE_EQ(result.ne, 1.0);
+    EXPECT_DOUBLE_EQ(result.ci_low, 1.0);
+    EXPECT_TRUE(result.ci_low_clipped);
+}
+
+TEST(NeEstEstimate, ContinuousModelReturnsExactUpperBoundaryMaximum) {
+    const std::vector<NeEstimator::PairData> data = {
+        {100, 50, 100, 50},
+    };
+    const NeEstimator::Result result = NeEstimator::estimate(
+        data, /*min_ne=*/1, /*max_ne=*/4, /*threads=*/1, /*continuous=*/true);
+
+    EXPECT_DOUBLE_EQ(result.ne, 4.0);
+    EXPECT_DOUBLE_EQ(result.ci_high, 4.0);
+    EXPECT_TRUE(result.ci_high_clipped);
+}
+
+TEST(NeEstEstimate, ContinuousModelRejectsRangeWithoutFiniteLikelihood) {
+    const std::vector<NeEstimator::PairData> data = {
+        {100, 50, 100, 50},
+    };
+    EXPECT_THROW(NeEstimator::estimate(
+                     data, /*min_ne=*/1, /*max_ne=*/1, /*threads=*/1,
+                     /*continuous=*/true),
+                 std::runtime_error);
+}
+
 TEST(NeEstEstimate, ThrowsOnEmptyInput) {
     EXPECT_THROW(NeEstimator::estimate({}, 1, 50, 1), std::runtime_error);
+}
+
+TEST(NeEstEstimate, DiscreteModelRejectsTrioRows) {
+    NeEstimator::PairData trio;
+    trio.g_dp = 100;
+    trio.g_ad_alt = 30;
+    trio.m_dp = 50;
+    trio.m_ad_alt = 15;
+    trio.c_dp = 80;
+    trio.c_ad_alt = 20;
+    trio.has_g = 1;
+    EXPECT_THROW(NeEstimator::estimate({trio}, 1, 20, 1, false),
+                 std::runtime_error);
+}
+
+TEST(NeEstProfile, DiscreteModelUsesIntegerCandidates) {
+    NeEstimator::LogFactorial lf(200);
+    const std::vector<NeEstimator::PairData> data = {
+        {100, 30, 80, 20},
+        {120, 55, 90, 45},
+    };
+    const auto profile = NeEstimator::compute_ne_profile(
+        data, lf, 1.0, 5.0, 0.1, 1, false);
+    ASSERT_EQ(profile.size(), 5u);
+    for (size_t index = 0; index < profile.size(); ++index) {
+        const int ne = static_cast<int>(index) + 1;
+        EXPECT_DOUBLE_EQ(profile[index].ne_candidate, static_cast<double>(ne));
+        EXPECT_NEAR(profile[index].mmle_log_lik,
+                    NeEstimator::compute_global_ll_parallel(ne, data, lf, 1, false),
+                    1e-12);
+    }
+}
+
+TEST(NeEstProfile, ContinuousModelStaysWithinRangeAndIncludesUpperEndpoint) {
+    NeEstimator::LogFactorial lf(200);
+    const std::vector<NeEstimator::PairData> data = {
+        {100, 30, 80, 20},
+    };
+    const auto profile = NeEstimator::compute_ne_profile(
+        data, lf, 2.0, 2.05, 0.1, 1, true);
+
+    ASSERT_EQ(profile.size(), 2u);
+    EXPECT_DOUBLE_EQ(profile[0].ne_candidate, 2.0);
+    EXPECT_DOUBLE_EQ(profile[1].ne_candidate, 2.05);
+    for (const auto& row : profile) {
+        EXPECT_GE(row.ne_candidate, 2.0);
+        EXPECT_LE(row.ne_candidate, 2.05);
+    }
+}
+
+TEST(NeEstConfig, RejectsNonFiniteFloatingValues) {
+    NeEstimator::Config config{};
+    config.input_tsv = "dummy";
+    config.min_vaf = std::numeric_limits<double>::quiet_NaN();
+    EXPECT_THROW(NeEstimator{config}, std::invalid_argument);
+
+    config.min_vaf = 0.0;
+    config.max_vaf = 1.0;
+    config.kimura_trim = std::numeric_limits<double>::infinity();
+    EXPECT_THROW(NeEstimator{config}, std::invalid_argument);
+
+    config.kimura_trim = 0.0;
+    config.ne_profile_step = std::numeric_limits<double>::quiet_NaN();
+    EXPECT_THROW(NeEstimator{config}, std::invalid_argument);
+}
+
+TEST(NeEstConfig, LoadPairsRejectsNonFiniteVafWindow) {
+    EXPECT_THROW(NeEstimator::load_pairs(
+                     "unused.tsv", std::numeric_limits<double>::quiet_NaN(), 1.0),
+                 std::invalid_argument);
+}
+
+// Trio rows with a homoplasmic grandmother are absorbing G->M->C states:
+// compatible all-homoplasmic descendants contribute a Ne-independent
+// constant, incompatible segregating descendants are -inf and would abort
+// the fit.  load_pairs must drop both and report the counts.
+TEST(NeEstConfig, LoadPairsDropsHomoplasmicGrandmotherTrioRows) {
+    const std::string path = "/tmp/mitoquest_ne_load_trio_filter.tsv";
+    {
+        std::ofstream out(path);
+        ASSERT_TRUE(out.is_open());
+        out << "MOTHER_DP\tMOTHER_AD_ALT\tMOTHER_VAF\tCHILD_DP\tCHILD_AD_ALT\tQC"
+               "\tHAS_G\tGRANDMOTHER_DP\tGRANDMOTHER_AD_ALT\n"
+            // Heteroplasmic grandmother: kept.
+            << "100\t30\t0.3\t80\t25\tPASS\t1\t100\t30\n"
+            // Grandmother all-REF + descendants all-REF: constant, dropped.
+            << "100\t0\t0.0\t80\t0\tPASS\t1\t100\t0\n"
+            // Grandmother all-ALT + descendants all-ALT: constant, dropped.
+            << "100\t100\t1.0\t80\t80\tPASS\t1\t100\t100\n"
+            // Grandmother all-REF + segregating descendants: -inf, dropped.
+            << "200\t100\t0.5\t150\t75\tPASS\t1\t500\t0\n"
+            // Grandmother all-ALT + segregating descendants: -inf, dropped.
+            << "200\t100\t0.5\t150\t75\tPASS\t1\t500\t500\n"
+            // Grandmother all-REF but QC gate rejects the row anyway.
+            << "200\t100\t0.5\t150\t75\tFAIL\t1\t500\t0\n";
+    }
+
+    NeEstimator::LoadStats stats;
+    const auto data = NeEstimator::load_pairs(path, /*min_vaf=*/0.0,
+                                              /*max_vaf=*/1.0, &stats);
+    ASSERT_EQ(data.size(), 1u);
+    EXPECT_EQ(data.front().has_g, 1);
+    EXPECT_EQ(data.front().g_dp, 100);
+    EXPECT_EQ(data.front().g_ad_alt, 30);
+    EXPECT_EQ(stats.trio_founder_hom_skipped, 2u);
+    EXPECT_EQ(stats.trio_founder_mismatch_skipped, 2u);
+
+    // Without the stats pointer the same filter must still apply.
+    const auto data_no_stats = NeEstimator::load_pairs(path, 0.0, 1.0);
+    EXPECT_EQ(data_no_stats.size(), data.size());
+
+    std::remove(path.c_str());
+}
+
+// A homoplasmic grandmother with segregating descendants previously reached
+// the likelihood as -inf and aborted the whole fit with an uncaught
+// exception.  The load-time filter must let the remaining pairs fit.
+TEST(NeEstConfig, LoadPairsFilterPreventsTrioIncompatibilityAbort) {
+    const std::string path = "/tmp/mitoquest_ne_load_trio_abort.tsv";
+    {
+        std::ofstream out(path);
+        ASSERT_TRUE(out.is_open());
+        out << "MOTHER_DP\tMOTHER_AD_ALT\tMOTHER_VAF\tCHILD_DP\tCHILD_AD_ALT\tQC"
+               "\tHAS_G\tGRANDMOTHER_DP\tGRANDMOTHER_AD_ALT\n";
+        for (int i = 0; i < 20; ++i) {
+            out << "100\t" << (30 + i) << "\t0.5\t80\t25\tPASS\t1\t100\t30\n";
+        }
+        for (int i = 0; i < 3; ++i) {
+            out << "200\t100\t0.5\t150\t75\tPASS\t1\t500\t0\n";
+        }
+    }
+
+    NeEstimator::LoadStats stats;
+    const auto data = NeEstimator::load_pairs(path, 0.1, 0.9, &stats);
+    ASSERT_EQ(data.size(), 20u);
+    EXPECT_EQ(stats.trio_founder_mismatch_skipped, 3u);
+    EXPECT_EQ(stats.trio_founder_hom_skipped, 0u);
+
+    // The filtered pair set must produce a finite estimate (previously the
+    // 3 incompatible rows made every candidate Ne evaluate to -inf).
+    const NeEstimator::Result result = NeEstimator::estimate(
+        data, /*min_ne=*/1, /*max_ne=*/50, /*threads=*/1,
+        /*continuous=*/true);
+    EXPECT_TRUE(std::isfinite(result.ne));
+    EXPECT_GT(result.n_pairs, 0u);
+
+    std::remove(path.c_str());
+}
+
+TEST(NeEstConfig, RejectsDiscretePerFamilyCombination) {
+    NeEstimator::Config config{};
+    config.input_tsv = "dummy";
+    config.model = "discrete";
+    config.per_family = true;
+    EXPECT_THROW(NeEstimator{config}, std::invalid_argument);
 }
 
 // =====================================================================
@@ -299,6 +517,28 @@ TEST(NeEstKimura, RecoversBOnLargeNeCohort) {
     EXPECT_GT(k.n_informative, 500u);
     EXPECT_GT(k.b, 0.5);                 // far from the boundary
     EXPECT_GT(k.ne_kimura, 5.0);         // reasonable single-generation Ne
+}
+
+TEST(NeEstKimura, UsesUnbiasedFiniteDepthSamplingCorrection) {
+    // For p_M=0.5 and p_C=0.2 at depth 10, R = 0.09 - 0.25/9 - 0.16/9.
+    // The corresponding ratio-of-sums Kimura estimate is 0.25 / R = 5.625.
+    std::vector<NeEstimator::PairData> data(10);
+    for (auto& pd : data) {
+        pd.m_dp = 10;
+        pd.m_ad_alt = 5;
+        pd.c_dp = 10;
+        pd.c_ad_alt = 2;
+    }
+    const auto result = NeEstimator::compute_kimura_check(data);
+    EXPECT_EQ(result.n_informative, data.size());
+    EXPECT_NEAR(result.ne_kimura, 5.625, 1e-12);
+}
+
+TEST(NeEstKimura, ExcludesDepthOneRowsFromSamplingCorrection) {
+    const NeEstimator::PairData depth_one_child{10, 5, 1, 0};
+    const auto result = NeEstimator::compute_kimura_check({depth_one_child});
+    EXPECT_EQ(result.n_informative, 0u);
+    EXPECT_TRUE(std::isinf(result.ne_kimura));
 }
 
 TEST(NeEstKimura, ReportsSmallNeOnTightBottleneck) {
@@ -596,56 +836,99 @@ static NeEstimator::PairData make_trio(int g_dp, int g_ad_alt,
     return pd;
 }
 
-// The closed-form formula must be numerically consistent with
-// Gauss-Legendre quadrature.  Because GL quadrature on the non-polynomial
-// Beta kernel has O(1/nodes^2) convergence, we compare *relative* LL
-// differences (which is what the optimiser uses) rather than absolute LL.
-TEST(NeEstTrio, ClosedFormVsQuadratureRelativeLL) {
-    NeEstimator::LogFactorial lf(1000);
-    struct Case { int g_dp, g_ad, m_dp, m_ad, c_dp, c_ad; };
-    const std::vector<Case> cases = {
-        {100, 30, 50, 15, 80, 20},
-        {200, 80, 100, 45, 150, 60},
-        {500, 250, 200, 110, 300, 150},
-    };
-    for (const auto& c : cases) {
-        auto pd = make_trio(c.g_dp, c.g_ad, c.m_dp, c.m_ad, c.c_dp, c.c_ad);
-        // Compare LL difference: LL(Ne=5) - LL(Ne=50) between methods.
-        const double cf_lo = NeEstimator::compute_ll_trio_continuous(pd, 5.0, lf);
-        const double cf_hi = NeEstimator::compute_ll_trio_continuous(pd, 50.0, lf);
-        const double q_lo  = NeEstimator::compute_ll_trio_quadrature(pd, 5.0, lf, 256);
-        const double q_hi  = NeEstimator::compute_ll_trio_quadrature(pd, 50.0, lf, 256);
-        const double cf_diff = cf_lo - cf_hi;
-        const double q_diff  = q_lo  - q_hi;
-        // Relative LL differences should agree to within 1.5.
-        // GL quadrature on the non-polynomial Beta kernel has O(1/n^2)
-        // convergence; the absolute LL bias cancels partially in
-        // differences but not perfectly.
-        EXPECT_NEAR(cf_diff, q_diff, 1.5)
-            << "LL-diff mismatch for g_dp=" << c.g_dp;
-        // Both should be finite.
-        EXPECT_TRUE(std::isfinite(cf_lo));
-        EXPECT_TRUE(std::isfinite(cf_hi));
-        EXPECT_TRUE(std::isfinite(q_lo));
-        EXPECT_TRUE(std::isfinite(q_hi));
-    }
+// Exact reference for the stated G->M->C hierarchy.  For modest child depth,
+// expanding the child Beta-Binomial rising factorials gives a positive finite
+// double sum.  This is independent of the production Gauss-Jacobi rule.
+static long double log_beta_reference(long double alpha, long double beta) {
+    return std::lgammal(alpha) + std::lgammal(beta) - std::lgammal(alpha + beta);
 }
 
-// Verify that both closed-form and quadrature find the same optimal Ne.
-TEST(NeEstTrio, ClosedFormAndQuadratureAgreeOnOptimalNe) {
-    NeEstimator::LogFactorial lf(1000);
-    auto pd = make_trio(200, 60, 100, 35, 150, 50);
-    // Scan Ne in [2, 100] and find the argmax for both methods.
-    double best_cf = 2.0, best_q = 2.0;
-    double max_cf = -1e30, max_q = -1e30;
-    for (double ne = 2.0; ne <= 100.0; ne += 1.0) {
-        const double ll_cf = NeEstimator::compute_ll_trio_continuous(pd, ne, lf);
-        const double ll_q  = NeEstimator::compute_ll_trio_quadrature(pd, ne, lf, 256);
-        if (ll_cf > max_cf) { max_cf = ll_cf; best_cf = ne; }
-        if (ll_q  > max_q)  { max_q  = ll_q;  best_q  = ne; }
+static long double log_comb_reference(int n, int k) {
+    return std::lgammal(static_cast<long double>(n) + 1.0L)
+         - std::lgammal(static_cast<long double>(k) + 1.0L)
+         - std::lgammal(static_cast<long double>(n - k) + 1.0L);
+}
+
+static long double log_sum_exp_reference(const std::vector<long double>& values) {
+    long double maximum = -std::numeric_limits<long double>::infinity();
+    for (long double value : values) {
+        if (value > maximum) maximum = value;
     }
-    // Optimal Ne should agree to within ±3 (step size is 1.0).
-    EXPECT_NEAR(best_cf, best_q, 3.0);
+    long double sum = 0.0L;
+    for (long double value : values) {
+        sum += std::exp(value - maximum);
+    }
+    return maximum + std::log(sum);
+}
+
+static long double trio_finite_sum_reference(const NeEstimator::PairData& pd,
+                                              double ne) {
+    const long double s = static_cast<long double>(ne) - 1.0L;
+    const long double pg = static_cast<long double>(pd.g_ad_alt)
+                         / static_cast<long double>(pd.g_dp);
+    const long double alpha_g = s * pg;
+    const long double beta_g = s * (1.0L - pg);
+    const int child_ref = pd.c_dp - pd.c_ad_alt;
+
+    std::vector<std::vector<long double>> stirling(
+        static_cast<size_t>(pd.c_dp + 1),
+        std::vector<long double>(static_cast<size_t>(pd.c_dp + 1), 0.0L));
+    stirling[0][0] = 1.0L;
+    for (int n = 1; n <= pd.c_dp; ++n) {
+        for (int r = 1; r <= n; ++r) {
+            stirling[static_cast<size_t>(n)][static_cast<size_t>(r)] =
+                stirling[static_cast<size_t>(n - 1)][static_cast<size_t>(r - 1)]
+                + static_cast<long double>(n - 1)
+                  * stirling[static_cast<size_t>(n - 1)][static_cast<size_t>(r)];
+        }
+    }
+
+    std::vector<long double> log_terms;
+    log_terms.reserve(static_cast<size_t>(pd.c_ad_alt + 1)
+                      * static_cast<size_t>(child_ref + 1));
+    for (int r = 0; r <= pd.c_ad_alt; ++r) {
+        for (int q = 0; q <= child_ref; ++q) {
+            const long double coefficient =
+                stirling[static_cast<size_t>(pd.c_ad_alt)][static_cast<size_t>(r)]
+                * stirling[static_cast<size_t>(child_ref)][static_cast<size_t>(q)];
+            if (coefficient == 0.0L) continue;
+            log_terms.push_back(std::log(coefficient)
+                + static_cast<long double>(r + q) * std::log(s)
+                + log_beta_reference(alpha_g + pd.m_ad_alt + r,
+                                     beta_g + (pd.m_dp - pd.m_ad_alt) + q));
+        }
+    }
+
+    return log_comb_reference(pd.m_dp, pd.m_ad_alt)
+         + log_comb_reference(pd.c_dp, pd.c_ad_alt)
+         - log_beta_reference(alpha_g, beta_g)
+         - (std::lgammal(s + pd.c_dp) - std::lgammal(s))
+         + log_sum_exp_reference(log_terms);
+}
+
+TEST(NeEstTrio, GaussJacobiMatchesExactFiniteSum) {
+    NeEstimator::LogFactorial lf(500);
+    struct Case {
+        int g_dp, g_ad, m_dp, m_ad, c_dp, c_ad;
+        double ne;
+    };
+    const std::vector<Case> cases = {
+        {100, 30, 5, 2, 4, 1, 5.0},
+        {100, 30, 12, 4, 10, 3, 10.0},
+        {100, 1, 8, 0, 10, 0, 1.01},
+        {100, 99, 8, 8, 10, 10, 1.01},
+        {100, 40, 10, 3, 12, 9, 50.0},
+    };
+    for (const auto& c : cases) {
+        const auto pd = make_trio(c.g_dp, c.g_ad, c.m_dp, c.m_ad, c.c_dp, c.c_ad);
+        const double actual = NeEstimator::compute_ll_trio_continuous(pd, c.ne, lf);
+        const double expected = static_cast<double>(trio_finite_sum_reference(pd, c.ne));
+        EXPECT_NEAR(actual, expected, 1e-10)
+            << "g=" << c.g_ad << "/" << c.g_dp
+            << ", m=" << c.m_ad << "/" << c.m_dp
+            << ", c=" << c.c_ad << "/" << c.c_dp
+            << ", Ne=" << c.ne;
+    }
 }
 
 // When has_g == 0 the trio function must fall back to the 2-gen model.
@@ -658,60 +941,61 @@ TEST(NeEstTrio, HasGZeroFallsBackTo2Gen) {
     EXPECT_DOUBLE_EQ(ll_trio, ll_2gen);
 }
 
-// Homoplasmic grandmother (g_ad_alt == 0 or g_dp) is Ne-independent -> 0.0.
-TEST(NeEstTrio, HomoplasmicGrandmotherReturnsZero) {
+// A homoplasmic founder is an absorbing G->M->C state, not an uninformative row.
+TEST(NeEstTrio, HomoplasmicGrandmotherUsesDegenerateProbability) {
     NeEstimator::LogFactorial lf(200);
-    // Grandmother homoplasmic REF.
-    auto pd_ref = make_trio(100, 0, 50, 20, 80, 30);
-    EXPECT_DOUBLE_EQ(NeEstimator::compute_ll_trio_continuous(pd_ref, 10.0, lf), 0.0);
-    EXPECT_DOUBLE_EQ(NeEstimator::compute_ll_trio_continuous(pd_ref, 50.0, lf), 0.0);
-    // Grandmother homoplasmic ALT.
-    auto pd_alt = make_trio(100, 100, 50, 20, 80, 30);
-    EXPECT_DOUBLE_EQ(NeEstimator::compute_ll_trio_continuous(pd_alt, 10.0, lf), 0.0);
+    const auto ref_compatible = make_trio(100, 0, 50, 0, 80, 0);
+    const auto alt_compatible = make_trio(100, 100, 50, 50, 80, 80);
+    const auto incompatible = make_trio(100, 0, 50, 20, 80, 30);
+
+    EXPECT_DOUBLE_EQ(NeEstimator::compute_ll_trio_continuous(ref_compatible, 10.0, lf), 0.0);
+    EXPECT_DOUBLE_EQ(NeEstimator::compute_ll_trio_continuous(alt_compatible, 10.0, lf), 0.0);
+    const double impossible = NeEstimator::compute_ll_trio_continuous(incompatible, 10.0, lf);
+    EXPECT_TRUE(std::isinf(impossible) && impossible < 0.0);
 }
 
-// At Ne = 1 the diffusion degenerates (complete drift to fixation).
-// For a heteroplasmic child the discrete fallback correctly returns
-// -infinity (impossible under Ne=1).  Slightly above Ne=1 the result
-// is finite, confirming the continuous formula is well-behaved.
+// At Ne = 1 the complete G->M->C process has an absorbing founder state.
 TEST(NeEstTrio, NeEqualsOneBoundary) {
     NeEstimator::LogFactorial lf(200);
     auto pd = make_trio(100, 30, 50, 15, 80, 20);
-    // Ne = 1 with heteroplasmic child: impossible under fixation -> -inf.
     const double ll1 = NeEstimator::compute_ll_trio_continuous(pd, 1.0, lf);
     EXPECT_TRUE(std::isinf(ll1) && ll1 < 0.0);
-    // Just above Ne = 1: must be finite.
+
     const double ll_plus = NeEstimator::compute_ll_trio_continuous(pd, 1.01, lf);
     EXPECT_TRUE(std::isfinite(ll_plus));
-    // Homoplasmic child: Ne=1 should give a finite result.
-    auto pd_hom = make_trio(100, 30, 50, 15, 80, 80);
-    const double ll_hom = NeEstimator::compute_ll_trio_continuous(pd_hom, 1.0, lf);
-    EXPECT_TRUE(std::isfinite(ll_hom));
+
+    const auto all_reference = make_trio(100, 30, 50, 0, 80, 0);
+    const auto all_alternate = make_trio(100, 30, 50, 50, 80, 80);
+    EXPECT_NEAR(NeEstimator::compute_ll_trio_continuous(all_reference, 1.0, lf),
+                std::log(0.7), 1e-12);
+    EXPECT_NEAR(NeEstimator::compute_ll_trio_continuous(all_alternate, 1.0, lf),
+                std::log(0.3), 1e-12);
 }
 
-// Closed-form self-consistency: verify the formula directly for one case.
-// Ne=10, p_G=0.3 -> alpha_G=2.7, beta_G=6.3
-// k_M=15, d_M=50, k_C=20, d_C=80
-// A = 2.7+15+20 = 37.7, B = 6.3+35+60 = 101.3
-// log I = log C(50,15) + log C(80,20)
-//       + lgamma(37.7) + lgamma(101.3) - lgamma(139.0)
-//       - lgamma(2.7) - lgamma(6.3) + lgamma(9.0)
-TEST(NeEstTrio, ClosedFormManualCheck) {
+// A high-depth case drives the adaptive production path beyond its initial rule.
+TEST(NeEstTrio, GaussJacobiHighDepthReferenceValue) {
     NeEstimator::LogFactorial lf(500);
     const double ne = 10.0;
     auto pd = make_trio(100, 30, 50, 15, 80, 20);
     const double ll = NeEstimator::compute_ll_trio_continuous(pd, ne, lf);
+    constexpr double kMpmathReference = -6.5981481583232390691;
+    EXPECT_NEAR(ll, kMpmathReference, 1e-10);
+}
 
-    const double alpha_G = 0.3 * 9.0;   // 2.7
-    const double beta_G  = 0.7 * 9.0;   // 6.3
-    const double A = alpha_G + 15.0 + 20.0;  // 37.7
-    const double B = beta_G  + 35.0 + 60.0;  // 101.3
-    const double expected =
-          std::lgamma(A) + std::lgamma(B) - std::lgamma(A + B)
-        - std::lgamma(alpha_G) - std::lgamma(beta_G)
-        + std::lgamma(alpha_G + beta_G)
-        + lf.log_comb(50, 15) + lf.log_comb(80, 20);
-    EXPECT_NEAR(ll, expected, 1e-9);
+TEST(NeEstTrio, RejectsNonFiniteNe) {
+    NeEstimator::LogFactorial lf(200);
+    const auto pd = make_trio(100, 30, 50, 15, 80, 20);
+    for (double ne : {
+             std::numeric_limits<double>::quiet_NaN(),
+             std::numeric_limits<double>::infinity(),
+             -std::numeric_limits<double>::infinity(),
+         }) {
+        const double production = NeEstimator::compute_ll_trio_continuous(pd, ne, lf);
+        const double diagnostic = NeEstimator::compute_ll_trio_quadrature(pd, ne, lf, 32);
+        EXPECT_TRUE(std::isinf(production) && production < 0.0);
+        EXPECT_TRUE(std::isinf(diagnostic) && diagnostic < 0.0);
+    }
+    EXPECT_TRUE(std::isinf(NeEstimator::compute_ll_trio_quadrature(pd, 10.0, lf, 0)));
 }
 
 // Trio likelihood must differ from 2-gen likelihood when has_g == 1.
@@ -740,6 +1024,28 @@ TEST(NeEstTrio, GlobalLLDispatchesTrioRows) {
           NeEstimator::compute_ll_trio_continuous(trio_pd, ne, lf)
         + NeEstimator::compute_ll_single_continuous(pair_pd, ne, lf);
     EXPECT_NEAR(global, expected, 1e-9);
+}
+
+TEST(NeEstTrio, IntegerContinuousGlobalDispatchesTrioRows) {
+    NeEstimator::LogFactorial lf(500);
+    constexpr int ne = 10;
+    const auto trio_pd = make_trio(100, 30, 50, 15, 80, 20, true);
+    const auto pair_pd = make_trio(0, 0, 80, 25, 120, 40, false);
+
+    std::vector<NeEstimator::PairData> data;
+    data.reserve(64);
+    double expected = 0.0;
+    for (int index = 0; index < 64; ++index) {
+        const auto& pd = (index % 2 == 0) ? trio_pd : pair_pd;
+        data.push_back(pd);
+        expected += (pd.has_g == 1)
+            ? NeEstimator::compute_ll_trio_continuous(pd, static_cast<double>(ne), lf)
+            : NeEstimator::compute_ll_single_continuous(pd, ne, lf);
+    }
+
+    EXPECT_NEAR(NeEstimator::compute_global_ll(ne, data, lf, true), expected, 1e-9);
+    EXPECT_NEAR(NeEstimator::compute_global_ll_parallel(ne, data, lf, 4, true),
+                expected, 1e-9);
 }
 
 // load_pairs must read HAS_G / GRANDMOTHER_DP / GRANDMOTHER_AD_ALT when
@@ -781,6 +1087,83 @@ TEST(NeEstTrio, LoadPairsReadsTrioColumns) {
     EXPECT_EQ(data[1].g_dp,     0);
     EXPECT_EQ(data[1].g_ad_alt, 0);
     // Clean up.
+    std::remove(tsv.c_str());
+}
+
+TEST(NeEstTrio, LoadPairsSkipsTruncatedOptionalColumns) {
+    const std::string tsv = "/tmp/mitoquest_trio_truncated_load_test.tsv";
+    {
+        std::ofstream out(tsv);
+        ASSERT_TRUE(out.is_open());
+        out << "MOTHER_DP\tMOTHER_AD_ALT\tMOTHER_VAF\tCHILD_DP\tCHILD_AD_ALT\t"
+               "QC\tHAS_G\tGRANDMOTHER_DP\tGRANDMOTHER_AD_ALT\t"
+               "FAM_ID\tMOTHER_ID\tCHILD_ID\n";
+        out << "50\t15\t0.300\t80\t20\tPASS\t1\t100\t30\tF1\tM1\tC1\n";
+        // QC is present, but all columns after QC are missing.
+        out << "50\t15\t0.300\t80\t20\tPASS\n";
+    }
+    const auto data = NeEstimator::load_pairs(tsv, 0.0, 1.0);
+    ASSERT_EQ(data.size(), 1u);
+    EXPECT_EQ(data.front().has_g, 1);
+    EXPECT_EQ(data.front().fam_id, "F1");
+    std::remove(tsv.c_str());
+}
+
+TEST(NeEstTrio, LoadPairsRejectsMalformedDeclaredTrioRows) {
+    const std::string tsv = "/tmp/mitoquest_malformed_trio_load_test.tsv";
+    {
+        std::ofstream out(tsv);
+        ASSERT_TRUE(out.is_open());
+        out << "MOTHER_DP\tMOTHER_AD_ALT\tMOTHER_VAF\tCHILD_DP\tCHILD_AD_ALT\t"
+               "QC\tHAS_G\tGRANDMOTHER_DP\tGRANDMOTHER_AD_ALT\n";
+        // A declared trio cannot have zero grandmother depth or invalid AD.
+        out << "100\t30\t0.3\t100\t20\tPASS\t1\t0\t0\n";
+        out << "100\t30\t0.3\t100\t20\tPASS\t1\t100\t101\n";
+        // HAS_G is a binary schema field.
+        out << "100\t30\t0.3\t100\t20\tPASS\t2\t100\t30\n";
+        // A valid M-C row is retained.
+        out << "100\t30\t0.3\t100\t20\tPASS\t0\t0\t0\n";
+    }
+
+    const auto data = NeEstimator::load_pairs(tsv, 0.0, 1.0);
+    ASSERT_EQ(data.size(), 1u);
+    EXPECT_EQ(data.front().has_g, 0);
+    std::remove(tsv.c_str());
+}
+
+TEST(NeEstTrio, LoadPairsRejectsPartialTrioSchema) {
+    const std::string tsv = "/tmp/mitoquest_partial_trio_schema_test.tsv";
+    {
+        std::ofstream out(tsv);
+        ASSERT_TRUE(out.is_open());
+        out << "MOTHER_DP\tMOTHER_AD_ALT\tMOTHER_VAF\tCHILD_DP\tCHILD_AD_ALT\t"
+               "QC\tHAS_G\n";
+        out << "100\t30\t0.3\t100\t20\tPASS\t1\n";
+    }
+
+    EXPECT_THROW(NeEstimator::load_pairs(tsv, 0.0, 1.0), std::runtime_error);
+    std::remove(tsv.c_str());
+}
+
+TEST(NeEstTrio, LoadPairsUsesCountsForMaternalVafGate) {
+    const std::string tsv = "/tmp/mitoquest_count_vaf_gate_test.tsv";
+    {
+        std::ofstream out(tsv);
+        ASSERT_TRUE(out.is_open());
+        out << "MOTHER_DP\tMOTHER_AD_ALT\tMOTHER_VAF\tCHILD_DP\tCHILD_AD_ALT\tQC\n";
+        // Text VAF is in range, but the validated count frequency is zero.
+        out << "100\t0\t0.500000\t100\t0\tPASS\n";
+        // Text VAF is stale, but the validated count frequency is in range.
+        out << "100\t20\t0.000000\t100\t20\tPASS\n";
+        // A non-finite textual VAF must likewise not alter count-based gating.
+        out << "100\t20\tnan\t100\t20\tPASS\n";
+    }
+    const auto data = NeEstimator::load_pairs(tsv, 0.10, 0.90);
+    ASSERT_EQ(data.size(), 2u);
+    for (const auto& pd : data) {
+        EXPECT_EQ(pd.m_dp, 100);
+        EXPECT_EQ(pd.m_ad_alt, 20);
+    }
     std::remove(tsv.c_str());
 }
 
@@ -1128,6 +1511,28 @@ TEST(NeEstFamily, FamilyKimuraConsistency) {
     EXPECT_DOUBLE_EQ(fam_kim.ne_kimura,  direct_kim.ne_kimura);
 }
 
+TEST(NeEstFamily, FamilyKimuraBootstrapResamplesWholeLocus) {
+    NeEstimator::FamilyData family;
+    family.fam_id = "F1";
+    family.mother_id = "M1";
+    family.child_ids = {"C1", "C2", "C3", "C4"};
+    for (int child_index = 0; child_index < 4; ++child_index) {
+        auto pair = make_family_pair(100, 50, 100, child_index * 10,
+                                     "F1", "M1", "C" + std::to_string(child_index + 1));
+        pair.locus_id = "chrM\x1f" "100\x1f" "G";
+        family.pairs.push_back(pair);
+    }
+
+    const auto clustered = NeEstimator::compute_family_kimura_check(
+        family, 100, 42, 0.0);
+    EXPECT_TRUE(clustered.ci_computed);
+    EXPECT_EQ(clustered.n_bootstrap, 100);
+    // A single locus cluster is always resampled as its complete set of four
+    // child rows, so every bootstrap replicate equals the point estimate.
+    EXPECT_DOUBLE_EQ(clustered.b_ci_low, clustered.b);
+    EXPECT_DOUBLE_EQ(clustered.b_ci_high, clustered.b);
+}
+
 TEST(NeEstFamily, FamilyKimuraOnSkippedFamily) {
     // Kimura on a family with too few sites: should still compute but
     // with very few informative pairs.
@@ -1252,6 +1657,42 @@ TEST(NeEstFamily, WriteFamilyTsvWithKimura) {
     // Kimura values should appear in the data row.
     EXPECT_NE(tsv.find("0.85"), std::string::npos);
     EXPECT_NE(tsv.find("6.67"), std::string::npos);
+}
+
+TEST(NeEstFamily, WriteFamilyTsvIncludesKimuraBootstrapFields) {
+    NeEstimator::Config cfg{};
+    cfg.input_tsv = "dummy";
+    NeEstimator estimator(cfg);
+
+    NeEstimator::FamilyResult result;
+    result.fam_id = "F1";
+    result.mother_id = "M1";
+    result.n_children = 1;
+    result.n_pairs = 5;
+    result.n_informative = 5;
+    result.ne = 10.0;
+    result.ci_low = 5.0;
+    result.ci_high = 20.0;
+    result.max_log_lik = -12.0;
+    result.kimura.computed = true;
+    result.kimura.b = 0.8;
+    result.kimura.ne_kimura = 5.0;
+    result.kimura.n_informative = 5;
+    result.kimura.ci_computed = true;
+    result.kimura.b_ci_low = 0.7;
+    result.kimura.b_ci_high = 0.9;
+    result.kimura.ne_kimura_ci_low = 3.3333333;
+    result.kimura.ne_kimura_ci_high = 10.0;
+    result.kimura.n_bootstrap = 100;
+    result.kimura.bootstrap_seed = 42;
+
+    std::ostringstream output;
+    estimator._write_family_tsv({result}, output);
+    const std::string tsv = output.str();
+    EXPECT_NE(tsv.find("KIMURA_B_CI_95_LOW"), std::string::npos);
+    EXPECT_NE(tsv.find("KIMURA_NE_CI_95_HIGH"), std::string::npos);
+    EXPECT_NE(tsv.find("\t0.7\t0.9\t3.3333333\t10\t100\t42\t"),
+              std::string::npos);
 }
 
 TEST(NeEstFamily, WriteFamilyTsvSkippedKimuraNA) {

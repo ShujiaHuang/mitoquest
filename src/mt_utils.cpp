@@ -1,10 +1,54 @@
 #include "mt_utils.h"
 
+#include "io/fasta.h"
+#include "io/iobgzf.h"
+#include "algorithm.h"
+
 std::string format_double(double value, int precision) {
     std::stringstream ss;
     ss << std::fixed << std::setprecision(precision) << value;
     return ss.str();
 }
+
+namespace {
+
+std::string format_logit_af(double allele_frequency) {
+    if (!(allele_frequency > 0.0 && allele_frequency < 1.0)
+        || !std::isfinite(allele_frequency)) 
+    {
+        return ".";
+    }
+    return format_double(std::log(allele_frequency / (1.0 - allele_frequency)), 6);
+}
+
+double binomial_survival_probability(int successes, int trials, double probability) {
+    if (successes <= 0) return 1.0;
+    if (successes > trials || trials <= 0 || probability <= 0.0) return 0.0;
+    if (probability >= 1.0) return 1.0;
+
+    // Pr(X >= successes) for X ~ Binomial(trials, probability) is the
+    // regularized incomplete beta I_probability(successes, trials-successes+1).
+    const double tail = kf_betai(static_cast<double>(successes),
+                                 static_cast<double>(trials - successes + 1),
+                                 probability);
+    return std::max(0.0, std::min(1.0, tail));
+}
+
+std::string format_strand_metric(double value, int precision) {
+    if (!std::isfinite(value)) return ".";
+    if (value == 10000.0) return "10000";
+    return format_double(value, precision);
+}
+
+// Phred-scale a p-value, capping the underflow at the 10,000 sentinel.
+double phred_scale_pvalue(double p_value) {
+    const double fs = -10.0 * std::log10(p_value);
+    if (!std::isfinite(fs)) return 10000.0;
+    if (fs == 0.0) return 0.0;
+    return fs;
+}
+
+}  // namespace
 
 int get_total_depth(const AlignInfo &align_infor) {
     int depth(0);
@@ -44,29 +88,49 @@ StrandBiasInfo strand_bias(const std::string &major_base,
         }
     }
 
-    if (alt_base == major_base) { 
-        // 如果 alt_base 刚好是 major_base 那么就按照 50% 的比例构造 alt_fwd 和 alt_rev 的理论值
-        alt_fwd = alt_rev = int(std::round(0.5 * (maj_fwd + maj_rev)));
-    }
+    const bool monomorphic = (alt_base == major_base);
 
-    double fs = -10 * log10(fisher_exact_test(maj_fwd, maj_rev, alt_fwd, alt_rev));
-    // 应对'全 major allele' 或者是 '全 alt allele'
-    if (std::isinf(fs)) {
-        fs = 10000;
-    } else if (fs == 0) {
-        fs = 0.0;
-    }
+    double fs(0.0);
+    double sor(0.0);
+    if (monomorphic) {
+        // Monomorphic genotype: no second allele to contrast against.  Test
+        // the absolute strand balance of the sole allele against the 50:50
+        // expectation with a two-sided binomial test, and report the
+        // symmetric log ratio ln(x + 1/x) of its pseudocount-corrected
+        // forward/reverse counts.
+        const int n_trials = maj_fwd + maj_rev;
+        const double p_two_sided = std::min(
+            1.0, 2.0 * binomial_survival_probability(std::max(maj_fwd, maj_rev), n_trials, 0.5)
+        );
+        fs = phred_scale_pvalue(p_two_sided);
 
-    // Strand bias estimated by the Symmetric Odds Ratio test
-    // https://software.broadinstitute.org/gatk/documentation/tooldocs/current/org_broadinstitute_gatk_tools_walkers_annotator_StrandOddsRatio.php
-    double sor = (maj_rev * alt_fwd > 0) ? (double)(maj_fwd * alt_rev) / (double)(maj_rev * alt_fwd): 10000;
+        const double ratio = static_cast<double>(maj_fwd + 1) / static_cast<double>(maj_rev + 1);
+        sor = std::log(ratio + 1.0 / ratio);
+    } else {
+        const double fisher_pvalue = fisher_exact_test(maj_fwd, maj_rev, alt_fwd, alt_rev);
+        fs = phred_scale_pvalue(fisher_pvalue);
+
+        // GATK's symmetric odds ratio: add a pseudocount to avoid singular
+        // tables, combine the odds ratio with its reciprocal, and normalize
+        // for strand imbalance shared by the major and selected alleles.
+        const double major_forward = static_cast<double>(maj_fwd) + 1.0;
+        const double major_reverse = static_cast<double>(maj_rev) + 1.0;
+        const double alt_forward = static_cast<double>(alt_fwd) + 1.0;
+        const double alt_reverse = static_cast<double>(alt_rev) + 1.0;
+
+        const double odds_ratio = (major_forward / major_reverse) * (alt_reverse / alt_forward);
+        const double symmetric_ratio = odds_ratio + 1.0 / odds_ratio;
+
+        const double major_ratio = std::min(major_forward, major_reverse) / std::max(major_forward, major_reverse);
+        const double alt_ratio = std::min(alt_forward, alt_reverse) / std::max(alt_forward, alt_reverse);
+        sor = std::log(symmetric_ratio) + std::log(major_ratio) - std::log(alt_ratio);
+    }
 
     StrandBiasInfo sbi;
-    sbi.fwd = (alt_base == major_base) ? maj_fwd : alt_fwd;
-    sbi.rev = (alt_base == major_base) ? maj_rev : alt_rev;
-    sbi.fs  = fs; 
+    sbi.fwd = monomorphic ? maj_fwd : alt_fwd;
+    sbi.rev = monomorphic ? maj_rev : alt_rev;
+    sbi.fs  = fs;
     sbi.sor = sor;
-
     return sbi;
 }
 
@@ -127,9 +191,6 @@ VCFSampleAnnotation process_sample_variant(const VariantInfo& var_info,
     // 计算并返回单个样本的信息
     VCFSampleAnnotation sa;
     
-    int exp_major_count = (1 - hf_cutoff) * var_info.total_depth;
-    int exp_minor_count = hf_cutoff * var_info.total_depth;
-    
     for (size_t i = 0; i < ref_alt_order.size(); i++) {  // i == 0 represents the REF GT
         const auto& alt = ref_alt_order[i];
         for (size_t j = 0; j < var_info.alt_bases.size(); j++) {
@@ -140,9 +201,9 @@ VCFSampleAnnotation process_sample_variant(const VariantInfo& var_info,
                 
                 // double h = var_info.freqs[j]; // 这里不要用 lrt 计算出来的 allele frequency，因为可能不知为何会有负数（极少情况下）
                 // calculate the allele frequency by allele_depth/total_depth
-                double h = double(var_info.depths[j]) / double(var_info.total_depth);
+                const double h = double(var_info.depths[j]) / double(var_info.total_depth);
                 sa.allele_freqs.push_back(h);
-                sa.logit_af.push_back(log(h/(1-h)));
+                sa.logit_af.push_back(format_logit_af(h));
                 
                 sa.ci_strings.push_back(format_double(var_info.ci[j].first, 4) + "," + 
                                         format_double(var_info.ci[j].second, 4));
@@ -150,39 +211,15 @@ VCFSampleAnnotation process_sample_variant(const VariantInfo& var_info,
                 sa.sb_strings.push_back(std::to_string(var_info.strand_bias[j].fwd) + "," + 
                                         std::to_string(var_info.strand_bias[j].rev));
                 
-                sa.fs_strings.push_back(var_info.strand_bias[j].fs != 10000 ?
-                                        format_double(var_info.strand_bias[j].fs, 3) : "10000"); // it's a phred-scale score
-                sa.sor_strings.push_back(var_info.strand_bias[j].sor != 10000 ?
-                                         format_double(var_info.strand_bias[j].sor, 3) : "10000");
+                sa.fs_strings.push_back(format_strand_metric(var_info.strand_bias[j].fs, 3));
+                sa.sor_strings.push_back(format_strand_metric(var_info.strand_bias[j].sor, 3));
                 
                 sa.var_types.push_back(var_info.var_types[j]);
 
-                /**
-                 * @brief determine if the rate of heteroplasmy is significantly greater than user defined cutoff.
-                 * 
-                 *  H0 (Null hypothesis): LESS
-                 *  H1 (Alternative hypothesis): Equal or Greater
-                 * 
-                 *            major   minor
-                 *  observed    n11     n12 | n1p
-                 *  expected    n21     n22 | n2p
-                 *          -----------------
-                 *              np1     np2   npp
-                 * 
-                 *  where n11 and n12 are observed depth of major and minor alleles,
-                 *  `n21 = (n11+n12) * (1 - hf_cutoff)` in which hf_cutoff is defined by `--het-threshold` 
-                 *  `n22 = (n11+n12) * hf_cutoff` in which hf_cutoff is defined by `--het-threshold`
-                 * 
-                 */
-                int obs_major_count = var_info.depths[var_info.major_allele_idx];
-                int obs_minor_count = var_info.depths[j];
-                double aq = -10 * log10(fisher_exact_test(obs_major_count, obs_minor_count,
-                                                          exp_major_count, exp_minor_count,
-                                                          TestSide::LESS));
-                if (std::isinf(aq)) {
-                    aq = 10000;
-                }
-                sa.aq.push_back(int(aq));
+                const double aq_pvalue = binomial_survival_probability(
+                    var_info.depths[j], var_info.total_depth, hf_cutoff);
+                const double aq = (aq_pvalue > 0.0) ? -10.0 * std::log10(aq_pvalue) : 10000.0;
+                sa.aq.push_back(std::isfinite(aq) ? static_cast<int>(aq) : 10000);
             }
         }
     }
@@ -231,25 +268,21 @@ std::string vcf_header_define(const std::string &ref_file_path, const std::vecto
         "##FORMAT=<ID=AF,Number=.,Type=Float,Description=\"Allele fraction for ref- and alt-alleles, in the order listed by GT\">",
         "##FORMAT=<ID=CI,Number=1,Type=String,Description=\"95\% confidence interval around the estimated allele fraction for "
             "the allele in the order listed by GT. format: ci_low,ci_up;ci_low,ci_up;...\">",
-        "##FORMAT=<ID=AQ,Number=.,Type=Integer,Description=\"Allele quality, phred quality scores of pvalue of one-tail Fisher exact test "
-            "to determine if the rate of allele is significantly greater than user defined cutoff (-j), in the order listed by GT. "
-            "[CAUTION] In most cases, the minor allele corresponds to the heteroplasmic allele; therefore, the AQ at the minor allele position "
-            "reflects the quality value of heterozygous allele mostly\">",
-        "##FORMAT=<ID=LAF,Number=.,Type=Float,Description=\"Transformed AF: The logit of the allele fraction (AF) is "
-            "computed as logit(AF) = ln(AF/(1-AF)) for each allele, in the order listed by GT\">",
+        "##FORMAT=<ID=AQ,Number=.,Type=Integer,Description=\"Allele quality: Phred-scaled exact one-sided Binomial p-value for observing at least AD reads under allele fraction equal to the user cutoff (-j), in the order listed by GT\">",
+        "##FORMAT=<ID=LAF,Number=.,Type=Float,Description=\"Transformed AF: logit(AF) = ln(AF/(1-AF)) for each allele in GT order; missing at AF=0 or AF=1\">",
         "##FORMAT=<ID=SB,Number=1,Type=String,Description=\"Allele-specific forward/reverse read counts for strand bias tests for the alleles, in "
             "the order listed by GT, separated by ';'. Format: fwd,rev;fwd,rev;...\">",
-        "##FORMAT=<ID=FS,Number=.,Type=Float,Description=\"An ordered, comma delimited list of phred-scaled p-value using Fisher's exact test to detect strand bias, in the order listed by GT\">",
-        "##FORMAT=<ID=SOR,Number=.,Type=Float,Description=\"An ordered, comma delimited list of strand bias estimated by the Symmetric Odds Ratio test, in the order listed by GT\">",
+        "##FORMAT=<ID=FS,Number=.,Type=Float,Description=\"An ordered, comma delimited list of phred-scaled p-values of the strand-bias test, in the order listed by GT: Fisher's exact test against the major allele for heteroplasmic calls, or a two-sided Binomial test against the 50:50 expectation for the sole allele of a monomorphic call\">",
+        "##FORMAT=<ID=SOR,Number=.,Type=Float,Description=\"An ordered, comma delimited list of GATK-style pseudocount-corrected symmetric strand odds ratios, in the order listed by GT; for the sole allele of a monomorphic call, the symmetric log ratio ln(x+1/x) of its pseudocount-corrected forward/reverse counts\">",
         "##FORMAT=<ID=VT,Number=1,Type=String,Description=\"An ordered, comma delimited list of variant type: REF, SNV, INS, DEL, or MNV\">",
-        "##INFO=<ID=AN,Number=1,Type=Integer,Description=\"Number of samples with non-missing GT at this site\">",
+        "##INFO=<ID=NS,Number=1,Type=Integer,Description=\"Number of samples with non-missing GT at this site\">",
         "##INFO=<ID=REF_N,Number=1,Type=Integer,Description=\"Total number of individuals exhibiting the reference state in the population\">",
         "##INFO=<ID=HET_N,Number=1,Type=Integer,Description=\"Total number of individuals exhibiting the heteroplasmic state in the population\">",
         "##INFO=<ID=HOM_N,Number=1,Type=Integer,Description=\"Total number of individuals exhibiting the homoplasmic state in the population\">",
-        "##INFO=<ID=DP_MEAN,Number=1,Type=Integer,Description=\"Mean mitochondrial sequencing depth across samples contributing to AN\">",
-        "##INFO=<ID=DP_MEDIAN,Number=1,Type=Integer,Description=\"Median mitochondrial sequencing depth across samples contributing to AN\">",
+        "##INFO=<ID=DP_MEAN,Number=1,Type=Integer,Description=\"Mean mitochondrial sequencing depth across samples contributing to NS\">",
+        "##INFO=<ID=DP_MEDIAN,Number=1,Type=Integer,Description=\"Median mitochondrial sequencing depth across samples contributing to NS\">",
         "##INFO=<ID=VAF_MEAN,Number=A,Type=Float,Description=\"Mean mitochondrial variant allele (non-reference alleles) fraction(VAF) across all samples "
-            "contributing to AN, with VAF=0 assigned to samples without detectable variant, denominator is the count of individuals with non-missing genotype\">",
+            "contributing to NS, with VAF=0 assigned to samples without detectable variant, denominator is the count of individuals with non-missing genotype\">",
         "##INFO=<ID=VAF_MEAN_HET,Number=A,Type=Float,Description=\"Mean mitochondrial VAF among heteroplasmic samples only, denominator is the count of heteroplasmic individuals\">",
         "##INFO=<ID=PT,Number=1,Type=String,Description=\"Type of plasmicity observed in population: Ref, Hom, Het, or Mixed(Hom and Het)\">"
     };  // initial by common information of header

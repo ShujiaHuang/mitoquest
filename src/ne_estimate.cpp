@@ -15,11 +15,12 @@
 #include <iostream>
 #include <limits>
 #include <map>
+#include <mutex>
 #include <numeric>
 #include <random>
-#include <sstream>
 #include <stdexcept>
-#include <thread>
+#include <unordered_map>
+#include <utility>
 
 #include "ne_estimate.h"
 #include "external/thread_pool.h"
@@ -89,14 +90,28 @@ double NeEstimator::compute_ll_single(const PairData& pd, int ne,
 //   c_alt  |  p_m  ~  BetaBinomial(c_dp, p_m*(Ne-1), (1-p_m)*(Ne-1))
 //
 // At Ne=1 the Kimura diffusion degenerates (complete drift to fixation)
-// so we fall back to the discrete model which handles k in {0, 1}.
-double NeEstimator::compute_ll_single_continuous(const PairData& pd, int ne,
-                                                  const LogFactorial& lf) {
-    if (ne < 1) return -std::numeric_limits<double>::infinity();
-    if (ne == 1) return compute_ll_single(pd, 1, lf);
+// with endpoint masses 1-p_m and p_m. This is distinct from the legacy
+// discrete model, which integrates a separate maternal Beta posterior.
+namespace {
+double compute_ll_single_continuous_degenerate(const NeEstimator::PairData& pd,
+                                               double p_m) {
+    if (pd.c_ad_alt == 0) return std::log1p(-p_m);
+    if (pd.c_ad_alt == pd.c_dp) return std::log(p_m);
+    return -std::numeric_limits<double>::infinity();
+}
+}  // namespace
 
-    const double pm = static_cast<double>(pd.m_ad_alt)
-                    / static_cast<double>(pd.m_dp);
+double NeEstimator::compute_ll_single_continuous(const PairData& pd, int ne,
+                                                 const LogFactorial& lf) {
+    if (ne < 1) return -std::numeric_limits<double>::infinity();
+    if (pd.m_dp <= 0 || pd.c_dp <= 0 || pd.m_ad_alt < 0 || pd.m_ad_alt > pd.m_dp
+        || pd.c_ad_alt < 0 || pd.c_ad_alt > pd.c_dp) 
+    {
+        return -std::numeric_limits<double>::infinity();
+    }
+
+    const double pm = static_cast<double>(pd.m_ad_alt) / static_cast<double>(pd.m_dp);
+    if (ne == 1) return compute_ll_single_continuous_degenerate(pd, pm);
     // Mother homoplasmic: no information about drift.
     if (pm <= 0.0 || pm >= 1.0) return 0.0;
 
@@ -107,11 +122,15 @@ double NeEstimator::compute_ll_single_continuous(const PairData& pd, int ne,
 
 // Real-valued Ne overload for continuous model.
 double NeEstimator::compute_ll_single_continuous(const PairData& pd, double ne,
-                                                  const LogFactorial& lf) {
-    if (ne <= 1.0) return compute_ll_single(pd, 1, lf);
+                                                 const LogFactorial& lf) {
+    if (!std::isfinite(ne) || ne < 1.0 || pd.m_dp <= 0 || pd.c_dp <= 0
+        || pd.m_ad_alt < 0 || pd.m_ad_alt > pd.m_dp
+        || pd.c_ad_alt < 0 || pd.c_ad_alt > pd.c_dp) {
+        return -std::numeric_limits<double>::infinity();
+    }
 
-    const double pm = static_cast<double>(pd.m_ad_alt)
-                    / static_cast<double>(pd.m_dp);
+    const double pm = static_cast<double>(pd.m_ad_alt) / static_cast<double>(pd.m_dp);
+    if (ne == 1.0) return compute_ll_single_continuous_degenerate(pd, pm);
     if (pm <= 0.0 || pm >= 1.0) return 0.0;
 
     const double ne1 = ne - 1.0;
@@ -119,84 +138,357 @@ double NeEstimator::compute_ll_single_continuous(const PairData& pd, double ne,
                                 pm * ne1, (1.0 - pm) * ne1);
 }
 
-// -----------------------------------------------------------------
-// Three-generation G-M-C trio marginal log-likelihood (closed form).
-// -----------------------------------------------------------------
-//
-// The grandmother's observed VAF p_hat_G = g_ad_alt / g_dp serves as
-// the "founder" allele frequency.  The mother's latent heteroplasmy
-// p_M is drawn from the Kimura diffusion:
-//
-//   p_M | p_hat_G  ~  Beta(alpha_G, beta_G)
-//     with alpha_G = p_hat_G * (Ne-1),  beta_G = (1 - p_hat_G) * (Ne-1)
-//
-// Given p_M, the mother's observed reads and the child's reads are
-// conditionally independent:
-//
-//   k_M | p_M  ~  Binomial(d_M, p_M)
-//   k_C | p_M  ~  BetaBinomial(d_C, p_M*(Ne-1), (1-p_M)*(Ne-1))
-//
-// The marginal likelihood (integrating out p_M) has the closed form:
-//
-//   I(Ne) = C(d_M, k_M) * C(d_C, k_C)
-//           * B(alpha_G + k_M + k_C,
-//               beta_G  + (d_M - k_M) + (d_C - k_C))
-//           / B(alpha_G, beta_G)
-//
-// which in log-space becomes:
-//   log I = log C(d_M, k_M) + log C(d_C, k_C)
-//         + lgamma(A) + lgamma(B) - lgamma(A+B)
-//         - lgamma(alpha_G) - lgamma(beta_G) + lgamma(alpha_G+beta_G)
-//
-// Self-consistency checks:
-//   * has_g == 0  ->  falls back to compute_ll_single_continuous (2-gen).
-//   * p_hat_G in {0,1} (homoplasmic grandmother)  ->  returns 0.0 (Ne-
-//     independent constant; row carries no information about Ne).
-//   * ne <= 1  ->  discrete fallback (diffusion degenerates at Ne=1).
-double NeEstimator::compute_ll_trio_continuous(const PairData& pd, double ne,
-                                                const LogFactorial& lf) {
-    // Two-generation rows: standard MC likelihood.
-    if (pd.has_g == 0) return compute_ll_single_continuous(pd, ne, lf);
+namespace {
 
-    // Discrete fallback at Ne = 1 (diffusion degenerates).
-    if (ne <= 1.0) return compute_ll_single(pd, 1, lf);
+constexpr double kTrioQuadratureTolerance = 1e-10;
+constexpr int kTrioInitialQuadratureOrder = 16;
+constexpr int kTrioMinimumAdaptiveOrder = 64;
+constexpr int kTrioRequiredStableRefinements = 2;
+constexpr int kTrioMaxEigenIterations = 100;
 
-    // Grandmother point estimate.
+double log_beta(double alpha, double beta) {
+    return std::lgamma(alpha) + std::lgamma(beta) - std::lgamma(alpha + beta);
+}
+
+double log_sum_exp_values(const std::vector<double>& values) {
+    double max_log = -std::numeric_limits<double>::infinity();
+    for (double value : values) {
+        if (value > max_log) max_log = value;
+    }
+    if (!std::isfinite(max_log)) return max_log;
+
+    double sum = 0.0;
+    for (double value : values) {
+        if (std::isfinite(value)) sum += std::exp(value - max_log);
+    }
+    return (sum > 0.0) ? max_log + std::log(sum)
+                       : -std::numeric_limits<double>::infinity();
+}
+
+struct BetaGaussJacobiRule {
+    std::vector<double> nodes;
+    std::vector<double> log_weights;
+};
+
+// Defined below, after the tridiagonal eigensolver.
+BetaGaussJacobiRule make_beta_gauss_jacobi_rule(double alpha, double beta,
+                                                 int n_nodes);
+
+// Per-evaluation Gauss-Jacobi rule cache.
+//
+// The quadrature rule for the maternal posterior Beta(posterior_alpha,
+// posterior_beta) depends only on those two shape parameters and the node
+// count -- not on the child read counts.  Rows that share the same
+// (grandmother, mother) read signature therefore reuse one rule per
+// refinement order inside a single global-likelihood evaluation (multi-row
+// trios).  The cache is scoped to one evaluation: its key grid changes with
+// Ne, so retaining rules across Ne values has almost no hit rate while
+// growing without bound during the CI sweep.
+struct TrioQuadratureCache {
+    struct Key {
+        double alpha;
+        double beta;
+        int order;
+        bool operator==(const Key& other) const {
+            return order == other.order && alpha == other.alpha && beta == other.beta;
+        }
+    };
+    struct KeyHash {
+        size_t operator()(const Key& k) const {
+            size_t h = std::hash<double>{}(k.alpha);
+            h ^= std::hash<double>{}(k.beta) + 0x9e3779b9 + (h << 6) + (h >> 2);
+            h ^= static_cast<size_t>(k.order) + 0x9e3779b9 + (h << 6) + (h >> 2);
+            return h;
+        }
+    };
+
+    std::mutex mu;
+    std::unordered_map<Key, BetaGaussJacobiRule, KeyHash> rules;
+
+    // Returns the rule for (alpha, beta, order), constructing it at most
+    // once.  Construction happens outside the lock so parallel workers do
+    // not serialize on rule construction; duplicate constructions are
+    // possible only when threads race on the identical key, which is rare.
+    const BetaGaussJacobiRule& get(double alpha, double beta, int order) {
+        const Key key{alpha, beta, order};
+        {
+            std::lock_guard<std::mutex> lock(mu);
+            const auto it = rules.find(key);
+            if (it != rules.end()) return it->second;
+        }
+        BetaGaussJacobiRule rule = make_beta_gauss_jacobi_rule(alpha, beta, order);
+        std::lock_guard<std::mutex> lock(mu);
+        const auto it = rules.find(key);
+        if (it != rules.end()) return it->second;
+        return rules.emplace(key, std::move(rule)).first->second;
+    }
+};
+
+// Diagonalize a real symmetric tridiagonal matrix with implicit QL steps.
+// We only need the first component of every normalized eigenvector: its
+// square is the normalized Gauss quadrature weight (Golub-Welsch theorem).
+void tridiagonal_eigenpairs_first_components(
+    std::vector<double>& diagonal,
+    const std::vector<double>& off_diagonal,
+    std::vector<double>& first_components) {
+    const int n = static_cast<int>(diagonal.size());
+    if (n < 1 || static_cast<int>(off_diagonal.size()) != n - 1) {
+        throw std::runtime_error("[ne-estimate] Invalid Jacobi quadrature matrix.");
+    }
+
+    std::vector<double> e(static_cast<size_t>(n), 0.0);
+    for (int i = 0; i < n - 1; ++i) e[static_cast<size_t>(i)] = off_diagonal[static_cast<size_t>(i)];
+
+    first_components.assign(static_cast<size_t>(n), 0.0);
+    first_components[0] = 1.0;
+    const double epsilon = std::numeric_limits<double>::epsilon();
+
+    for (int left = 0; left < n; ++left) {
+        int iterations = 0;
+        while (true) {
+            int right = left;
+            for (; right < n - 1; ++right) {
+                const double scale = std::abs(diagonal[static_cast<size_t>(right)])
+                                   + std::abs(diagonal[static_cast<size_t>(right + 1)]);
+                if (std::abs(e[static_cast<size_t>(right)]) <= epsilon * scale) break;
+            }
+            if (right == left) break;
+            if (++iterations > kTrioMaxEigenIterations) {
+                throw std::runtime_error("[ne-estimate] Gauss-Jacobi eigensolver did not converge.");
+            }
+
+            double shift = (diagonal[static_cast<size_t>(left + 1)]
+                         - diagonal[static_cast<size_t>(left)]) / (2.0 * e[static_cast<size_t>(left)]);
+            const double hypotenuse = std::hypot(shift, 1.0);
+            shift = diagonal[static_cast<size_t>(right)] - diagonal[static_cast<size_t>(left)]
+                  + e[static_cast<size_t>(left)] / (shift + std::copysign(hypotenuse, shift));
+
+            double sine = 1.0;
+            double cosine = 1.0;
+            double correction = 0.0;
+            double rotation_norm = 0.0;
+            int index = right - 1;
+            for (; index >= left; --index) {
+                const double f = sine * e[static_cast<size_t>(index)];
+                const double b = cosine * e[static_cast<size_t>(index)];
+                rotation_norm = std::hypot(f, shift);
+                e[static_cast<size_t>(index + 1)] = rotation_norm;
+                if (rotation_norm == 0.0) {
+                    diagonal[static_cast<size_t>(index + 1)] -= correction;
+                    e[static_cast<size_t>(right)] = 0.0;
+                    break;
+                }
+
+                sine = f / rotation_norm;
+                cosine = shift / rotation_norm;
+                shift = diagonal[static_cast<size_t>(index + 1)] - correction;
+                rotation_norm = (diagonal[static_cast<size_t>(index)] - shift) * sine + 2.0 * cosine * b;
+                correction = sine * rotation_norm;
+                diagonal[static_cast<size_t>(index + 1)] = shift + correction;
+                shift = cosine * rotation_norm - b;
+
+                const double next_component = first_components[static_cast<size_t>(index + 1)];
+                first_components[static_cast<size_t>(index + 1)] =
+                    sine * first_components[static_cast<size_t>(index)] + cosine * next_component;
+                first_components[static_cast<size_t>(index)] =
+                    cosine * first_components[static_cast<size_t>(index)] - sine * next_component;
+            }
+            if (rotation_norm == 0.0 && index >= left) continue;
+
+            diagonal[static_cast<size_t>(left)] -= correction;
+            e[static_cast<size_t>(left)] = shift;
+            e[static_cast<size_t>(right)] = 0.0;
+        }
+    }
+}
+
+BetaGaussJacobiRule make_beta_gauss_jacobi_rule(double alpha, double beta, int n_nodes) {
+    if (!(alpha > 0.0) || !(beta > 0.0) || n_nodes < 1) {
+        throw std::runtime_error("[ne-estimate] Invalid Beta parameters for Gauss-Jacobi quadrature.");
+    }
+    if (n_nodes == 1) {
+        return {{alpha / (alpha + beta)}, {0.0}};
+    }
+
+    const double total = alpha + beta;
+    std::vector<double> diagonal(static_cast<size_t>(n_nodes), 0.0);
+    std::vector<double> off_diagonal(static_cast<size_t>(n_nodes - 1), 0.0);
+    diagonal[0] = alpha / total;
+
+    for (int degree = 1; degree < n_nodes; ++degree) {
+        const double n = static_cast<double>(degree);
+        const double center = 2.0 * n + total - 2.0;
+        diagonal[static_cast<size_t>(degree)] = 0.5 * (1.0
+            + (alpha - beta) * (total - 2.0) / (center * (center + 2.0)));
+
+        double off_diagonal_squared;
+        if (degree == 1) {
+            off_diagonal_squared = alpha * beta / (total * total * (total + 1.0));
+        } else {
+            off_diagonal_squared = n * (n + alpha - 1.0) * (n + beta - 1.0)
+                * (n + total - 2.0)
+                / (center * center * (center - 1.0) * (center + 1.0));
+        }
+        if (!(off_diagonal_squared > 0.0) || !std::isfinite(off_diagonal_squared)) {
+            throw std::runtime_error("[ne-estimate] Invalid Gauss-Jacobi recurrence coefficient.");
+        }
+        off_diagonal[static_cast<size_t>(degree - 1)] = std::sqrt(off_diagonal_squared);
+    }
+
+    std::vector<double> first_components;
+    tridiagonal_eigenpairs_first_components(diagonal, off_diagonal, first_components);
+
+    std::vector<size_t> order(static_cast<size_t>(n_nodes));
+    std::iota(order.begin(), order.end(), 0);
+    std::sort(order.begin(), order.end(), [&](size_t left, size_t right) {
+        return diagonal[left] < diagonal[right];
+    });
+
+    BetaGaussJacobiRule rule;
+    rule.nodes.reserve(static_cast<size_t>(n_nodes));
+    rule.log_weights.reserve(static_cast<size_t>(n_nodes));
+    std::vector<long double> raw_weights;
+    raw_weights.reserve(static_cast<size_t>(n_nodes));
+    long double weight_sum = 0.0L;
+    for (size_t index : order) {
+        double node = diagonal[index];
+        if (!std::isfinite(node)) {
+            throw std::runtime_error("[ne-estimate] Non-finite Gauss-Jacobi node.");
+        }
+        if (node <= 0.0) node = std::nextafter(0.0, 1.0);
+        if (node >= 1.0) node = std::nextafter(1.0, 0.0);
+        rule.nodes.push_back(node);
+
+        const long double component = static_cast<long double>(first_components[index]);
+        const long double weight = component * component;
+        raw_weights.push_back(weight);
+        weight_sum += weight;
+    }
+    if (!(weight_sum > 0.0L) || !std::isfinite(static_cast<double>(weight_sum))) {
+        throw std::runtime_error("[ne-estimate] Invalid Gauss-Jacobi quadrature weights.");
+    }
+    for (long double weight : raw_weights) {
+        rule.log_weights.push_back((weight > 0.0L)
+            ? static_cast<double>(std::log(weight) - std::log(weight_sum))
+            : -std::numeric_limits<double>::infinity());
+    }
+    return rule;
+}
+
+double compute_ll_trio_gauss_jacobi_at_order(const NeEstimator::PairData& pd,
+                                              double ne,
+                                              const NeEstimator::LogFactorial& lf,
+                                              int n_nodes,
+                                              TrioQuadratureCache* cache) {
+    const double s = ne - 1.0;
+    const double pg = static_cast<double>(pd.g_ad_alt) / static_cast<double>(pd.g_dp);
+    const double alpha_g = pg * s;
+    const double beta_g = (1.0 - pg) * s;
+    const double posterior_alpha = alpha_g + static_cast<double>(pd.m_ad_alt);
+    const double posterior_beta = beta_g + static_cast<double>(pd.m_dp - pd.m_ad_alt);
+    const BetaGaussJacobiRule& rule = (cache != nullptr)
+        ? cache->get(posterior_alpha, posterior_beta, n_nodes)
+        : make_beta_gauss_jacobi_rule(posterior_alpha, posterior_beta, n_nodes);
+
+    std::vector<double> log_terms;
+    log_terms.reserve(rule.nodes.size());
+    for (size_t i = 0; i < rule.nodes.size(); ++i) {
+        const double p_m = rule.nodes[i];
+        const double child_ll = lf.log_betabinom_pmf(
+            pd.c_dp, pd.c_ad_alt, s * p_m, s * (1.0 - p_m));
+        log_terms.push_back(rule.log_weights[i] + child_ll);
+    }
+
+    return lf.log_comb(pd.m_dp, pd.m_ad_alt)
+         + log_beta(posterior_alpha, posterior_beta)
+         - log_beta(alpha_g, beta_g)
+         + log_sum_exp_values(log_terms);
+}
+
+double compute_ll_trio_gauss_jacobi(const NeEstimator::PairData& pd,
+                                    double ne,
+                                    const NeEstimator::LogFactorial& lf,
+                                    TrioQuadratureCache* cache) {
+    const int exact_order = (pd.c_dp + 2) / 2;
+    int order = std::min(kTrioInitialQuadratureOrder, exact_order);
+    double previous = compute_ll_trio_gauss_jacobi_at_order(pd, ne, lf, order, cache);
+    if (order == exact_order) return previous;
+
+    int stable_refinements = 0;
+    while (order < exact_order) {
+        const int next_order = std::min(exact_order, order * 2);
+        const double current = compute_ll_trio_gauss_jacobi_at_order(
+            pd, ne, lf, next_order, cache);
+        if (next_order >= std::min(kTrioMinimumAdaptiveOrder, exact_order)
+            && std::abs(current - previous) <= kTrioQuadratureTolerance) {
+            ++stable_refinements;
+        } else {
+            stable_refinements = 0;
+        }
+        if (next_order == exact_order
+            || stable_refinements >= kTrioRequiredStableRefinements) {
+            return current;
+        }
+        previous = current;
+        order = next_order;
+    }
+    return previous;
+}
+
+double compute_ll_trio_degenerate(const NeEstimator::PairData& pd, double pg) {
+    const bool all_reference = pd.m_ad_alt == 0 && pd.c_ad_alt == 0;
+    const bool all_alternate = pd.m_ad_alt == pd.m_dp && pd.c_ad_alt == pd.c_dp;
+    if (all_reference && pg < 1.0) return std::log1p(-pg);
+    if (all_alternate && pg > 0.0) return std::log(pg);
+    return -std::numeric_limits<double>::infinity();
+}
+
+// Trio marginal log-likelihood with an optional per-evaluation quadrature
+// rule cache (see TrioQuadratureCache).  The public entry point below passes
+// a null cache; the continuous-model optimizer uses a real one.
+double compute_ll_trio_continuous_cached(const NeEstimator::PairData& pd,
+                                         double ne,
+                                         const NeEstimator::LogFactorial& lf,
+                                         TrioQuadratureCache* cache) {
+    if (pd.has_g == 0) return NeEstimator::compute_ll_single_continuous(pd, ne, lf);
+    if (!std::isfinite(ne) || ne < 1.0 || pd.g_dp <= 0
+        || pd.g_ad_alt < 0 || pd.g_ad_alt > pd.g_dp) {
+        return -std::numeric_limits<double>::infinity();
+    }
     const double pg = static_cast<double>(pd.g_ad_alt)
                     / static_cast<double>(pd.g_dp);
-    // Homoplasmic grandmother: non-informative for Ne.
-    if (pg <= 0.0 || pg >= 1.0) return 0.0;
+    if (ne == 1.0 || pg <= 0.0 || pg >= 1.0) {
+        return compute_ll_trio_degenerate(pd, pg);
+    }
+    return compute_ll_trio_gauss_jacobi(pd, ne, lf, cache);
+}
 
-    const double ne1    = ne - 1.0;
-    const double alpha_G = pg       * ne1;
-    const double beta_G  = (1.0-pg) * ne1;
+}  // namespace
 
-    const int    k_M  = pd.m_ad_alt;
-    const int    d_M  = pd.m_dp;
-    const int    k_C  = pd.c_ad_alt;
-    const int    d_C  = pd.c_dp;
-
-    const double A = alpha_G + static_cast<double>(k_M + k_C);
-    const double B = beta_G  + static_cast<double>((d_M - k_M) + (d_C - k_C));
-
-    // log B(A,B)/B(alpha_G,beta_G)
-    const double log_beta_ratio =
-          std::lgamma(A) + std::lgamma(B) - std::lgamma(A + B)
-        - std::lgamma(alpha_G) - std::lgamma(beta_G)
-        + std::lgamma(alpha_G + beta_G);
-
-    // log C(d_M, k_M) + log C(d_C, k_C)
-    const double log_binom =
-          lf.log_comb(d_M, k_M) + lf.log_comb(d_C, k_C);
-
-    return log_beta_ratio + log_binom;
+// -----------------------------------------------------------------
+// Three-generation G-M-C trio marginal log-likelihood.
+// -----------------------------------------------------------------
+//
+// With s = Ne - 1, the exact likelihood is the Beta-weighted integral
+//
+//   C(d_M,k_M) * B(alpha_G+k_M, beta_G+d_M-k_M) / B(alpha_G,beta_G)
+//   * E_{p_M ~ Beta(alpha_G+k_M, beta_G+d_M-k_M)}[
+//       BetaBin(k_C | d_C, s*p_M, s*(1-p_M))].
+//
+// The child Beta-Binomial term is a degree-d_C polynomial in p_M.  The
+// production path uses adaptive Gauss-Jacobi quadrature for this Beta weight,
+// capped at the polynomial-exact order ceil((d_C + 1) / 2).
+double NeEstimator::compute_ll_trio_continuous(const PairData& pd, double ne,
+                                                const LogFactorial& lf) {
+    return compute_ll_trio_continuous_cached(pd, ne, lf, nullptr);
 }
 
 // -----------------------------------------------------------------
 // Gauss-Legendre quadrature for the trio marginal likelihood.
 //
-// Used by the unit tests to validate the closed-form formula above;
-// not the default path in the optimiser.
+// This is retained as a diagnostic implementation of the exact integrand.
+// Unlike the production Gauss-Jacobi path, it does not absorb the endpoint
+// Beta weight and is not reliable when the posterior Beta density is singular.
 //
 // The integral over p_M in [0,1] is:
 //   int Beta(p_M | alpha_G, beta_G)
@@ -210,11 +502,16 @@ double NeEstimator::compute_ll_trio_quadrature(const PairData& pd, double ne,
                                                 const LogFactorial& lf,
                                                 int n_nodes) {
     if (pd.has_g == 0) return compute_ll_single_continuous(pd, ne, lf);
-    if (ne <= 1.0) return compute_ll_single(pd, 1, lf);
+    if (!std::isfinite(ne) || ne < 1.0 || n_nodes < 1 || pd.g_dp <= 0
+        || pd.g_ad_alt < 0 || pd.g_ad_alt > pd.g_dp) {
+        return -std::numeric_limits<double>::infinity();
+    }
 
     const double pg = static_cast<double>(pd.g_ad_alt)
                     / static_cast<double>(pd.g_dp);
-    if (pg <= 0.0 || pg >= 1.0) return 0.0;
+    if (ne == 1.0 || pg <= 0.0 || pg >= 1.0) {
+        return compute_ll_trio_degenerate(pd, pg);
+    }
 
     const double ne1    = ne - 1.0;
     const double alpha_G = pg       * ne1;
@@ -324,8 +621,13 @@ double NeEstimator::compute_global_ll(int ne,
                                       bool continuous) {
     double total = 0.0;
     for (const PairData& pd : data) {
-        total += continuous ? compute_ll_single_continuous(pd, ne, lf)
-                           : compute_ll_single(pd, ne, lf);
+        if (continuous) {
+            total += (pd.has_g == 1)
+                ? compute_ll_trio_continuous(pd, static_cast<double>(ne), lf)
+                : compute_ll_single_continuous(pd, ne, lf);
+        } else {
+            total += compute_ll_single(pd, ne, lf);
+        }
     }
     return total;
 }
@@ -350,8 +652,13 @@ double NeEstimator::compute_global_ll_parallel(int ne,
         futures.emplace_back(pool.submit([&, start, end, ne, continuous]() {
             double s = 0.0;
             for (size_t i = start; i < end; ++i) {
-                s += continuous ? compute_ll_single_continuous(data[i], ne, lf)
-                               : compute_ll_single(data[i], ne, lf);
+                if (continuous) {
+                    s += (data[i].has_g == 1)
+                        ? compute_ll_trio_continuous(data[i], static_cast<double>(ne), lf)
+                        : compute_ll_single_continuous(data[i], ne, lf);
+                } else {
+                    s += compute_ll_single(data[i], ne, lf);
+                }
             }
             return s;
         }));
@@ -403,12 +710,16 @@ static constexpr double kProfileLLThresholdDelta = 1.92;
 double NeEstimator::compute_global_ll_continuous(
     double ne, const std::vector<PairData>& data,
     const LogFactorial& lf, int threads) {
+    // Per-evaluation quadrature cache: rows sharing the same
+    // (grandmother, mother) signature reuse the Gauss-Jacobi rules for this
+    // Ne instead of rebuilding them per row.
+    TrioQuadratureCache rule_cache;
     // Per-row dispatch: trio rows (has_g == 1) use the three-generation
-    // closed-form marginal likelihood; all others use the standard two-
+    // Gauss-Jacobi marginal likelihood; all others use the standard two-
     // generation continuous model.
     auto row_ll = [&](const PairData& pd) {
         return (pd.has_g == 1)
-            ? compute_ll_trio_continuous(pd, ne, lf)
+            ? compute_ll_trio_continuous_cached(pd, ne, lf, &rule_cache)
             : compute_ll_single_continuous(pd, ne, lf);
     };
 
@@ -430,7 +741,7 @@ double NeEstimator::compute_global_ll_continuous(
             double s = 0.0;
             for (size_t i = start; i < end; ++i) {
                 s += (data[i].has_g == 1)
-                    ? compute_ll_trio_continuous(data[i], ne, lf)
+                    ? compute_ll_trio_continuous_cached(data[i], ne, lf, &rule_cache)
                     : compute_ll_single_continuous(data[i], ne, lf);
             }
             return s;
@@ -493,16 +804,22 @@ double NeEstimator::find_optimal_ne_continuous(
         }
     }
 
+    // Golden-section search samples only interior points.  When the coarse
+    // scan identifies a search boundary as the maximum, preserve that exact
+    // constrained optimum rather than returning a nearby interior value.
+    if (best_int == min_ne || best_int == max_ne) {
+        return static_cast<double>(best_int);
+    }
+
     // Phase 2: golden-section refinement in [best_int - 1, best_int + 1].
-    const double lo = std::max(static_cast<double>(min_ne),
-                               static_cast<double>(best_int) - 1.0);
-    const double hi = std::min(static_cast<double>(max_ne),
-                               static_cast<double>(best_int) + 1.0);
+    const double lo = std::max(static_cast<double>(min_ne), static_cast<double>(best_int) - 1.0);
+    const double hi = std::min(static_cast<double>(max_ne), static_cast<double>(best_int) + 1.0);
     return golden_section_max(lo, hi, 0.01, data, lf, threads);
 }
 
 NeEstimator::Result NeEstimator::estimate_continuous(
-    const std::vector<PairData>& data, int min_ne, int max_ne, int threads) 
+    const std::vector<PairData>& data, 
+    int min_ne, int max_ne, int threads) 
 {
     Result r;
     r.n_pairs = data.size();
@@ -517,37 +834,69 @@ NeEstimator::Result NeEstimator::estimate_continuous(
 
     r.ne          = find_optimal_ne_continuous(data, lf, min_ne, max_ne, threads);
     r.max_log_lik = compute_global_ll_continuous(r.ne, data, lf, threads);
+    if (!std::isfinite(r.max_log_lik)) {
+        throw std::runtime_error(
+            "[ne-estimate] No finite continuous-model likelihood exists in the requested Ne range.");
+    }
 
     const double thr = r.max_log_lik - kProfileLLThresholdDelta;
-    constexpr double step = 0.01;
+    constexpr double fine_step   = 0.01;
+    constexpr double coarse_step = 0.10;
 
-    // Walk leftward for ci_low.
-    r.ci_low = r.ne;
-    r.ci_low_clipped = true;
-    for (double ne = r.ne - step; ne >= static_cast<double>(min_ne); ne -= step) {
-        const double ll = compute_global_ll_continuous(ne, data, lf, threads);
-        if (ll < thr) {
-            r.ci_low = ne + step;
-            r.ci_low_clipped = false;
-            break;
-        }
-        r.ci_low = ne;
-    }
-    if (r.ci_low_clipped) r.ci_low = static_cast<double>(min_ne);
+    auto ll_at = [&](double ne) {
+        return compute_global_ll_continuous(ne, data, lf, threads);
+    };
 
-    // Walk rightward for ci_high.
-    r.ci_high = r.ne;
-    r.ci_high_clipped = true;
-    for (double ne = r.ne + step; ne <= static_cast<double>(max_ne); ne += step) {
-        const double ll = compute_global_ll_continuous(ne, data, lf, threads);
-        if (ll < thr) {
-            r.ci_high = ne - step;
-            r.ci_high_clipped = false;
-            break;
+    // Coarse-to-fine profile-likelihood CI walk.
+    //
+    // Phase 1 walks away from the MLE on the coarse grid (0.1) to bracket
+    // the 1.92-drop crossing.  Phase 2 re-walks the bracket on the fine
+    // grid (0.01) and stops at the first below-threshold point, exactly
+    // like the legacy full fine walk.  The likelihood surface is smooth
+    // around the MLE, so the coarse grid cannot skip the crossing in
+    // practice; this yields the same boundary as the legacy walk (up to
+    // float grid alignment) with ~10x fewer evaluations.
+    auto walk_ci_side = [&](double start_ne, double direction, double bound,
+                            bool* clipped_out) 
+    {
+        // Phase 1: coarse walk.  `cursor` stops at the first
+        // below-threshold coarse point or exits the search range.
+        double last_above = start_ne;
+        double cursor     = start_ne + direction * coarse_step;
+        bool   crossed    = false;
+        while ((direction > 0.0) ? (cursor <= bound) : (cursor >= bound)) {
+            if (ll_at(cursor) < thr) { crossed = true; break; }
+            last_above = cursor;
+            cursor += direction * coarse_step;
         }
-        r.ci_high = ne;
-    }
-    if (r.ci_high_clipped) r.ci_high = static_cast<double>(max_ne);
+        // The fine-walk endpoint: the coarse crossing point itself (already
+        // known below threshold, the fine walk terminates on it) or the
+        // search bound (which the legacy walk evaluates, so we do too).
+        const double end = crossed ? cursor : bound;
+
+        // Phase 2: fine walk over (last_above, end].
+        double fine = last_above + direction * fine_step;
+        while ((direction > 0.0) ? (fine <= end) : (fine >= end)) {
+            if (ll_at(fine) < thr) {
+                *clipped_out = false;
+                return fine - direction * fine_step;
+            }
+            if (fine == end) break;   // endpoint handled below
+            fine += direction * fine_step;
+        }
+        if (crossed) {
+            // Every fine-grid point above the bracket held; the coarse
+            // crossing point is the first below-threshold point.
+            *clipped_out = false;
+            return cursor - direction * fine_step;
+        }
+        // No crossing on either grid: CI runs to the search bound.
+        *clipped_out = true;
+        return bound;
+    };
+
+    r.ci_low  = walk_ci_side(r.ne, -1.0, static_cast<double>(min_ne), &r.ci_low_clipped);
+    r.ci_high = walk_ci_side(r.ne, +1.0, static_cast<double>(max_ne), &r.ci_high_clipped);
 
     return r;
 }
@@ -558,6 +907,14 @@ NeEstimator::Result NeEstimator::estimate(const std::vector<PairData>& data,
     // For the continuous model, delegate to the real-valued optimizer.
     if (continuous) {
         return estimate_continuous(data, min_ne, max_ne, threads);
+    }
+
+    const auto trio_row = std::find_if(data.begin(), data.end(),
+        [](const PairData& pd) { return pd.has_g == 1; });
+    if (trio_row != data.end()) {
+        throw std::runtime_error(
+            "[ne-estimate] --model discrete does not support HAS_G=1 trio rows; "
+            "use --model continuous or remove trio rows.");
     }
 
     Result r;
@@ -574,6 +931,10 @@ NeEstimator::Result NeEstimator::estimate(const std::vector<PairData>& data,
     const int best_ne = find_optimal_ne(data, lf, min_ne, max_ne, threads, false);
     r.ne          = static_cast<double>(best_ne);
     r.max_log_lik = compute_global_ll_parallel(best_ne, data, lf, threads, false);
+    if (!std::isfinite(r.max_log_lik)) {
+        throw std::runtime_error(
+            "[ne-estimate] No finite discrete-model likelihood exists in the requested Ne range.");
+    }
 
     const double thr = r.max_log_lik - kProfileLLThresholdDelta;
 
@@ -641,7 +1002,12 @@ int col_index(const std::vector<std::string>& cols, const std::string& name) {
 }  // namespace
 
 std::vector<NeEstimator::PairData>
-NeEstimator::load_pairs(const std::string& tsv_path, double min_vaf, double max_vaf) {
+NeEstimator::load_pairs(const std::string& tsv_path, double min_vaf, double max_vaf,
+                       NeEstimator::LoadStats* stats) {
+    if (!std::isfinite(min_vaf) || !std::isfinite(max_vaf) ||
+        min_vaf < 0.0 || max_vaf > 1.0 || min_vaf > max_vaf) {
+        throw std::invalid_argument("[ne-estimate] Invalid finite maternal-VAF window.");
+    }
     std::ifstream in_file(tsv_path);
     if (!in_file.is_open()) {
         throw std::runtime_error("[ne-estimate] Failed to open input TSV: " + tsv_path);
@@ -679,11 +1045,31 @@ NeEstimator::load_pairs(const std::string& tsv_path, double min_vaf, double max_
     const int idx_has_g    = opt_col("HAS_G");
     const int idx_g_dp     = opt_col("GRANDMOTHER_DP");
     const int idx_g_ad_alt = opt_col("GRANDMOTHER_AD_ALT");
+    const bool has_any_trio_column = idx_has_g >= 0 || idx_g_dp >= 0 || idx_g_ad_alt >= 0;
+    const bool has_trio_columns = idx_has_g >= 0 && idx_g_dp >= 0 && idx_g_ad_alt >= 0;
+    if (has_any_trio_column && !has_trio_columns) {
+        throw std::runtime_error(
+            "[ne-estimate] TSV must contain HAS_G, GRANDMOTHER_DP, and "
+            "GRANDMOTHER_AD_ALT together.");
+    }
 
     // Family identifier columns (backward-compatible; empty when absent).
     const int idx_fam_id    = opt_col("FAM_ID");
     const int idx_mother_id = opt_col("MOTHER_ID");
     const int idx_child_id  = opt_col("CHILD_ID");
+    const int idx_chrom     = opt_col("CHROM");
+    const int idx_pos       = opt_col("POS");
+    const int idx_alt       = opt_col("ALT");
+    const bool has_locus_columns = idx_chrom >= 0 && idx_pos >= 0 && idx_alt >= 0;
+
+    const int max_required_index = std::max({
+        idx_m_dp, idx_m_ad_alt, idx_m_vaf, idx_c_dp, idx_c_ad_alt, idx_qc,
+        idx_has_g, idx_g_dp, idx_g_ad_alt,
+        idx_fam_id, idx_mother_id, idx_child_id,
+        has_locus_columns ? idx_chrom : -1,
+        has_locus_columns ? idx_pos : -1,
+        has_locus_columns ? idx_alt : -1
+    });
 
     std::vector<PairData> data;
     while (std::getline(in_file, line)) {
@@ -691,16 +1077,8 @@ NeEstimator::load_pairs(const std::string& tsv_path, double min_vaf, double max_
         if (line.empty()) continue;
         if (line[0] == '#') continue;
         std::vector<std::string> tk = ngslib::split(line, "\t");
-        if (static_cast<int>(tk.size()) <= idx_qc) continue;
+        if (static_cast<int>(tk.size()) <= max_required_index) continue;
         if (tk[idx_qc] != "PASS") continue;
-
-        double m_vaf;
-        try {
-            m_vaf = std::stod(tk[idx_m_vaf]);
-        } catch (const std::exception&) {
-            continue;
-        }
-        if (m_vaf < min_vaf || m_vaf > max_vaf) continue;
 
         try {
             PairData pd;
@@ -712,17 +1090,48 @@ NeEstimator::load_pairs(const std::string& tsv_path, double min_vaf, double max_
             if (pd.m_ad_alt < 0 || pd.m_ad_alt > pd.m_dp) continue;
             if (pd.c_ad_alt < 0 || pd.c_ad_alt > pd.c_dp) continue;
 
-            // Trio fields: only populated when all three optional columns
-            // are present and HAS_G == 1 for this row.
-            if (idx_has_g >= 0 && idx_g_dp >= 0 && idx_g_ad_alt >= 0) {
+            // MOTHER_VAF remains a required provenance column in the TSV
+            // schema, but AD/DP is the canonical value used everywhere in
+            // the estimator. Filtering on it prevents stale or non-finite
+            // text VAF fields from changing the fitted data set.
+            const double m_vaf = static_cast<double>(pd.m_ad_alt)
+                               / static_cast<double>(pd.m_dp);
+            if (m_vaf < min_vaf || m_vaf > max_vaf) continue;
+
+            // A declared G-M-C row must provide valid grandmother counts;
+            // otherwise it is not a valid one-generation M-C observation.
+            if (has_trio_columns) {
                 const int hg = std::stoi(tk[idx_has_g]);
+                if (hg != 0 && hg != 1) continue;
                 if (hg == 1) {
                     const int gdp  = std::stoi(tk[idx_g_dp]);
                     const int galt = std::stoi(tk[idx_g_ad_alt]);
-                    if (gdp > 0 && galt >= 0 && galt <= gdp) {
-                        pd.g_dp     = gdp;
-                        pd.g_ad_alt = galt;
-                        pd.has_g    = 1;
+                    if (gdp <= 0 || galt < 0 || galt > gdp) continue;
+                    pd.g_dp     = gdp;
+                    pd.g_ad_alt = galt;
+                    pd.has_g    = 1;
+
+                    // A homoplasmic grandmother is an absorbing founder
+                    // state (see compute_ll_trio_degenerate): compatible
+                    // all-homoplasmic descendants contribute the
+                    // Ne-independent constant log 1 = 0, and any
+                    // segregating descendants are impossible (-inf) and
+                    // would abort the whole fit.  Drop both at load time
+                    // and count them for QC transparency.
+                    const bool g_hom_ref = (galt == 0);
+                    const bool g_hom_alt = (galt == gdp);
+                    if (g_hom_ref || g_hom_alt) {
+                        const bool desc_all_ref =
+                            pd.m_ad_alt == 0 && pd.c_ad_alt == 0;
+                        const bool desc_all_alt =
+                            pd.m_ad_alt == pd.m_dp && pd.c_ad_alt == pd.c_dp;
+                        if ((g_hom_ref && desc_all_ref) ||
+                            (g_hom_alt && desc_all_alt)) {
+                            if (stats) ++stats->trio_founder_hom_skipped;
+                        } else {
+                            if (stats) ++stats->trio_founder_mismatch_skipped;
+                        }
+                        continue;
                     }
                 }
             }
@@ -731,6 +1140,9 @@ NeEstimator::load_pairs(const std::string& tsv_path, double min_vaf, double max_
             if (idx_fam_id >= 0)    pd.fam_id    = tk[idx_fam_id];
             if (idx_mother_id >= 0) pd.mother_id = tk[idx_mother_id];
             if (idx_child_id >= 0)  pd.child_id  = tk[idx_child_id];
+            if (has_locus_columns) {
+                pd.locus_id = tk[idx_chrom] + "\x1f" + tk[idx_pos] + "\x1f" + tk[idx_alt];
+            }
 
             data.push_back(pd);
         } catch (const std::exception&) {
@@ -767,12 +1179,10 @@ NeEstimator::load_pairs(const std::string& tsv_path, double min_vaf, double max_
 // cohorts.  When `n_bootstrap > 0` we also do a pair-level non-parametric
 // bootstrap and return the 2.5/97.5 percentile CI for b and Ne_kimura.
 // The value reported here is *only* a sanity cross-check against the
-// deCODE 2024 Cell paper -- the Beta-Binomial MMLE remains the primary
-// estimator.  The two can diverge on real data because:
+// primary continuous MMLE. The two can diverge on real data because:
 //
-//   * The MMLE needs the discrete grid k/Ne to land near observed VAFs;
-//     hundreds of concordant heteroplasmic pairs pull Ne *upward*
-//     (grid-resolution effect).
+//   * The MMLE uses the full child count likelihood, while the Kimura
+//     diagnostic uses only sampling-corrected squared frequency shifts.
 //   * The Wonnapinij b is variance-only, so a small number of high-drift
 //     outliers (errors / NUMTs / mixed populations) can pull Ne_kimura
 //     *downward*.
@@ -802,7 +1212,10 @@ prepare_pair_contributions(const std::vector<NeEstimator::PairData>& data) {
         c.idx = i;
         c.informative = false;
         c.pm = c.pc = c.w = c.r = 0.0;
-        if (pd.m_dp <= 0 || pd.c_dp <= 0) { out.push_back(c); continue; }
+        // p_hat(1-p_hat)/(d-1) is unbiased for p(1-p)/d under binomial
+        // sampling. At depth one the plug-in variance is not identifiable,
+        // so the row is excluded from Kimura aggregation.
+        if (pd.m_dp <= 1 || pd.c_dp <= 1) { out.push_back(c); continue; }
 
         c.pm = static_cast<double>(pd.m_ad_alt) / static_cast<double>(pd.m_dp);
         c.pc = static_cast<double>(pd.c_ad_alt) / static_cast<double>(pd.c_dp);
@@ -810,8 +1223,10 @@ prepare_pair_contributions(const std::vector<NeEstimator::PairData>& data) {
         if (c.w <= 0.0) { out.push_back(c); continue; }   // mother homoplasmic
 
         const double d = (c.pc - c.pm) * (c.pc - c.pm);
-        const double s = c.pm * (1.0 - c.pm) / static_cast<double>(pd.m_dp)
-                       + c.pc * (1.0 - c.pc) / static_cast<double>(pd.c_dp);
+        const double s = c.pm * (1.0 - c.pm)
+                           / static_cast<double>(pd.m_dp - 1)
+                       + c.pc * (1.0 - c.pc)
+                           / static_cast<double>(pd.c_dp - 1);
         c.r = d - s;
         c.informative = true;
         out.push_back(c);
@@ -1138,6 +1553,9 @@ NeEstimator::compute_ne_profile(const std::vector<PairData>& data,
                                 const LogFactorial& lf,
                                 double min_ne, double max_ne, double step,
                                 int threads, bool continuous) {
+    if (!std::isfinite(min_ne) || !std::isfinite(max_ne) || !std::isfinite(step)) {
+        throw std::invalid_argument("[ne-estimate] Ne-profile bounds and step must be finite.");
+    }
     if (step <= 0.0)         step = 0.1;
     if (min_ne < 1.0)        min_ne = 1.0;
     if (max_ne < min_ne)     max_ne = min_ne;
@@ -1147,29 +1565,34 @@ NeEstimator::compute_ne_profile(const std::vector<PairData>& data,
     const std::vector<PairContribution> contribs = prepare_pair_contributions(data);
 
     std::vector<NeProfileRow> profile;
-    const size_t n_steps = static_cast<size_t>(
-        std::floor((max_ne - min_ne) / step + 0.5)) + 1;
-    profile.reserve(n_steps + 1);
+    size_t continuous_steps = 0;
+    if (continuous) {
+        const double step_count = std::floor((max_ne - min_ne) / step);
+        if (step_count > static_cast<double>(std::numeric_limits<size_t>::max() - 2)) {
+            throw std::invalid_argument("[ne-estimate] Ne-profile grid is too large.");
+        }
+        continuous_steps = static_cast<size_t>(step_count);
+        profile.reserve(continuous_steps + 2);
+    } else {
+        const int first_ne = std::max(1, static_cast<int>(std::ceil(min_ne)));
+        const int last_ne = static_cast<int>(std::floor(max_ne));
+        if (last_ne >= first_ne) {
+            profile.reserve(static_cast<size_t>(last_ne - first_ne + 1));
+        }
+    }
 
     double max_ll  = -std::numeric_limits<double>::infinity();
     double min_ssr =  std::numeric_limits<double>::infinity();
 
-    // Half-step tolerance so the rightmost grid point is included even
-    // when (max_ne - min_ne) is not an exact multiple of step.
-    const double half_step = 0.5 * step;
-    for (double ne = min_ne; ne <= max_ne + half_step; ne += step) {
+    auto append_profile_row = [&](double ne, int discrete_ne) {
         NeProfileRow row;
         row.ne_candidate = ne;
 
-        // MMLE log-likelihood at this Ne.  For the discrete model the
-        // likelihood is only defined at integer Ne, so round to the
-        // nearest integer and use the fast parallel path.
         if (continuous) {
             row.mmle_log_lik = compute_global_ll_continuous(ne, data, lf, threads);
         } else {
-            const int ne_int = static_cast<int>(std::round(ne));
             row.mmle_log_lik = compute_global_ll_parallel(
-                std::max(1, ne_int), data, lf, threads, false);
+                discrete_ne, data, lf, threads, false);
         }
         if (row.mmle_log_lik > max_ll) max_ll = row.mmle_log_lik;
 
@@ -1185,6 +1608,28 @@ NeEstimator::compute_ne_profile(const std::vector<PairData>& data,
         if (ssr < min_ssr) min_ssr = ssr;
 
         profile.push_back(row);
+    };
+
+    if (continuous) {
+        const double tolerance = 8.0 * std::numeric_limits<double>::epsilon()
+                               * std::max({1.0, std::abs(min_ne), std::abs(max_ne)});
+        for (size_t index = 0; index <= continuous_steps; ++index) {
+            double ne = min_ne + step * static_cast<double>(index);
+            if (ne > max_ne) {
+                if (ne - max_ne > tolerance) break;
+                ne = max_ne;
+            }
+            append_profile_row(ne, 0);
+        }
+        if (profile.empty() || max_ne - profile.back().ne_candidate > tolerance) {
+            append_profile_row(max_ne, 0);
+        }
+    } else {
+        const int first_ne = std::max(1, static_cast<int>(std::ceil(min_ne)));
+        const int last_ne = static_cast<int>(std::floor(max_ne));
+        for (int ne = first_ne; ne <= last_ne; ++ne) {
+            append_profile_row(static_cast<double>(ne), ne);
+        }
     }
 
     // Post-process: normalise both metrics so they are on comparable
@@ -1349,11 +1794,73 @@ NeEstimator::KimuraCheck
 NeEstimator::compute_family_kimura_check(const FamilyData& fam,
                                           int n_bootstrap, uint64_t seed,
                                           double trim_frac) {
-    // Reuse the existing Kimura check on the family's pairs.
-    // The bootstrap unit is already pair-level in compute_kimura_check;
-    // for a family with site-level data this is equivalent to site-level
-    // bootstrap (each PairData = one site across all children).
-    return compute_kimura_check(fam.pairs, n_bootstrap, seed, trim_frac, 0);
+    // The point estimate and trimmed diagnostic remain row-summed. Bootstrap
+    // uncertainty, however, resamples one locus with all child observations
+    // together when a locus ID is available.
+    KimuraCheck out = compute_kimura_check(fam.pairs, 0, seed, trim_frac, 0);
+    if (n_bootstrap <= 0 || out.n_informative == 0) return out;
+
+    const std::vector<PairContribution> contribs = prepare_pair_contributions(fam.pairs);
+    std::map<std::string, std::vector<const PairContribution*>> clusters;
+    bool used_row_fallback = false;
+    for (const auto& contribution : contribs) {
+        if (!contribution.informative) continue;
+        const PairData& pair = fam.pairs[contribution.idx];
+        std::string key = pair.locus_id;
+        if (key.empty()) {
+            key = "__row__" + std::to_string(contribution.idx);
+            used_row_fallback = true;
+        }
+        clusters[key].push_back(&contribution);
+    }
+    if (clusters.empty()) return out;
+
+    out.ci_computed = true;
+    out.n_bootstrap = n_bootstrap;
+    out.bootstrap_seed = seed;
+    std::vector<const std::vector<const PairContribution*>*> cluster_list;
+    cluster_list.reserve(clusters.size());
+    for (const auto& cluster : clusters) cluster_list.push_back(&cluster.second);
+
+    std::mt19937_64 rng(seed);
+    std::uniform_int_distribution<size_t> pick(0, cluster_list.size() - 1);
+    std::vector<double> b_samples;
+    b_samples.reserve(static_cast<size_t>(n_bootstrap));
+    for (int replicate = 0; replicate < n_bootstrap; ++replicate) {
+        double numerator = 0.0;
+        double denominator = 0.0;
+        for (size_t draw = 0; draw < cluster_list.size(); ++draw) {
+            const auto& cluster = *cluster_list[pick(rng)];
+            for (const PairContribution* contribution : cluster) {
+                numerator += contribution->r;
+                denominator += contribution->w;
+            }
+        }
+        const double b = b_from_aggregates(numerator, denominator);
+        if (!std::isnan(b)) b_samples.push_back(b);
+    }
+
+    if (b_samples.size() < 2) {
+        out.b_ci_low = out.b;
+        out.b_ci_high = out.b;
+        out.ne_kimura_ci_low = out.ne_kimura;
+        out.ne_kimura_ci_high = out.ne_kimura;
+        if (!out.note.empty()) out.note += "; ";
+        out.note += "family bootstrap CI degenerate (too few informative resamples)";
+    } else {
+        std::sort(b_samples.begin(), b_samples.end());
+        const double b_low = quantile(b_samples, 0.025);
+        const double b_high = quantile(b_samples, 0.975);
+        out.b_ci_low = b_low;
+        out.b_ci_high = b_high;
+        out.ne_kimura_ci_low = 1.0 / (1.0 - b_low);
+        out.ne_kimura_ci_high = 1.0 / (1.0 - b_high);
+    }
+    if (used_row_fallback) {
+        if (!out.note.empty()) out.note += "; ";
+        out.note += "family bootstrap used row clusters where locus identifiers were absent";
+    }
+    return out;
 }
 
 void NeEstimator::_write_family_tsv(
@@ -1372,6 +1879,15 @@ void NeEstimator::_write_family_tsv(
     }
     if (any_kimura) {
         out << "\tKIMURA_b\tKIMURA_NE\tKIMURA_N_INFORMATIVE";
+    }
+    bool any_kimura_ci = false;
+    for (const auto& fr : results) {
+        if (fr.kimura.ci_computed) { any_kimura_ci = true; break; }
+    }
+    if (any_kimura_ci) {
+        out << "\tKIMURA_B_CI_95_LOW\tKIMURA_B_CI_95_HIGH"
+            << "\tKIMURA_NE_CI_95_LOW\tKIMURA_NE_CI_95_HIGH"
+            << "\tKIMURA_N_BOOTSTRAP\tKIMURA_BOOTSTRAP_SEED";
     }
     out << "\tSKIPPED\tWARNING\n";
 
@@ -1407,6 +1923,18 @@ void NeEstimator::_write_family_tsv(
                 out << "\tNA\tNA\tNA";
             }
         }
+        if (any_kimura_ci) {
+            if (fr.kimura.ci_computed) {
+                out << "\t" << std::setprecision(8) << fr.kimura.b_ci_low
+                    << "\t" << fr.kimura.b_ci_high
+                    << "\t" << fr.kimura.ne_kimura_ci_low
+                    << "\t" << fr.kimura.ne_kimura_ci_high
+                    << "\t" << fr.kimura.n_bootstrap
+                    << "\t" << fr.kimura.bootstrap_seed;
+            } else {
+                out << "\tNA\tNA\tNA\tNA\tNA\tNA";
+            }
+        }
         out << "\t" << (fr.skipped ? "TRUE" : "FALSE")
             << "\t" << fr.warning << "\n";
     }
@@ -1424,6 +1952,15 @@ NeEstimator::NeEstimator(Config config) : _config(std::move(config)) {
     if (_config.input_tsv.empty()) {
         throw std::invalid_argument("[ne-estimate] input_tsv is required.");
     }
+    if (!std::isfinite(_config.min_vaf) || !std::isfinite(_config.max_vaf) ||
+        _config.min_vaf < 0.0 || _config.max_vaf > 1.0 ||
+        _config.min_vaf > _config.max_vaf) {
+        throw std::invalid_argument("[ne-estimate] Invalid finite VAF window.");
+    }
+    if (!std::isfinite(_config.kimura_trim) ||
+        !std::isfinite(_config.ne_profile_step)) {
+        throw std::invalid_argument("[ne-estimate] Floating-point options must be finite.");
+    }
     if (_config.min_ne < 1)       _config.min_ne = 1;
     if (_config.max_ne < _config.min_ne) _config.max_ne = _config.min_ne;
     if (_config.threads < 1)      _config.threads = 1;
@@ -1433,6 +1970,13 @@ NeEstimator::NeEstimator(Config config) : _config(std::move(config)) {
     if (_config.bin_simulation_n_bins < 1) _config.bin_simulation_n_bins = 1;
     if (_config.ne_profile_step <= 0.0)    _config.ne_profile_step = 0.1;
     if (_config.model.empty())    _config.model = "continuous";
+    if (_config.model != "continuous" && _config.model != "discrete") {
+        throw std::invalid_argument("[ne-estimate] model must be continuous or discrete.");
+    }
+    if (_config.per_family && _config.model != "continuous") {
+        throw std::invalid_argument(
+            "[ne-estimate] per-family estimation currently requires model=continuous.");
+    }
     if (_config.min_family_sites < 1) _config.min_family_sites = 1;
     // kimura_check defaults to false; callers may flip it explicitly.
 }
@@ -1472,7 +2016,7 @@ void NeEstimator::usage() {
                  "      --min-vaf   FLOAT  Lower maternal VAF gate, inclusive [0.10].\n"
                  "      --max-vaf   FLOAT  Upper maternal VAF gate, inclusive [0.90].\n"
                  "      --min-ne    INT    Smallest Ne value to consider [1].\n"
-                 "      --max-ne    INT    Largest Ne value to consider  [200].\n"
+                 "      --max-ne    INT    Largest Ne value to consider  [100].\n"
                  "  -t, --threads   INT    Worker threads for the inner sum [1].\n"
                  "      --cross-check NAME   Optional secondary estimator alongside the\n"
                  "                           MMLE. Supported value: `kimura`, which\n"
@@ -1516,9 +2060,9 @@ void NeEstimator::usage() {
                  "    about Ne, hence the default 0.10 - 0.90 window.\n"
                  "  * Confidence-interval bounds are flagged with `_clipped = true` in the\n"
                  "    JSON output when they hit the search boundary.\n"
-                 "  * The Kimura cross-check is approximate; the Beta-Binomial MMLE is the\n"
-                 "    exact discrete-Wright-Fisher marginal likelihood for a single transmission\n"
-                 "    and is the reported primary estimate.  On real data the two can diverge\n"
+                 "  * The Kimura cross-check is approximate; the default continuous MMLE uses\n"
+                 "    a plug-in maternal VAF and a Beta-Binomial child-count working likelihood\n"
+                 "    and is the reported primary estimate. On real data the two can diverge\n"
                  "    when many concordant heteroplasmic pairs co-exist with a few high-\n"
                  "    drift outliers (errors / NUMTs / mixed populations).  Use\n"
                  "    --kimura-trim 0.10 (drops the top 10%% of high-drift pairs) and/or\n"
@@ -1641,9 +2185,10 @@ void NeEstimator::_parse_args(int argc, char* argv[]) {
     if (!ngslib::is_readable(_config.input_tsv.c_str())) {
         throw std::runtime_error("[ne-estimate] Input not readable: " + _config.input_tsv);
     }
-    if (_config.min_vaf < 0.0 || _config.max_vaf > 1.0 ||
+    if (!std::isfinite(_config.min_vaf) || !std::isfinite(_config.max_vaf) ||
+        _config.min_vaf < 0.0 || _config.max_vaf > 1.0 ||
         _config.min_vaf > _config.max_vaf) {
-        throw std::runtime_error("[ne-estimate] Invalid VAF window.");
+        throw std::runtime_error("[ne-estimate] Invalid finite VAF window.");
     }
     if (_config.min_ne < 1) _config.min_ne = 1;
     if (_config.max_ne < _config.min_ne) {
@@ -1651,16 +2196,61 @@ void NeEstimator::_parse_args(int argc, char* argv[]) {
     }
     if (_config.threads < 1)            _config.threads = 1;
     if (_config.kimura_bootstrap < 0)   _config.kimura_bootstrap = 0;
-    if (_config.kimura_trim < 0.0 || _config.kimura_trim >= 1.0) {
-        throw std::runtime_error("[ne-estimate] --kimura-trim must be in [0, 1).");
+    if (!std::isfinite(_config.kimura_trim) ||
+        _config.kimura_trim < 0.0 || _config.kimura_trim >= 1.0) {
+        throw std::runtime_error("[ne-estimate] --kimura-trim must be finite and in [0, 1).");
     }
     if (_config.top_drift_k < 0) _config.top_drift_k = 0;
     if (_config.bin_simulation_n_bins < 1) _config.bin_simulation_n_bins = 1;
-    if (_config.ne_profile_step <= 0.0) {
-        throw std::runtime_error("[ne-estimate] --ne-profile-step must be > 0.");
+    if (!std::isfinite(_config.ne_profile_step) || _config.ne_profile_step <= 0.0) {
+        throw std::runtime_error("[ne-estimate] --ne-profile-step must be finite and > 0.");
     }
     if (_config.min_family_sites < 1) _config.min_family_sites = 1;
+    if (_config.per_family && _config.model != "continuous") {
+        throw std::runtime_error(
+            "[ne-estimate] --per-family currently requires --model continuous.");
+    }
 }
+
+namespace {
+
+std::string json_escape(const std::string& value) {
+    static constexpr char kHex[] = "0123456789abcdef";
+    std::string escaped;
+    escaped.reserve(value.size() + 8);
+    for (unsigned char character : value) {
+        switch (character) {
+            case '"':  escaped += "\\\""; break;
+            case '\\': escaped += "\\\\"; break;
+            case '\b': escaped += "\\b"; break;
+            case '\f': escaped += "\\f"; break;
+            case '\n': escaped += "\\n"; break;
+            case '\r': escaped += "\\r"; break;
+            case '\t': escaped += "\\t"; break;
+            default:
+                if (character < 0x20) {
+                    escaped += "\\u00";
+                    escaped += kHex[character >> 4];
+                    escaped += kHex[character & 0x0f];
+                } else {
+                    escaped += static_cast<char>(character);
+                }
+        }
+    }
+    return escaped;
+}
+
+void emit_json_number(std::ostream& out, double value) {
+    if (std::isfinite(value)) {
+        out << std::setprecision(8) << value;
+    } else if (std::isnan(value)) {
+        out << "\"NaN\"";
+    } else {
+        out << "\"" << (value < 0.0 ? "-Infinity" : "Infinity") << "\"";
+    }
+}
+
+}  // namespace
 
 void NeEstimator::_write_json(const Result& r, std::ostream& out) const {
     const bool is_continuous = (_config.model == "continuous");
@@ -1684,9 +2274,11 @@ void NeEstimator::_write_json(const Result& r, std::ostream& out) const {
         << "  \"CI_Low_Clipped\":  " << (r.ci_low_clipped  ? "true" : "false") << ",\n"
         << "  \"CI_High_Clipped\": " << (r.ci_high_clipped ? "true" : "false") << ",\n"
         << "  \"Pairs_Used\":      " << r.n_pairs << ",\n"
+        << "  \"Trio_Founder_Mismatch_Skipped\": " << r.load_stats.trio_founder_mismatch_skipped << ",\n"
+        << "  \"Trio_Founder_Hom_Skipped\":      " << r.load_stats.trio_founder_hom_skipped << ",\n"
         << "  \"Estimator\":       \"MMLE (composite marginal likelihood)\",\n"
         << "  \"Max_Marginal_LogLik\": " << std::setprecision(8) << r.max_log_lik << ",\n"
-        << "  \"Model\":           \"" << _config.model << "\",\n"
+        << "  \"Model\":           \"" << json_escape(_config.model) << "\",\n"
         << "  \"Min_VAF\":         " << _config.min_vaf << ",\n"
         << "  \"Max_VAF\":         " << _config.max_vaf << ",\n"
         << "  \"Search_Min_Ne\":   " << _config.min_ne  << ",\n"
@@ -1696,23 +2288,15 @@ void NeEstimator::_write_json(const Result& r, std::ostream& out) const {
         out << ",\n"
             << "  \"Kimura_Cross_Check\": {\n"
             << "    \"b\":             " << std::setprecision(8) << r.kimura.b         << ",\n"
-            << "    \"Ne_Kimura\":     " << std::setprecision(8) << r.kimura.ne_kimura << ",\n";
+            << "    \"Ne_Kimura\":     ";
+        emit_json_number(out, r.kimura.ne_kimura);
+        out << ",\n";
 
         if (r.kimura.ci_computed) {
-            // Helper lambda: emit a finite double as a number, an infinite
-            // value as the string "Infinity" (non-strict JSON, but easy
-            // for downstream consumers to detect).
-            auto emit_num = [&](double v) {
-                if (std::isfinite(v)) {
-                    out << std::setprecision(8) << v;
-                } else {
-                    out << "\"" << (v < 0 ? "-Infinity" : "Infinity") << "\"";
-                }
-            };
-            out << "    \"b_CI_95_Low\":         "; emit_num(r.kimura.b_ci_low);          out << ",\n"
-                << "    \"b_CI_95_High\":        "; emit_num(r.kimura.b_ci_high);         out << ",\n"
-                << "    \"Ne_Kimura_CI_95_Low\" :"; emit_num(r.kimura.ne_kimura_ci_low);  out << ",\n"
-                << "    \"Ne_Kimura_CI_95_High\":"; emit_num(r.kimura.ne_kimura_ci_high); out << ",\n"
+            out << "    \"b_CI_95_Low\":         "; emit_json_number(out, r.kimura.b_ci_low);          out << ",\n"
+                << "    \"b_CI_95_High\":        "; emit_json_number(out, r.kimura.b_ci_high);         out << ",\n"
+                << "    \"Ne_Kimura_CI_95_Low\" :"; emit_json_number(out, r.kimura.ne_kimura_ci_low);  out << ",\n"
+                << "    \"Ne_Kimura_CI_95_High\":"; emit_json_number(out, r.kimura.ne_kimura_ci_high); out << ",\n"
                 << "    \"N_Bootstrap\":         " << r.kimura.n_bootstrap     << ",\n"
                 << "    \"Bootstrap_Seed\":      " << r.kimura.bootstrap_seed  << ",\n";
         }
@@ -1721,20 +2305,11 @@ void NeEstimator::_write_json(const Result& r, std::ostream& out) const {
 
         // ---- Trimmed Kimura diagnostic ----
         if (r.kimura.trimmed_computed) {
-            auto emit_num = [&](double v) {
-                if (std::isfinite(v)) {
-                    out << std::setprecision(8) << v;
-                } else if (std::isnan(v)) {
-                    out << "\"NaN\"";
-                } else {
-                    out << "\"" << (v < 0 ? "-Infinity" : "Infinity") << "\"";
-                }
-            };
             out << "    \"Trimmed_Kimura\": {\n"
                 << "      \"Trim_Frac\":        " << std::setprecision(4) << r.kimura.trim_frac   << ",\n"
                 << "      \"N_After_Trim\":     " << r.kimura.n_after_trim  << ",\n"
-                << "      \"b_Trimmed\":        "; emit_num(r.kimura.b_trimmed);                  out << ",\n"
-                << "      \"Ne_Kimura_Trimmed\": "; emit_num(r.kimura.ne_kimura_trimmed);          out << "\n"
+                << "      \"b_Trimmed\":        "; emit_json_number(out, r.kimura.b_trimmed);                  out << ",\n"
+                << "      \"Ne_Kimura_Trimmed\": "; emit_json_number(out, r.kimura.ne_kimura_trimmed);          out << "\n"
                 << "    },\n";
         }
 
@@ -1758,7 +2333,7 @@ void NeEstimator::_write_json(const Result& r, std::ostream& out) const {
             out << "    ],\n";
         }
 
-        out << "    \"Note\":          \"" << r.kimura.note << "\",\n"
+        out << "    \"Note\":          \"" << json_escape(r.kimura.note) << "\",\n"
             << "    \"Method\":        \"Wonnapinij 2008/2010 with sampling-error correction; "
             << "single-generation Ne = 1 / (1 - b); 95% CI by non-parametric pair-level bootstrap\"\n"
             << "  }";
@@ -1775,8 +2350,8 @@ void NeEstimator::_write_json(const Result& r, std::ostream& out) const {
             first_fam = false;
             ++n_estimated;
             out << "    {\n"
-                << "      \"FAM_ID\":            \"" << fr.fam_id << "\",\n"
-                << "      \"Mother_ID\":         \"" << fr.mother_id << "\",\n"
+                << "      \"FAM_ID\":            \"" << json_escape(fr.fam_id) << "\",\n"
+                << "      \"Mother_ID\":         \"" << json_escape(fr.mother_id) << "\",\n"
                 << "      \"N_Children\":        " << fr.n_children << ",\n"
                 << "      \"N_Sites\":           " << fr.n_pairs << ",\n"
                 << "      \"N_Informative\":     " << fr.n_informative << ",\n"
@@ -1792,13 +2367,28 @@ void NeEstimator::_write_json(const Result& r, std::ostream& out) const {
             if (fr.kimura.computed) {
                 out << ",\n      \"Kimura_Cross_Check\": {\n"
                     << "        \"b\":             " << std::setprecision(8) << fr.kimura.b << ",\n"
-                    << "        \"Ne_Kimura\":     " << fr.kimura.ne_kimura << ",\n"
-                    << "        \"N_Informative\": " << fr.kimura.n_informative << ",\n"
+                    << "        \"Ne_Kimura\":     ";
+                emit_json_number(out, fr.kimura.ne_kimura);
+                out << ",\n";
+                if (fr.kimura.ci_computed) {
+                    out << "        \"b_CI_95_Low\":         ";
+                    emit_json_number(out, fr.kimura.b_ci_low);
+                    out << ",\n        \"b_CI_95_High\":        ";
+                    emit_json_number(out, fr.kimura.b_ci_high);
+                    out << ",\n        \"Ne_Kimura_CI_95_Low\": ";
+                    emit_json_number(out, fr.kimura.ne_kimura_ci_low);
+                    out << ",\n        \"Ne_Kimura_CI_95_High\": ";
+                    emit_json_number(out, fr.kimura.ne_kimura_ci_high);
+                    out << ",\n        \"N_Bootstrap\":         " << fr.kimura.n_bootstrap
+                        << ",\n        \"Bootstrap_Seed\":      " << fr.kimura.bootstrap_seed
+                        << ",\n";
+                }
+                out << "        \"N_Informative\": " << fr.kimura.n_informative << ",\n"
                     << "        \"Sampling_Corrected\": true\n"
                     << "      }";
             }
             if (!fr.warning.empty()) {
-                out << ",\n      \"Warning\":         \"" << fr.warning << "\"";
+                out << ",\n      \"Warning\":         \"" << json_escape(fr.warning) << "\"";
             }
             out << "\n    }";
         }
@@ -1813,9 +2403,11 @@ void NeEstimator::_write_json(const Result& r, std::ostream& out) const {
 }
 
 NeEstimator::Result NeEstimator::run() {
+    NeEstimator::LoadStats load_stats;
     std::vector<PairData> data = load_pairs(_config.input_tsv,
                                             _config.min_vaf,
-                                            _config.max_vaf);
+                                            _config.max_vaf,
+                                            &load_stats);
     if (data.empty()) {
         throw std::runtime_error("[ne-estimate] No PASS pairs survived the maternal-VAF "
                                  "filter; nothing to fit.");
@@ -1824,6 +2416,17 @@ NeEstimator::Result NeEstimator::run() {
     std::cerr << "[ne-estimate] Fitting Ne on " << data.size()
               << " pairs (maternal VAF in [" << _config.min_vaf
               << ", " << _config.max_vaf << "], model=" << _config.model << ").\n";
+    if (load_stats.trio_founder_mismatch_skipped > 0 ||
+        load_stats.trio_founder_hom_skipped > 0) {
+        std::cerr << "[ne-estimate] Dropped "
+                  << (load_stats.trio_founder_mismatch_skipped +
+                      load_stats.trio_founder_hom_skipped)
+                  << " trio rows with a homoplasmic grandmother: "
+                  << load_stats.trio_founder_mismatch_skipped
+                  << " with segregating descendants (model-incompatible, -inf) and "
+                  << load_stats.trio_founder_hom_skipped
+                  << " with all-homoplasmic descendants (Ne-independent constant).\n";
+    }
 
     // Warn when Kimura-specific options are set without --cross-check kimura.
     if (!_config.kimura_check) {
@@ -1846,6 +2449,7 @@ NeEstimator::Result NeEstimator::run() {
 
     Result r = estimate(data, _config.min_ne, _config.max_ne, _config.threads,
                         _config.model == "continuous");
+    r.load_stats = load_stats;
 
     if (_config.kimura_check) {
         r.kimura = compute_kimura_check(data,

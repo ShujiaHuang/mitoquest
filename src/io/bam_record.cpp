@@ -277,21 +277,36 @@ namespace ngslib {
                     ++qpos;
                 }
                 rpos += len;
-            } else if (op == BAM_CINS || op == BAM_CSOFT_CLIP || op == BAM_CPAD) {
+            } else if (op == BAM_CINS || op == BAM_CSOFT_CLIP) {
                 al_pair.op        = op;                           // cigar op
                 al_pair.ref_pos   = rpos;                         // reference position, 0-based
                 al_pair.ref_base  = '\0';                         // no reference base for insertion
                 al_pair.qpos      = qpos;                         // read position, 0-based
                 al_pair.read_base = read_seq[qpos];               // first inserted base (char)
-                al_pair.read_qual = read_qual[qpos];              // first base quality (char)
                 if (len > 1) {
                     al_pair.multi_base = read_seq.substr(qpos + 1, len - 1);
                 } else {
                     al_pair.multi_base.clear();
                 }
-                
+                if (op == BAM_CINS) {
+                    // Mean quality of the whole insertion sequence
+                    // (v1.11.3 semantics: the caller uses this single value
+                    // as the insertion's base quality).  Soft clips keep the
+                    // first-base quality; they are never emitted anyway.
+                    double total_score = 0.0;
+                    for (hts_pos_t j = qpos; j < qpos + len; ++j) {
+                        total_score += static_cast<unsigned char>(read_qual[j]);
+                    }
+                    al_pair.read_qual = static_cast<char>(total_score / len);
+                } else {
+                    al_pair.read_qual = read_qual[qpos];          // first base quality (char)
+                }
+
                 aligned_pairs.push_back(al_pair);
                 qpos += len;
+            } else if (op == BAM_CPAD) {
+                // Padding consumes neither the query nor the reference.
+                continue;
             } else if (op == BAM_CDEL || op == BAM_CREF_SKIP) {
                 al_pair.op        = op;                    // cigar op
                 al_pair.ref_pos   = rpos;                  // reference position, 0-based

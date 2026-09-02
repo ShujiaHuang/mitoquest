@@ -390,7 +390,10 @@ namespace ngslib {
 
         int32_t* buffer = nullptr;
         int buffer_capacity = 0;  // 缓冲区容量（元素个数）
-        int total_values = bcf_get_format_int32(hdr.hts_header(), _b.get(), tag.c_str(), &buffer, &buffer_capacity);
+        int total_values = bcf_get_format_int32(
+            hdr.hts_header(), _b.get(), tag.c_str(), 
+            &buffer, &buffer_capacity
+        );
 
         // 错误处理
         if (total_values < 0) {

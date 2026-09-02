@@ -47,7 +47,8 @@ namespace ngslib {
         char        ref_base;   // reference base (single char; '\0' for INS)
         uint32_t    qpos;       // read position
         char        read_base;  // read base (single char; '\0' for DEL; first base for multi-base INS)
-        char        read_qual;  // read quality (single char; '\0' for DEL)
+        char        read_qual;  // read quality (single char; '\0' for DEL; mean quality of the
+                                 // whole insertion sequence for INS)
         std::string multi_base; // extra bases for multi-base INS/SOFT_CLIP (empty for single-base ops)
     } ReadAlignedPair;
 

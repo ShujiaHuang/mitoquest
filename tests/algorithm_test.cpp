@@ -2,6 +2,7 @@
 #include <iostream>
 #include <cmath>
 #include <iomanip>
+#include <limits>
 
 #include <string>
 #include <vector>
@@ -134,4 +135,52 @@ TEST(FisherExactTest, ExtremeCaseTest) {
     double p_value = fisher_exact_test(table, TestSide::TWO_SIDED);
     std::cout << "fisher_exact_test(100, 0, 0, 100, TestSide::TWO_SIDED): " << p_value << "\n";
     EXPECT_LT(p_value, 0.0001);  // 期望 p 值非常小
+}
+
+TEST(EMAlgorithm, ReturnedLikelihoodMatchesReturnedFrequencies) {
+    const std::vector<std::vector<double>> likelihoods = {
+        {0.99, 0.01},
+        {0.99, 0.01},
+        {0.01, 0.99},
+        {0.01, 0.99},
+        {0.01, 0.99},
+    };
+    std::vector<double> frequencies = {0.4, 0.6};
+    std::vector<double> log_likelihoods;
+
+    EM(likelihoods, frequencies, log_likelihoods, 100, 1e-12f);
+
+    ASSERT_EQ(log_likelihoods.size(), likelihoods.size());
+    EXPECT_NEAR(frequencies[0] + frequencies[1], 1.0, 1e-12);
+    for (size_t read = 0; read < likelihoods.size(); ++read) {
+        const double expected = std::log(
+            likelihoods[read][0] * frequencies[0]
+            + likelihoods[read][1] * frequencies[1]);
+        EXPECT_NEAR(log_likelihoods[read], expected, 1e-12);
+    }
+}
+
+TEST(EMAlgorithm, RejectsInvalidInputBeforeComputingPosteriors) {
+    std::vector<double> frequencies = {0.5, 0.5};
+    std::vector<double> empty_frequencies;
+    std::vector<double> zero_frequencies = {0.0, 0.0};
+    std::vector<double> log_likelihoods;
+
+    EXPECT_THROW(EM({}, frequencies, log_likelihoods), std::invalid_argument);
+    EXPECT_THROW(EM({{0.5, 0.5}}, empty_frequencies, log_likelihoods),
+                 std::invalid_argument);
+    EXPECT_THROW(EM({{0.5, 0.5}, {0.5}}, frequencies, log_likelihoods),
+                 std::invalid_argument);
+    EXPECT_THROW(EM({{0.0, 0.0}}, frequencies, log_likelihoods),
+                 std::invalid_argument);
+    EXPECT_THROW(EM({{0.5, 0.5}}, zero_frequencies, log_likelihoods),
+                 std::invalid_argument);
+    EXPECT_THROW(EM({{std::numeric_limits<double>::quiet_NaN(), 0.5}},
+                    frequencies, log_likelihoods),
+                 std::invalid_argument);
+    EXPECT_THROW(EM({{-0.1, 0.5}}, frequencies, log_likelihoods),
+                 std::invalid_argument);
+    EXPECT_THROW(EM({{0.5, 0.5}}, frequencies, log_likelihoods,
+                    10, std::numeric_limits<float>::quiet_NaN()),
+                 std::invalid_argument);
 }

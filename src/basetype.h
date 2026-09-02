@@ -45,13 +45,13 @@ private:
     std::map<std::string, size_t> _B_IDX;  // A map for recroding the base in _UNIQ_BASES => index
 
     std::string _ref_id;
-    uint32_t _ref_pos;
+    uint32_t _ref_pos = 0;
     std::vector<std::string> _active_bases;           // the Ref and alternative bases
     std::map<std::string, std::string> _bases2ref;  // align/alt bases => ref_base
-    double _var_qual;
-    double _min_af;
+    double _var_qual = 0.0;
+    double _min_af = 0.0;
 
-    int _total_depth;                      // depth on ref_pos
+    int _total_depth = 0;                  // depth on ref_pos
     std::map<std::string, double> _depth;  // bases depth, double 是为了方便做除法
 
     // Estimated base frequency of _UNIQ_BASES by LRT
@@ -93,7 +93,7 @@ public:
     };
 
     // Constructor
-    BaseType(){};
+    BaseType() = default;
     BaseType(const BatchInfo *smp_bi, double af);
     BaseType(const BaseType &b);  // copy constructor
 

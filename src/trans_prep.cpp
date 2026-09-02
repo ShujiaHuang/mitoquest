@@ -91,9 +91,11 @@ std::string TransmissionPrep::format_row(const PairRecord& r) {
 }
 
 std::vector<TransmissionPrep::Trio>
-TransmissionPrep::parse_fam(const std::string& fam_path,
-                            const ngslib::VCFHeader& hdr,
-                            MatchingStats& stats) {
+TransmissionPrep::parse_fam(
+    const std::string& fam_path, 
+    const ngslib::VCFHeader& hdr,
+    MatchingStats& stats) 
+{
     std::vector<Trio> valid_trios;
     std::ifstream fam_file(fam_path);
     if (!fam_file.is_open()) {
@@ -213,29 +215,22 @@ void TransmissionPrep::resolve_gm_for_trios(std::vector<Trio>& trios,
 }
 
 void TransmissionPrep::_validate_vcf_format(const ngslib::VCFHeader& hdr) {
-    bcf_hdr_t* h = hdr.hts_header();
-    if (!h) throw std::runtime_error("[trans-prep] Invalid VCF header.");
+    if (!hdr.is_valid()) throw std::runtime_error("[trans-prep] Invalid VCF header.");
 
-    int gt_id = bcf_hdr_id2int(h, BCF_DT_ID, "GT");
-    int dp_id = bcf_hdr_id2int(h, BCF_DT_ID, "DP");
-    int ad_id = bcf_hdr_id2int(h, BCF_DT_ID, "AD");
-    if (gt_id < 0 || !bcf_hdr_idinfo_exists(h, BCF_HL_FMT, gt_id)) {
+    if (!hdr.has_format_tag("GT")) {
         throw std::runtime_error("[trans-prep] Input VCF lacks FORMAT/GT.");
     }
-    if (dp_id < 0 || !bcf_hdr_idinfo_exists(h, BCF_HL_FMT, dp_id)) {
+    if (!hdr.has_format_tag("DP")) {
         throw std::runtime_error("[trans-prep] Input VCF lacks FORMAT/DP. "
                                  "Use a VCF produced by `mitoquest caller`.");
     }
-    if (ad_id < 0 || !bcf_hdr_idinfo_exists(h, BCF_HL_FMT, ad_id)) {
+    if (!hdr.has_format_tag("AD")) {
         throw std::runtime_error("[trans-prep] Input VCF lacks FORMAT/AD. "
                                  "Use a VCF produced by `mitoquest caller`.");
     }
-    // We do *not* enforce a particular Number= cardinality on AD.  The
-    // `mitoquest caller` declares AD as `Number=A` but emits a per-sample
-    // GT-aligned layout: AD[i] is the read depth of the allele at GT
-    // position i.  Other tooling may declare `Number=R` (REF + all ALTs)
-    // or `Number=.` (variable).  We always interpret AD via FORMAT/GT, so
-    // any declaration is acceptable here.
+    // MitoQuest emits a GT-aligned, variable-length AD layout. Standard VCFs
+    // commonly declare Number=R (REF plus every ALT) or Number=A (ALT only).
+    // All three layouts are decoded explicitly in run().
 }
 
 // ---------------------------------------------------------------------
@@ -399,6 +394,10 @@ long long TransmissionPrep::run() {
     }
     ngslib::VCFHeader& hdr = reader.header();
     _validate_vcf_format(hdr);
+    
+    const ngslib::VCFHeader::FieldNumber ad_number_type = hdr.format_number("AD");
+    const bool ad_is_number_r = ad_number_type == ngslib::VCFHeader::FieldNumber::R;
+    const bool ad_is_number_a = ad_number_type == ngslib::VCFHeader::FieldNumber::A;
 
     std::vector<Trio> trios = parse_fam(_config.fam_path, hdr, _stats);
 
@@ -439,34 +438,29 @@ long long TransmissionPrep::run() {
     long long total_low_depth = 0;
 
     // Per-record buffers (reused across iterations).
-    std::vector<int32_t> dp_all;     // length = n_samples (one DP per sample)
-    std::vector<int32_t> ad_all;     // length = n_samples * ad_per_sample,
-                                     //   padded with bcf_int32_vector_end
-                                     //   when individual samples emit fewer
-                                     //   AD values (the caller's GT-aligned
-                                     //   AD layout is per-sample variable).
+    std::vector<int32_t> dp_all;  // length = n_samples (one DP per sample)
+    std::vector<int32_t> ad_all;  // length = n_samples * ad_per_sample,
+                                  //   padded with INT32_VECTOR_END
+                                  //   when individual samples emit fewer
+                                  //   AD values (the caller's GT-aligned
+                                  //   AD layout is per-sample variable).
 
     // GT buffer + ploidy width for the current record.  htslib stores GT
     // as int32 codes; missing alleles are signalled by
-    // `bcf_gt_is_missing(code) == 1`.  See htslib/vcf.h.
-    int32_t* gt_arr   = nullptr;
-    int      gt_arr_n = 0;
-    int      gt_ploidy = 0;
+    // `ngslib::VCFRecord::gt_is_missing(code)`.  See src/io/vcf_record.h.
+    std::vector<int32_t> gt_all;  // n_samples * gt_ploidy, sample-major
 
     ngslib::VCFRecord rec;
     while (reader.read(rec) >= 0) {
-        rec.unpack(BCF_UN_ALL);
+        rec.unpack(ngslib::VCFRecord::UNPACK_ALL);
         if (_config.require_pass && !rec.passed_filters(hdr)) continue;
         if (rec.n_alt() == 0) continue;
-
-        bcf1_t* b = rec.hts_record();
-        if (!b) continue;
 
         // SNV-only filter.  We only require that the site contains *at least*
         // one SNV ALT — mixed multi-allelic sites such as A>G,GT are kept and
         // the per-ALT loop below skips the indel ALT(s) individually.
         if (_config.snv_only) {
-            if (!(bcf_get_variant_types(b) & VCF_SNP)) continue;
+            if (!rec.has_snv()) continue;
             if (rec.ref().size() != 1) continue;
         }
         total_records++;
@@ -482,52 +476,81 @@ long long TransmissionPrep::run() {
         const int n_samples = hdr.n_samples();
         if (ad_per_sample <= 0 || n_samples <= 0) continue;
 
-        const int n_alleles = b->n_allele;
+        const int n_alleles = rec.n_alt() + 1;
 
-        // FORMAT/GT is mandatory under the GT-aligned AD interpretation.
-        int n_gt = bcf_get_genotypes(hdr.hts_header(), b, &gt_arr, &gt_arr_n);
-        if (n_gt <= 0) continue;                 // GT field absent at this record
-        gt_ploidy = n_gt / n_samples;
-        if (gt_ploidy <= 0) continue;
+        // FORMAT/GT is required both for the caller's GT-aligned AD layout
+        // and to reject missing genotype calls from standard Number=R input.
+        // get_format_int returns the per-sample GT width; the flat buffer is
+        // sample-major, padded to that width with INT32_VECTOR_END.
+        const int gt_ploidy = rec.get_format_int(hdr, "GT", gt_all);
+        if (gt_ploidy <= 0) continue;            // GT field absent at this record
 
-        // GT-aligned AD lookup.  Returns:
-        //   bcf_int32_missing  if GT is '.', or AD/GT lengths disagree, or
-        //                      a sample-level malformedness is detected
-        //                      (caller drops the pair at this site).
-        //   0                  if `target_allele_idx` is not present in this
-        //                      sample's GT (i.e. the caller did not record
-        //                      any reads supporting that allele in this
-        //                      sample's call).
-        //   AD value           the read depth of `target_allele_idx` for
-        //                      this sample, taken from the GT-matched AD
-        //                      slot.
+        // AD lookup supports three layouts:
+        //   Number=R: AD[allele index], including REF and every ALT.
+        //   Number=A: AD[ALT index - 1], with REF inferred from DP-sum(ALT).
+        //   Number=.: MitoQuest's GT-aligned values, one per called allele.
+        // Returns INT32_MISSING for a missing/malformed sample, zero
+        // when a GT-aligned sample does not contain target_allele_idx, or the
+        // decoded allele depth otherwise.
         auto sample_allele_depth = [&](int s_idx, int target_allele_idx) -> int32_t {
-            const int32_t* g = gt_arr        + s_idx * gt_ploidy;
+            const int32_t* g = gt_all.data() + s_idx * gt_ploidy;
             const int32_t* d = ad_all.data() + s_idx * ad_per_sample;
 
             // Walk this sample's GT positions.
             int gt_len = 0;
             for (int p = 0; p < gt_ploidy; ++p) {
-                if (g[p] == bcf_int32_vector_end) break;
-                if (bcf_gt_is_missing(g[p]))      return bcf_int32_missing;
+                if (g[p] == ngslib::VCFRecord::INT32_VECTOR_END) break;
+                if (ngslib::VCFRecord::gt_is_missing(g[p])) return ngslib::VCFRecord::INT32_MISSING;
                 ++gt_len;
             }
-            if (gt_len == 0) return bcf_int32_missing;
+            if (gt_len == 0) return ngslib::VCFRecord::INT32_MISSING;
 
             // Walk this sample's AD values.
             int ad_len = 0;
             for (int p = 0; p < ad_per_sample; ++p) {
-                if (d[p] == bcf_int32_vector_end) break;
+                if (d[p] == ngslib::VCFRecord::INT32_VECTOR_END) break;
                 ++ad_len;
             }
-            // Strict: AD length must equal GT length, otherwise we cannot
-            // unambiguously map AD positions to alleles.
-            if (ad_len != gt_len) return bcf_int32_missing;
+
+            if (ad_is_number_r) {
+                if (ad_len != n_alleles || target_allele_idx < 0
+                    || target_allele_idx >= n_alleles) {
+                    return ngslib::VCFRecord::INT32_MISSING;
+                }
+                const int32_t value = d[target_allele_idx];
+                return (value == ngslib::VCFRecord::INT32_MISSING) ? ngslib::VCFRecord::INT32_MISSING : value;
+            }
+
+            if (ad_is_number_a) {
+                if (ad_len != n_alleles - 1 || target_allele_idx < 0
+                    || target_allele_idx >= n_alleles) {
+                    return ngslib::VCFRecord::INT32_MISSING;
+                }
+                int64_t sum_alt_depth = 0;
+                for (int allele = 0; allele < ad_len; ++allele) {
+                    if (d[allele] == ngslib::VCFRecord::INT32_MISSING || d[allele] < 0) {
+                        return ngslib::VCFRecord::INT32_MISSING;
+                    }
+                    sum_alt_depth += d[allele];
+                }
+                const int32_t sample_depth = dp_all[s_idx];
+                if (sample_depth == ngslib::VCFRecord::INT32_MISSING || sum_alt_depth > sample_depth) {
+                    return ngslib::VCFRecord::INT32_MISSING;
+                }
+                if (target_allele_idx == 0) {
+                    return static_cast<int32_t>(sample_depth - sum_alt_depth);
+                }
+                return d[target_allele_idx - 1];
+            }
+
+            // GT-aligned layout: AD length must equal GT length, otherwise
+            // the allele-to-AD mapping is ambiguous.
+            if (ad_len != gt_len) return ngslib::VCFRecord::INT32_MISSING;
 
             // Find the GT position whose allele index matches the target.
             for (int p = 0; p < gt_len; ++p) {
-                if (bcf_gt_allele(g[p]) == target_allele_idx) {
-                    if (d[p] == bcf_int32_missing) return bcf_int32_missing;
+                if (ngslib::VCFRecord::gt_allele(g[p]) == target_allele_idx) {
+                    if (d[p] == ngslib::VCFRecord::INT32_MISSING) return ngslib::VCFRecord::INT32_MISSING;
                     return d[p];
                 }
             }
@@ -551,7 +574,7 @@ long long TransmissionPrep::run() {
 
                 const int32_t m_dp = dp_all[m_idx];
                 const int32_t c_dp = dp_all[c_idx];
-                if (m_dp == bcf_int32_missing || c_dp == bcf_int32_missing) continue;
+                if (m_dp == ngslib::VCFRecord::INT32_MISSING || c_dp == ngslib::VCFRecord::INT32_MISSING) continue;
                 if (m_dp <= 0 || c_dp <= 0) continue;
 
                 // GT-aligned AD lookup.  Any GT='.' or AD/GT mismatch in
@@ -560,8 +583,11 @@ long long TransmissionPrep::run() {
                 const int32_t m_alt = sample_allele_depth(m_idx, alt_idx);
                 const int32_t c_ref = sample_allele_depth(c_idx, 0);
                 const int32_t c_alt = sample_allele_depth(c_idx, alt_idx);
-                if (m_ref == bcf_int32_missing || m_alt == bcf_int32_missing ||
-                    c_ref == bcf_int32_missing || c_alt == bcf_int32_missing) {
+                if (m_ref == ngslib::VCFRecord::INT32_MISSING || 
+                    m_alt == ngslib::VCFRecord::INT32_MISSING ||
+                    c_ref == ngslib::VCFRecord::INT32_MISSING || 
+                    c_alt == ngslib::VCFRecord::INT32_MISSING) 
+                {
                     ++_stats.pair_site_dropped_gt_missing;
                     continue;
                 }
@@ -591,9 +617,10 @@ long long TransmissionPrep::run() {
                     const int32_t g_dp  = dp_all[g_idx];
                     const int32_t g_ref = sample_allele_depth(g_idx, 0);
                     const int32_t g_alt = sample_allele_depth(g_idx, alt_idx);
-                    if (g_dp  != bcf_int32_missing && g_dp > 0 &&
-                        g_ref != bcf_int32_missing &&
-                        g_alt != bcf_int32_missing) {
+                    if (g_dp  != ngslib::VCFRecord::INT32_MISSING && g_dp > 0 &&
+                        g_ref != ngslib::VCFRecord::INT32_MISSING &&
+                        g_alt != ngslib::VCFRecord::INT32_MISSING)
+                    {
                         row.grandmother_id = t.grandmother_id;
                         row.g_dp      = g_dp;
                         row.g_ad_ref  = g_ref;
@@ -615,7 +642,6 @@ long long TransmissionPrep::run() {
     }
 
     if (out_stream.is_open()) out_stream.close();
-    if (gt_arr) free(gt_arr);
 
     std::cerr << "[trans-prep] Processed "  << total_records  << " variant records.\n"
               << "[trans-prep] Wrote "      << (total_emitted + total_low_depth)

@@ -32,7 +32,7 @@ namespace mitoquest {
  * All PMFs are returned in log space and follow a strict convention:
  *   * Impossible counts (k < 0 or k > n)            => -INFINITY.
  *   * Boundary p in {0, 1} for the Binomial         => exact 0 or -INFINITY.
- *   * Non-positive shape parameters (alpha, beta)   => -INFINITY.
+ *   * Non-finite p or non-finite/non-positive shapes => -INFINITY.
  *
  * Construction is O(max_n).  Queries are O(1) up to capacity() and
  * O(1)+lgamma overhead beyond it.
@@ -78,7 +78,7 @@ public:
      *                              - lgamma(beta)
      *                              + lgamma(alpha + beta)
      *
-     * @pre alpha > 0 and beta > 0; otherwise returns -INFINITY.
+    * @pre alpha and beta are finite and > 0; otherwise returns -INFINITY.
      */
     double log_betabinom_pmf(int n, int k, double alpha, double beta) const;
 
