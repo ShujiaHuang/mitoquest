@@ -24,12 +24,26 @@ configure_file(
 # -fPIC: generate position-independent code
 add_compile_options(-O3 -fPIC)
 
-# -Wl,-no_compact_unwind silences ld warnings about missing compact unwind
-# information in C-only libraries (e.g. htslib) on macOS. We apply it ONLY to
-# the production `mitoquest` executable below (via target_link_options) and
-# NOT directory-wide, because doing so breaks gtest's EXPECT_THROW under
-# Apple's linker (cross-TU C++ exceptions get std::terminate'd instead of
-# being caught by the test framework).
+# Do NOT link the production executable with -Wl,-no_compact_unwind.
+#
+# That flag silences ld warnings about missing compact unwind information in
+# C-only libraries (e.g. htslib) on macOS, but it also disables the unwind
+# tables the C++ runtime needs to propagate an exception across translation
+# units.  main.cpp wraps every subcommand in try/catch, and NeEstimator and
+# friends report user-facing errors by throwing std::runtime_error, so with the
+# flag linked in __cxa_throw fails to find a handler (failed_throw) and calls
+# std::__terminate: the process dies with
+#   libc++abi: terminating due to uncaught exception of type std::runtime_error
+# and SIGABRT (exit 134) instead of printing "Error: ..." and exiting 1.
+#
+# This used to be applied to `mitoquest` only, on the reasoning that it broke
+# gtest's EXPECT_THROW.  That reasoning was inverted: EXPECT_THROW and main.cpp's
+# catch block are the same cross-TU catch mechanism, so scoping the flag to the
+# production binary kept the tests green while breaking error handling for every
+# shipped subcommand.  Dropping it costs nothing measurable: on the toolchain
+# this was verified with (Apple clang, arm64 macOS) the link step emits no
+# warnings at all once the flag is gone.  Where such warnings do appear on
+# other toolchains they are noise and do not affect the produced binary.
 
 # -------------------------------------------------------
 # Static linking configuration
@@ -140,9 +154,9 @@ file(GLOB_RECURSE SRC_MT CONFIGURE_DEPENDS
 
 set(EXECUTABLE_OUTPUT_PATH ${CMAKE_CURRENT_SOURCE_DIR}/bin)
 add_executable(mitoquest ${SRC_MT})
-if (APPLE)
-    target_link_options(mitoquest PRIVATE -Wl,-no_compact_unwind)
-endif()
+# NOTE: no -Wl,-no_compact_unwind here on purpose.  See the comment above
+# add_compile_options(): linking it into this target makes every cross-TU
+# std::runtime_error escape main.cpp's try/catch and abort with SIGABRT.
 add_dependencies(mitoquest Buildhts)
 # Link libraries
 if(STATIC_BUILD AND APPLE)

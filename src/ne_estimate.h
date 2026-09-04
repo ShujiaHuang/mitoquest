@@ -28,13 +28,69 @@
  * Maximising this composite marginal likelihood over Ne yields the
  * Maximum Marginal Likelihood Estimator (MMLE) reported by this tool.
  *
- * The maternal p_mother is taken as the point estimate m_alt / m_dp.
- * Synthetic validation shows the plug-in is well calibrated at typical
- * mtDNA depths (>= ~1000x): at 500x the MMLE is biased down by ~3% and
- * at 100x by more than 10%, because the sampling noise of p_mother is
- * misread as drift.  The trio path instead marginalises p_mother over
- * its posterior (compute_ll_trio_gauss_jacobi), which attenuates but
- * does not fully remove the low-depth bias.
+ * The maternal frequency p_mother is integrated out by DEFAULT
+ * (ModelOptions::marginalize_maternal).  The CLI exposes only the opt-out
+ * `--no-maternal-marginalization`, which restores the legacy plug-in -- there
+ * is no positive form, because asking for the default would be a no-op that
+ * only looks like a guarantee.  The plug-in
+ * alternative takes p_mother = m_alt / m_dp, so the mother's own binomial read
+ * noise is NOT modelled and is misread as drift.  The plug-in therefore
+ * estimates a depth-dependent pseudo-true value rather than Ne:
+ *
+ *   1 / Ne_app  =  1 / Ne + 1 / d_M        <=>   Ne_app = Ne d_M / (Ne + d_M)
+ *
+ * which moves with sequencing depth, so plug-in estimates are not comparable
+ * across cohorts or families of different coverage.  Replicated Monte-Carlo
+ * (R=8 cohorts of ~1550 gated pairs each, continuous generator) confirms this
+ * quantitatively: the plug-in mean lands on Ne d_M/(Ne + d_M) to within 3%,
+ * with bias -2.7% at (Ne=5, d=100), -36.4% at (Ne=30, d=50), -21.3% at
+ * (Ne=30, d=100) and -48.4% at (Ne=100, d=100).
+ *
+ * The default replaces the plug-in by an exact integration of p_M over its
+ * Beta(k_M+1, d_M-k_M+1) posterior, which is the same maternal prior the
+ * legacy discrete model uses.  On the same replicates the residual bias drops
+ * to +0.7% / -2.7% / +1.1% / +3.9% and the RMSE improves 1.3x-4.7x, matching
+ * the Wonnapinij/Kimura cross-check to within 0.5% in all four
+ * configurations.  It does NOT remove model-form error: under a truly integer
+ * Wright-Fisher bottleneck at Ne=5 both the plug-in and the marginalised
+ * continuous estimator stay ~-50% biased (Kimura: -1.9%), because a continuous
+ * Beta transition cannot represent an integer bottleneck -- use
+ * `--model discrete` there.
+ *
+ * Cross-depth comparability, measured (true Ne=30, 20 families x 12 sites =
+ * 240 pairs per cohort, d_C=2000, 20 replicate cohorts per depth, d_M swept
+ * over 30..5000).  Sweeping d_M moves the plug-in fit over [16.5, 30.3], a
+ * spread of 46% of the true Ne and closely tracking -d_M/(Ne+d_M); the
+ * marginalised fit moves over [29.4, 34.2], a spread of 16%, i.e. 2.9x
+ * tighter.  Excluding the shallowest depth the marginalised fit spans only
+ * [29.4, 30.7] over d_M in [60, 5000] -- 4.5% -- so for d_M >= 60 the reported
+ * Ne is genuinely comparable across coverage.  The residual is the Beta(1,1)
+ * maternal prior being over-dispersed relative to a cohort whose true maternal
+ * frequencies are truncated away from 0 and 1: +14% at d_M=30, <= +5% for
+ * d_M >= 60, and within ~1 standard error (<= 2.5%) for d_M >= 500.  Use
+ * --min-depth to gate very shallow maternal rows out rather than interpreting
+ * them at face value.
+ *
+ * The maternal VAF window is NOT the source of that residual: whether a row
+ * passes `k_M/d_M in [min_vaf, max_vaf]` depends on p_M and the prior but not
+ * on Ne, so the window contributes an Ne-independent factor to the likelihood
+ * and cannot shift the MLE.  Measured with p_M drawn near the window edge
+ * (U[0.10,0.30], only 90% of rows passing at d_M=30) the marginalised bias is
+ * +13.0% with the default window against +11.6% with `--min-vaf 0
+ * --max-vaf 1`, a 1.4 point difference inside the 3.2 point standard error;
+ * every depth agrees to < 1.5 points.
+ *
+ * Trio rows (has_g == 1) already marginalise p_M over the grandmother-informed
+ * posterior (compute_ll_trio_gauss_jacobi), so the switch is a no-op for them;
+ * the residual plug-in there is p_hat_G, i.e. the bias moves up a generation.
+ *
+ * Cost: marginalising replaces one Beta-Binomial evaluation per row by an
+ * adaptive Gauss-Jacobi rule.  The rule construction (a Golub-Welsch
+ * tridiagonal eigendecomposition) is 97.5% of that cost at d_M=d_C=2000, and
+ * its key (k_M+1, d_M-k_M+1, order) carries no Ne, so estimate_continuous()
+ * builds it once per row and reuses it across the whole Ne scan.  Measured on
+ * the 236-pair shipped cohort at --max-ne 200, single-threaded: 19 s without
+ * that reuse, 1.69 s with it, and both produce byte-identical JSON.
  *
  * This continuous model treats Ne as an apparent, variance-matching
  * effective bottleneck. It may absorb bottleneck sampling, vegetative
@@ -85,12 +141,40 @@
 #include <vector>
 
 #include "log_factorial.h"
-#include "version.h"
 
 class NeEstimator {
 public:
     /// Type alias to the shared LogFactorial utility (in src/log_factorial.h).
     using LogFactorial = ::mitoquest::LogFactorial;
+
+    /// Model-form switches threaded through the likelihood / optimizer stack.
+    /// Passed by value with a trailing default so existing positional callers
+    /// (including the unit tests) keep compiling unchanged.
+    ///
+    /// `marginalize_maternal` is TRUE by default and affects ONLY the
+    /// continuous model's two-generation rows (has_g == 0):
+    ///   * trio rows (has_g == 1) already integrate p_M over the
+    ///     grandmother-informed Beta posterior -> no-op;
+    ///   * the discrete model (`--model discrete`) already integrates p_M over
+    ///     Beta(m_alt+1, m_dp-m_alt+1) in compute_ll_single() -> no-op, and
+    ///     the CLI warns only when the user asks for the switch explicitly
+    ///     alongside `--model discrete` (a default-on switch must not make
+    ///     every discrete run look misconfigured).
+    /// Set it to false for the legacy plug-in p_M = m_alt / m_dp.
+    ///
+    /// The constructors are user-provided on purpose: a default member
+    /// initializer here would be odr-used by the `ModelOptions opts = {}`
+    /// default arguments below, i.e. inside the still-incomplete enclosing
+    /// class, which clang rejects ("default member initializer ... needed
+    /// within definition of enclosing class").  Initialising in the ctor body
+    /// keeps this header portable across gcc and clang.
+    struct ModelOptions {
+        bool marginalize_maternal;
+
+        ModelOptions() : marginalize_maternal(true) {}
+        explicit ModelOptions(bool marginalize_maternal_)
+            : marginalize_maternal(marginalize_maternal_) {}
+    };
 
     // One transmission pair, after upstream QC.  For two-generation rows
     // (produced without a GM FAM) has_g == 0 and the g_* fields are zero.
@@ -125,6 +209,7 @@ public:
     struct LoadStats {
         size_t trio_founder_hom_skipped      = 0; // G hom, descendants all-hom
         size_t trio_founder_mismatch_skipped = 0; // G hom, descendants segregating
+        size_t min_depth_skipped             = 0; // m_dp or c_dp below --min-depth
     };
 
     /// Optional Wonnapinij/Kimura cross-check output.
@@ -200,8 +285,15 @@ public:
         double      max_log_lik   = 0.0;
         bool        ci_low_clipped  = false;
         bool        ci_high_clipped = false;
-        double      mean_mother_dp  = 0.0;  // mean depth for quality assessment
+        double      mean_mother_dp  = 0.0;  // arithmetic mean depth, quality assessment
         double      mean_child_dp   = 0.0;
+        // Harmonic means, 1 / mean(1/d).  Depth enters the plug-in bias as
+        // 1/d_M, so this is the scale on which limited coverage actually
+        // aggregates; the arithmetic mean is dominated by the deepest rows,
+        // which are the least biased ones.  Neither is a back-correction
+        // handle -- see the note on Result::mean_mother_dp.
+        double      harmonic_mother_dp = 0.0;
+        double      harmonic_child_dp  = 0.0;
         bool        skipped       = false;  // true when n_informative < min_family_sites
         KimuraCheck kimura;                 // per-family Kimura cross-check
         std::string warning;                // e.g. "small sample" or "Ne near boundary"
@@ -216,6 +308,44 @@ public:
         size_t n_pairs     = 0;
         bool   ci_low_clipped  = false;   // optimum is at the search-boundary
         bool   ci_high_clipped = false;
+
+        // Depth descriptors of the fitted pair set, computed on the SAME rows
+        // that entered the likelihood (i.e. after the QC / VAF / min-depth
+        // gates).  Reported for transparency only.
+        //
+        // They must NOT be advertised as a plug-in back-correction handle:
+        // 1/Ne_app = 1/Ne + 1/d_M is a *single-depth* identity, and on a
+        // depth-heterogeneous cohort the plug-in estimand is a per-row mixture
+        // that no scalar mean of d_M reproduces.  Measured on a cohort with
+        // d_M in {30,60,100,300,1000,3000} and true Ne=30, the plug-in fit
+        // (~25.9) is predicted as 28.9 by the arithmetic mean (753), 22.7 by
+        // the harmonic mean (93) and 22.7 by the w-weighted harmonic mean (93);
+        // the implied effective depth (~190) lies between the two.  Both scales
+        // are therefore emitted and neither is a correction recipe.
+        double mean_mother_dp      = 0.0;  // arithmetic mean of m_dp
+        double mean_child_dp       = 0.0;  // arithmetic mean of c_dp
+        double harmonic_mother_dp  = 0.0;  // 1 / mean(1 / m_dp); the scale on
+                                           // which 1/d_M effects aggregate
+        double harmonic_child_dp   = 0.0;
+
+        // Echoes of the model-form switches actually applied to this fit, so a
+        // JSON reader can tell which likelihood the reported LL belongs to.
+        // `maternal_marginalization` is true for a default continuous-model
+        // run and stays false when the plug-in was selected
+        // (--no-maternal-marginalization) or when the selected model ignores
+        // the switch (--model discrete already integrates p_M; the CLI reports
+        // that on stderr when the user asked for it explicitly).
+        //
+        // Max_Marginal_LogLik is NOT comparable across this flag.  Switching it
+        // on replaces the plug-in child term log BB(k_C; d_C, p_hat_M s,
+        // (1-p_hat_M) s) by log E_{Beta(k_M+1, d_M-k_M+1)}[BB(k_C; d_C, p_M s,
+        // (1-p_M) s)], which is not the old term plus a constant: the fitted Ne
+        // moves as well.  Only the joint read-sampling normalisation
+        // log C(d_M,k_M) + log B(k_M+1, d_M-k_M+1) = -log(d_M+1) is
+        // Ne-independent, and hence MLE-neutral.
+        bool   maternal_marginalization = false;
+        int    min_depth                = 0;
+
         KimuraCheck kimura;               // populated only when requested
         // Per-family results (populated only when --per-family is set).
         std::vector<FamilyResult> family_results;
@@ -262,6 +392,32 @@ public:
         bool        per_family         = false;   // --per-family
         int         min_family_sites   = 3;       // --min-family-sites
         std::string per_family_output_file;       // --per-family-output FILE (TSV)
+        // NEW: maternal-noise handling.  Marginalisation is ON by default; it
+        // is the only continuous-model treatment of maternal read noise that
+        // yields coverage-comparable Ne (see the class comment for the
+        // measured cross-depth spread).  --no-maternal-marginalization selects
+        // the legacy plug-in p_M = m_alt / m_dp.
+        bool        maternal_marginalization = true;  // cleared only by
+                                                      // --no-maternal-marginalization;
+                                                      // see ModelOptions
+        int         min_depth          = 0;       // --min-depth; drop rows with
+                                                  // m_dp < N or c_dp < N (0 = off).
+                                                  // Complements marginalization
+                                                  // rather than replacing it: at
+                                                  // true Ne=30 on a
+                                                  // heterogeneous-depth cohort,
+                                                  // --min-depth 500 reaches -1.3%
+                                                  // plug-in bias only after
+                                                  // discarding 2/3 of the pairs
+                                                  // (1569 -> 528), while
+                                                  // marginalization reaches +2.1%
+                                                  // keeping all 1569.  Its role
+                                                  // under the new default is to
+                                                  // gate out the very shallow
+                                                  // maternal rows (d_M ~ 30)
+                                                  // where the residual Beta(1,1)
+                                                  // prior mismatch is still
+                                                  // ~+14%.
     };
 
     /// One row of the per-bin observed-vs-theoretical drift summary.
@@ -325,9 +481,15 @@ public:
     // QC == "PASS" gate and the maternal-VAF window.  Trio rows with a
     // homoplasmic grandmother are dropped here (see LoadStats); pass
     // `stats` to receive the skip counters for logging / JSON output.
+    // `min_depth > 0` additionally drops rows with m_dp < min_depth or
+    // c_dp < min_depth (applied to BOTH sides: a shallow child gives an
+    // uninformative k_C just as a shallow mother gives an unreliable
+    // p_hat_M).  The VAF window is evaluated on m_ad_alt / m_dp, so
+    // min_depth interacts with it only through which rows survive.
     static std::vector<PairData> load_pairs(const std::string& tsv_path,
                                             double min_vaf, double max_vaf,
-                                            LoadStats* stats = nullptr);
+                                            LoadStats* stats = nullptr,
+                                            int min_depth = 0);
 
     // Per-pair log-likelihood (discrete bottleneck model).
     static double compute_ll_single(const PairData& pd, int ne,
@@ -343,6 +505,40 @@ public:
     // Per-pair log-likelihood (continuous model, real-valued Ne).
     static double compute_ll_single_continuous(const PairData& pd, double ne,
                                                const LogFactorial& lf);
+
+    // Per-row marginal log-likelihood for a TWO-generation M-C pair under the
+    // continuous model with the maternal heteroplasmy integrated out instead of
+    // plugged in.  With s = Ne - 1:
+    //
+    //   logL = log C(d_M, k_M) + log B(k_M+1, d_M-k_M+1)
+    //          + log E_{p_M ~ Beta(k_M+1, d_M-k_M+1)}
+    //                  [ BetaBin(k_C | d_C, s p_M, s (1 - p_M)) ]
+    //
+    // The Beta(k_M+1, d_M-k_M+1) weight is the exact posterior of p_M under a
+    // Beta(1,1) prior -- the SAME maternal prior compute_ll_single() uses for
+    // the discrete model, so this option aligns the continuous model's maternal
+    // treatment with the discrete one rather than introducing a new prior.
+    //
+    // Two exact identities pin the normalisation and tie this to shipped code:
+    //   * log C(d_M,k_M) + log B(k_M+1, d_M-k_M+1) = -log(d_M+1), a constant
+    //     independent of Ne, so the MLE is unaffected by keeping it;
+    //   * at Ne=3 with p_hat_G=0.5 the trio prior Beta(p_hat_G s, (1-p_hat_G) s)
+    //     is exactly Beta(1,1), hence compute_ll_trio_continuous() evaluated on
+    //     a row with g_dp=2, g_ad_alt=1 and Ne=3 returns precisely this value
+    //     (verified against the production binary to all printed decimals).
+    //
+    // The child Beta-Binomial factor is a degree-d_C polynomial in p_M, so the
+    // expectation is computed with the same adaptive Gauss-Jacobi driver as the
+    // trio path.  Its rule parameters (k_M+1, d_M-k_M+1) do not depend on Ne,
+    // so a single TrioQuadratureCache serves the whole Ne scan.
+    //
+    // Ne == 1 is the degenerate complete-drift limit and is handled in closed
+    // form: E[p_M] = (k_M+1)/(d_M+2), giving log((1-E[p_M])/(d_M+1)) for k_C=0,
+    // log(E[p_M]/(d_M+1)) for k_C=d_C and -inf otherwise -- the true Ne->1+
+    // limit of the integral (endpoint rows converge to it, interior rows
+    // diverge to -inf from both sides, so the composite LL is continuous).
+    static double compute_ll_single_marginalized(const PairData& pd, double ne,
+                                                 const LogFactorial& lf);
 
     // Per-row marginal log-likelihood for a three-generation G-M-C trio
     // under the continuous Beta-diffusion model.  The mother's latent
@@ -398,28 +594,48 @@ public:
                                bool continuous = false);
 
     // Global log-likelihood for the continuous model with real-valued Ne.
+    // `opts.marginalize_maternal` (default true) selects
+    // compute_ll_single_marginalized() for the has_g == 0 rows; passing
+    // ModelOptions{false} selects the legacy plug-in.  Trio rows are
+    // unaffected either way.
+    //
+    // Each call builds its own maternal Gauss-Jacobi rules.  A caller that
+    // sweeps Ne itself should go through estimate_continuous(), which keeps one
+    // rule cache alive for the whole scan; see the class comment for the
+    // measured difference (19 s vs 1.69 s on the 236-pair shipped cohort).
     static double compute_global_ll_continuous(double ne,
-                                              const std::vector<PairData>& data,
-                                              const LogFactorial& lf,
-                                              int threads = 1);
+                                               const std::vector<PairData>& data,
+                                               const LogFactorial& lf,
+                                               int threads = 1,
+                                               ModelOptions opts = {});
 
     // Real-valued Ne optimizer for the continuous model.
     // Phase 1: coarse integer scan; Phase 2: golden-section refinement.
+    // Same per-call rule caching caveat as compute_global_ll_continuous().
     static double find_optimal_ne_continuous(const std::vector<PairData>& data,
-                                            const LogFactorial& lf,
-                                            int min_ne, int max_ne,
-                                            int threads = 1);
+                                             const LogFactorial& lf,
+                                             int min_ne, int max_ne,
+                                             int threads = 1,
+                                             ModelOptions opts = {});
 
-    // Full estimate with real-valued Ne for the continuous model.
+    // Full estimate with real-valued Ne for the continuous model.  Owns the
+    // scan-lifetime maternal rule cache shared by the coarse sweep, the
+    // refinement and both CI walks.
     static Result estimate_continuous(const std::vector<PairData>& data,
-                                     int min_ne = 1, int max_ne = 200,
-                                     int threads = 1);
+                                      int min_ne = 1, int max_ne = 200,
+                                      int threads = 1,
+                                      ModelOptions opts = {});
 
     // Full estimate (point + 95% CI by profile likelihood, threshold = -1.92).
-    // For discrete model only (integer Ne scan).
+    // For discrete model only (integer Ne scan); `opts` is forwarded to
+    // estimate_continuous() when `continuous` is true and silently ignored
+    // otherwise, because the discrete model already marginalises the mother.
+    // The CLI, not this function, reports that no-op: with the switch on by
+    // default a warning here would fire on every `--model discrete` run.
     static Result estimate(const std::vector<PairData>& data,
                            int min_ne = 1, int max_ne = 200,
-                           int threads = 1, bool continuous = false);
+                           int threads = 1, bool continuous = false,
+                           ModelOptions opts = {});
 
     // Determine the LogFactorial cache size needed by `data`.
     // Cache must cover max(child DP) and the search ceiling for Ne.
@@ -440,11 +656,17 @@ public:
      * point estimate p_c = c_alt / c_dp, then for each pair:
      *
      *     observed deviation        : d_i  = (p_c - p_m)^2
-     *     sampling-noise correction : s_i  = p_m (1 - p_m) / m_dp
-     *                                       + p_c (1 - p_c) / c_dp
+     *     sampling-noise correction : s_i  = p_m (1 - p_m) / (m_dp - 1)
+     *                                       + p_c (1 - p_c) / (c_dp - 1)
      *     numerator                 : Sigma_i (d_i - s_i)
      *     denominator               : Sigma_i p_m_i (1 - p_m_i)
      *     normalised drift variance : V    = numerator / denominator
+     *
+     * The (d-1) denominators are deliberate: p_hat (1 - p_hat) / (d - 1) is
+     * unbiased for p (1 - p) / d under binomial sampling, so s_i estimates the
+     * read-noise contribution to d_i without the 1/d shrinkage a plain /d would
+     * leave in.  Rows with m_dp <= 1 or c_dp <= 1 are excluded from the
+     * aggregation because the plug-in variance is not identifiable at depth 1.
      *
      * Then 1 - b = V (Wonnapinij 2008, eq. 4 with sampling correction
      * from Wonnapinij 2010), so
@@ -507,7 +729,8 @@ public:
     compute_ne_profile(const std::vector<PairData>& data,
                        const LogFactorial& lf,
                        double min_ne, double max_ne, double step,
-                       int threads, bool continuous);
+                       int threads, bool continuous,
+                       ModelOptions opts = {});
 
     // -----------------------------------------------------------------
     // Per-family estimation helpers.
@@ -523,14 +746,16 @@ public:
     // Returns a FamilyResult with skipped=true when n_informative < min_family_sites.
     static FamilyResult estimate_family(const FamilyData& fam,
                                          int min_ne, int max_ne,
-                                         int min_family_sites);
+                                         int min_family_sites,
+                                         ModelOptions opts = {});
 
     // Estimate Ne for all families (embarrassingly parallel across families).
     static std::vector<FamilyResult>
     estimate_all_families(const std::vector<FamilyData>& families,
                           int min_ne, int max_ne,
                           int min_family_sites,
-                          int threads);
+                          int threads,
+                          ModelOptions opts = {});
 
     // Per-family Kimura cross-check. When locus_id is available, bootstrap
     // resampling uses whole locus clusters so all child observations at that

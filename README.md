@@ -676,6 +676,101 @@ region satisfying $\log L(N_e)\ge\log L(\widehat N_e)-1.92$; because this
 is a composite likelihood, it is model-based rather than automatically
 calibrated for linkage or repeated-family dependence.
 
+#### Integrating the maternal frequency out (the default; `--no-maternal-marginalization` opts out)
+
+The plug-in $\hat p_M=k_M/d_M$ treats the maternal *estimate* as if it were
+the maternal *true* frequency, so the mother's own read-sampling noise is
+mistaken for drift. The resulting fitted value is a pseudo-true $N_e^{\text{app}}$
+obeying
+
+$$
+\frac{1}{N_e^{\text{app}}}\;=\;\frac{1}{N_e}+\frac{1}{d_M}
+\qquad\Longleftrightarrow\qquad
+\frac{N_e^{\text{Kimura}}}{\widehat N_e^{\text{MMLE}}}\approx 1+\frac{N_e}{d_M}
+$$
+
+at a **single** maternal depth $d_M$. Measured on synthetic data
+($N_e^{\text{true}}=30$, $d_C=2000$, 240 pairs per cohort, 20 replicate
+cohorts per depth): $-45.0\%$ at $d_M=30$, $-21.2\%$ at $d_M=100$,
+$-7.4\%$ at $d_M=500$, $-0.6\%$ at $d_M=2000$. That depth dependence is why
+plug-in estimates from cohorts sequenced at different coverage are not
+directly comparable, and why the plug-in is no longer the default.
+
+The default removes that term by modelling it instead of deleting rows. It
+replaces the plug-in child factor with an integral over the maternal
+read-sampling posterior (uniform Beta(1,1) prior, the same prior
+`--model discrete` uses), evaluated by adaptive Gauss-Jacobi quadrature:
+
+$$
+\log L_i(N_e)=\log\binom{d_M}{k_M}+\log B(k_M{+}1,\,d_M{-}k_M{+}1)
++\log E_{p_M\sim\text{Beta}(k_M+1,\,d_M-k_M+1)}
+\big[P(k_C\mid p_M,N_e)\big].
+$$
+
+It is **on by default** — `--no-maternal-marginalization` restores the legacy
+plug-in — applies to the continuous model only, and reaches the per-family and
+`--ne-profile` paths as well as the cohort fit. Four things to know:
+
+1. **It is slower, but no longer by orders of magnitude in wall-clock terms.**
+   Measured on the shipped 236-pair demo cohort (`tests/data/ne_pipeline`,
+   uniform 2000× depth, default `--min-ne 1 --max-ne 100`, single thread,
+   macOS arm64, best of 3): 0.005 s plug-in vs. 0.382 s marginalised for the
+   cohort fit (80×), 0.007 s vs. 0.825 s with `--per-family` (126×), and
+   0.016 s vs. 2.723 s with `--ne-profile` at the default 0.1 step, i.e. 992
+   grid points (170×). Hoisting the maternal Gauss-Jacobi rule to the lifetime
+   of one $N_e$ scan — the rule depends on the row and the quadrature order but
+   not on $N_e$ — cut those three from 11.99 s / 27.45 s / 101.5 s, a 31–37×
+   saving, and that saving is what makes marginalisation affordable as the
+   default. The plug-in wall clock sits at the ~5 ms process-startup floor, so
+   the ratio overstates the compute gap; the absolute cost is what matters and
+   it is sub-second.
+2. **`Max_Marginal_LogLik` is not comparable across the flag.** Turning it on
+   replaces the whole child term and adds the maternal read and posterior
+   normalisation, so the likelihood moves by hundreds of log units and the
+   fitted $N_e$ can move too. Only the normalisation
+   $\log\binom{d_M}{k_M}+\log B(k_M{+}1,d_M{-}k_M{+}1)=-\log(d_M+1)$ is
+   $N_e$-independent. The JSON `Maternal_Marginalization` field records which
+   likelihood the reported value belongs to.
+3. **It does not repair a mis-specified bottleneck.** If the true bottleneck
+   draws an integer number of genomes, the continuous transition is the wrong
+   model *form* and both the plug-in and the marginalised fit stay biased; use
+   `--model discrete` in that regime. It also leaves a residual
+   prior-mismatch bias (the Beta(1,1) prior does not match a cohort whose true
+   maternal frequencies are truncated away from 0 and 1 by the default VAF
+   window), so it is **not exactly unbiased**. Over the same sweep as above it
+   measures $+14.1\%$ at $d_M=30$, $\le 2.4\%$ in magnitude at every
+   $d_M\ge 60$, and $-2.1\ldots+2.4\%$ for $d_M\ge 500$ against a Monte Carlo
+   se of $1.3\ldots2.5\%$ — at deep coverage the residual is not separable from
+   zero and its **sign flips with $d_M$** ($-2.1$ at 500, $+2.4$ at 1000,
+   $+0.9$ at 2000, $+1.6$ at 5000) rather than staying positive. Redrawing the
+   maternal frequencies near the VAF-window edges instead of the interior gives
+   $+13.0\%$ / $\le 5.0\%$ / $-0.3\ldots+1.8\%$ for the same three brackets.
+   At $d_M=100$ it turns the plug-in's
+   $-21.2\%$ into $+1.7\%$. A `NOTE:` is printed on stderr when the harmonic
+   maternal depth of the two-generation rows falls below 60, and `--min-depth`
+   is the lever for dropping those rows.
+4. **It is a no-op on rows that already integrate $p_M$.** Trio rows
+   (`HAS_G=1`) integrate $p_M$ against the grandmother-informed posterior, so
+   the flag does not touch them; and `--model discrete` already integrates
+   $p_M$, so combining the two prints a `WARNING:` and ignores the flag.
+
+Under the flag a maternal `0 / d_M` row is **no longer** uninformative: it
+still leaves a proper $\text{Beta}(1,d_M{+}1)$ posterior against which the
+child's count carries information. Those rows are excluded by the default
+`--min-vaf 0.10` window anyway and only enter under `--min-vaf 0`.
+
+`--min-depth INT` is the complementary **QC** lever rather than a model fix:
+it drops rows whose mother *or* child depth falls below the threshold (both
+sides are gated, 0 disables). The default already *models* the maternal read
+noise; `--min-depth` *removes* the rows whose residual prior-mismatch bias is
+largest, so the two are complementary rather than alternatives. Both change
+`Pairs_Used` and the retained depth composition, so read them together
+with the `Min_Depth` / `Mean_*_DP` / `Harmonic_*_DP` fields in the JSON.
+Note that those depth fields are **descriptive only** — the
+$1/N_e^{\text{app}}$ identity is not invertible on a mixed-depth cohort, so no
+arithmetic, harmonic or depth-weighted summary of them reproduces the plug-in
+fit. Do not try to back-correct a reported $N_e$ by hand.
+
 #### Alternative discrete model
 
 `--model discrete` retains the older hard-bottleneck model for specialised
@@ -847,7 +942,7 @@ physical inoculum count is the target).
 
 | Estimator | Role | Strengths | Limitations |
 |-----------|------|-----------|-------------|
-| **Continuous MMLE** (default) | Primary | Real-valued parameter and full child count likelihood | Plug-in maternal frequency, working Beta transition, composite-likelihood interval |
+| **Continuous MMLE** (default) | Primary | Real-valued parameter and full child count likelihood | Maternal frequency integrated out by default, which costs ~80× the plug-in wall clock (`--no-maternal-marginalization`); working Beta transition, composite-likelihood interval |
 | **Kimura cross-check** (`--cross-check kimura`) | Secondary diagnostic | Sampling-error-corrected ratio of sums; fast and interpretable | Uses only corrected M-C shifts; sensitive to outliers and does not fit explicit trio transitions |
 | **Discrete MMLE** (`--model discrete`) | Specialised | Finite hard-bottleneck model for fixed-inoculum experiments | Integer grid, can inflate on deep mtDNA data, and rejects declared trio rows |
 
@@ -862,6 +957,14 @@ physical inoculum count is the target).
   sequencing errors) can collapse the variance-based Kimura estimate.
 5. For G-M-C data, use `--model continuous`; `--model discrete` rejects
   `HAS_G=1`, and the Kimura cross-check remains an M-C diagnostic.
+6. If maternal or child depth is below ~500×, the default marginalised fit
+   already removes the dominant plug-in bias; add `--min-depth INT` to gate the
+   shallowest rows as well. That is a QC lever rather than a model fix — it
+   drops rows — so the two are complementary, not interchangeable. Check
+   `Mean_Mother_DP` / `Harmonic_Mother_DP` in the JSON to see which regime you
+   are in. Only after opting out with `--no-maternal-marginalization` do you
+   get the depth-dependent plug-in, whose estimates must not be compared across
+   cohorts sequenced at different coverage.
 
 #### Why Ne_MMLE and Ne_Kimura can differ
 
@@ -894,6 +997,24 @@ outliers, input quality, or failure of the working one-generation model:
   It excludes rows with maternal or child depth at most one, and still
   uses plug-in frequencies.
 
+5. **The maternal plug-in — the one term that is predictable, not random.**
+  The Kimura side subtracts the maternal sampling variance $s_i$, so it is
+  unbiased for the drift; the MMLE side cannot identify that term, because the
+  Beta-Binomial already marginalises the *child's* read noise but nothing
+  marginalises the *mother's*. To first order
+  $1/\widehat N_e^{\text{MMLE}}\approx 1/N_e+1/d_M$, i.e.
+  $N_e^{\text{Kimura}}/\widehat N_e^{\text{MMLE}}\approx 1+N_e/d_M$.
+  The offset is set entirely by the ratio $N_e/d_M$: ~0.6% at
+  $N_e=3,\ d_M=500$ (invisible) but ~30% at $N_e=30,\ d_M=100$. **Before
+  deciding that a disagreement is anomalous, subtract this expected offset.**
+  It is a property of the plug-in, not a bug; it disappears under the default
+  marginalised fit (measured: the ratio returns to 0.98–1.00 at every depth),
+  so you only see it after opting out with `--no-maternal-marginalization`.
+  Note it does *not* survive small samples — with only a handful
+  of sites both estimators' sampling noise dwarfs the systematic term and the
+  direction is random (the 5-site worked example in
+  `handoff/HANDOFF_ne_estimate_methods.md` §10 has Kimura *below* MMLE).
+
 **Is it always MMLE < Kimura?**  No — when high-drift outliers (NUMTs,
 sequencing errors) dominate, they inflate V and collapse Ne_Kimura *below*
 Ne_MMLE.  The direction depends on the data:
@@ -920,25 +1041,44 @@ Required options:
 
 Optional options:
   -o, --output    FILE   JSON output file (default: stdout).
-      --model     NAME   Likelihood model: `continuous` (default,
+      --model     NAME   Marginal-likelihood model: `continuous` (default,
                          recommended for mtDNA) or `discrete`.
+      --no-maternal-marginalization
+                         Fall back to the legacy plug-in p_m = m_alt /
+                         m_dp for the continuous model's two-generation
+                         rows.  By default p_m is integrated out against
+                         its Beta(m_alt+1, m_ref+1) read-sampling
+                         posterior by adaptive Gauss-Jacobi quadrature;
+                         the plug-in is faster but biased low by
+                         ~d_M/(Ne+d_M) and is not comparable across
+                         coverage, so it is available only by explicit
+                         request.  Continuous model only: --model discrete
+                         always integrates p_m and cannot honour this flag
+                         (warned on stderr); trio rows also already
+                         integrate p_m given the grandmother, so it is a
+                         no-op for them.
       --min-vaf   FLOAT  Lower maternal VAF gate, inclusive [0.10].
       --max-vaf   FLOAT  Upper maternal VAF gate, inclusive [0.90].
+      --min-depth INT    Drop pairs whose MOTHER or CHILD depth is below
+                         this value (both sides are gated: a shallow child
+                         makes k_C uninformative just as a shallow mother
+                         makes p_m unreliable).  0 disables [0].
       --min-ne    INT    Smallest Ne value to consider [1].
       --max-ne    INT    Largest Ne value to consider  [100].
   -t, --threads   INT    Worker threads for the inner sum [1].
       --cross-check NAME   Optional secondary estimator alongside the
-                           MMLE. Supported value: `kimura`, which computes
-                           the Wonnapinij b and the implied single-
-                           generation Ne (Helgason 2024).
-      --kimura-bootstrap INT  Non-parametric bootstrap iterations for the
-                              Kimura cross-check 95% CI [1000].
+                           MMLE. Supported value: `kimura`, which
+                           computes the Wonnapinij b and the implied
+                           Ne (single-generation approximation).
+      --kimura-bootstrap  INT  Non-parametric bootstrap iterations for the
+                              Kimura cross-check 95% CI.  0 disables [1000].
       --kimura-seed      INT  RNG seed for the Kimura bootstrap [42].
-      --kimura-trim   FLOAT   Fraction of highest-drift pairs to drop
-                              before recomputing b (0.0 disables,
-                              recommended 0.10) [0.0].
-      --top-drift-k     INT   Emit the top-K highest-drift pairs in JSON
-                              for outlier inspection [0].
+      --kimura-trim    FLOAT  Fraction of highest-drift pairs to drop before
+                              recomputing the Kimura b (robust trimmed mean,
+                              0.0 disables, recommended 0.10) [0.0].
+      --top-drift-k     INT   Emit the top-K highest-drift pairs in the JSON
+                              output for outlier inspection (NUMTs / errors).
+                              0 disables [0].
       --bin-simulation FILE   Emit a per-bin drift summary TSV: per
                               maternal-VAF bin observed mean drift vs
                               analytical Kimura prediction p_m(1 - p_m) / Ne
@@ -948,25 +1088,20 @@ Optional options:
                                  for --bin-simulation [10].
       --ne-profile     FILE   Emit a TSV that scores every candidate Ne
                               under both the MMLE marginal log-likelihood
-                              and the Kimura per-pair SSR metric.  Useful
-                              to visually compare which Ne each estimator
+                              and the Kimura per-pair SSR metric.  Useful to
+                              visually compare which Ne each estimator
                               prefers (dual-objective Ne scan).
                               Grid range = [--min-ne, --max-ne].
       --ne-profile-step FLOAT Grid step on the Ne axis for --ne-profile
                               [0.1].
-      --per-family             Enable per-family Ne estimation.
-                               Groups pairs by FAM_ID + MOTHER_ID and
-                               estimates Ne independently for each family
-                               using the continuous MMLE; rejected with
-                               `--model discrete`.
-      --min-family-sites INT   Minimum informative sites (mother VAF in
-                               (0, 1)) required per family [3].
-                               Families below this threshold are skipped
-                               with a warning.
-      --per-family-output FILE Write per-family Ne results as a TSV file
-                               (one row per mother-child family).
-                               If not set, per-family results are only
-                               embedded in the JSON output.
+      --per-family              Enable per-family Ne estimation.
+                                Groups pairs by FAM_ID + MOTHER_ID and
+                                estimates Ne independently for each family.
+      --min-family-sites INT    Minimum informative sites per family [3].
+                                Families with fewer sites are skipped.
+      --per-family-output FILE  Write per-family Ne results as TSV (one
+                                row per family).  If not set, per-family
+                                results are embedded in the JSON output.
   -h, --help               Print this help message.
 ```
 
@@ -980,6 +1115,9 @@ Optional options:
   "CI_Low_Clipped":  false,
   "CI_High_Clipped": false,
   "Pairs_Used":      147,
+  "Trio_Founder_Mismatch_Skipped": 0,
+  "Trio_Founder_Hom_Skipped":      0,
+  "Min_Depth_Skipped":             0,
   "Estimator":       "MMLE (composite marginal likelihood)",
   "Max_Marginal_LogLik": -812.34561,
   "Model":           "continuous",
@@ -987,6 +1125,12 @@ Optional options:
   "Max_VAF":         0.90,
   "Search_Min_Ne":   1,
   "Search_Max_Ne":   100,
+  "Min_Depth":       0,
+  "Maternal_Marginalization": false,
+  "Mean_Mother_DP":     1834.2,
+  "Mean_Child_DP":      1791.6,
+  "Harmonic_Mother_DP": 1602.8,
+  "Harmonic_Child_DP":  1577.3,
   "Kimura_Cross_Check": {
     "b":             0.732,
     "Ne_Kimura":     3.731,
@@ -1022,6 +1166,28 @@ and `--top-drift-k > 0`, respectively.
 - `CI_Low_Clipped` / `CI_High_Clipped` flag confidence-interval bounds
   that hit the search boundary (`--min-ne` / `--max-ne`); when either is
   `true` you should re-run with a wider search range.
+- `Trio_Founder_*_Skipped` are non-zero only on input carrying three-generation
+  rows (`HAS_G=1`); `Min_Depth_Skipped` counts rows dropped by `--min-depth`.
+- `Min_Depth` and `Maternal_Marginalization` echo the model-form switches
+  **actually applied**, so a reader can tell which likelihood the reported
+  `Max_Marginal_LogLik` belongs to. `Maternal_Marginalization` is `true` for a
+  default continuous run, `false` when you opted out with
+  `--no-maternal-marginalization`, and also `false` under `--model discrete` —
+  that model always integrates $p_M$ and therefore cannot honour the opt-out,
+  which it reports with a `WARNING:` rather than silently.
+  `Max_Marginal_LogLik` is **not comparable** across that flag.
+- `Mean_*_DP` and `Harmonic_*_DP` describe the retained rows' coverage and are
+  **descriptive only**. The plug-in pseudo-true identity
+  $1/N_e^{\text{app}}=1/N_e+1/d_M$ holds at a single depth and is not
+  invertible on a mixed-depth cohort, so no arithmetic, harmonic or
+  depth-weighted summary of these fields reproduces the plug-in fit. The
+  default marginalised fit removes that bias at the model level, so neither
+  back-correct a reported $N_e$ by hand nor try to repair a plug-in run
+  arithmetically — drop the opt-out flag instead.
+- Per-family records (`--per-family`) carry their own `Mean_*_DP` /
+  `Harmonic_*_DP`. The three TSV outputs (`--per-family-output`,
+  `--bin-simulation`, `--ne-profile`) keep their previous columns; the new
+  fields appear in JSON only.
 - Every invocation writes a leading provenance comment
   (`#mitoquest_ne_estimate_command=...`) before the JSON object. After that
   one line is removed, the object is strict JSON: dynamic strings are
@@ -1234,8 +1400,20 @@ cat tests/data/ne_pipeline/scenarios/S8_g2_ne10/ne.continuous.json
 
 ### Recommendations
 
-- **Sequencing depth ≥ 500×** on chrM for both mother and child; lower
-  depth widens the per-pair likelihood envelope and inflates the CI.
+- **Sequencing depth ≥ 500×** on chrM for both mother and child. The
+  dominant risk at low depth is **bias, not just a wider CI**, and it is the
+  reason marginalisation is the default: the legacy plug-in maternal frequency
+  makes the fitted value a pseudo-true $N_e^{\text{app}}$ with
+  $1/N_e^{\text{app}}=1/N_e+1/d_M$, measured at $-13.5\%$ for $d=100$ and
+  $-2.9\%$ for $d=500$ ($N_e^{\text{true}}=20$). The default fit removes that
+  term and leaves $+14.1\%$ at $d_M=30$, $\le 2.4\%$ in magnitude at every
+  $d_M\ge 60$, and $-2.1\ldots+2.4\%$ for $d_M\ge 500$ — within the
+  $1.3\ldots2.5\%$ Monte Carlo se of zero, with the sign varying rather than
+  staying positive. Check `Mean_Mother_DP` /
+  `Harmonic_Mother_DP` in the JSON output; below ~500× also add
+  `--min-depth INT` to drop the shallowest rows. If you do opt out with
+  `--no-maternal-marginalization`, its estimates are depth-dependent and must
+  not be compared across cohorts sequenced at different coverage.
 - **Restrict to maternal VAF in [0.10, 0.90]** (the default). Sites very
   close to 0 or 1 carry virtually no information about Ne, while still
   contributing numerical noise.
@@ -1243,6 +1421,11 @@ cat tests/data/ne_pipeline/scenarios/S8_g2_ne10/ne.continuous.json
   fewer pairs the CI tends to be wide and to clip the search boundaries.
 - **Verify both `_Clipped` flags are `false`**; if either is `true`,
   widen `--min-ne` / `--max-ne` and re-run.
+- **Treat the 95% interval as model-based.** Pairs are summed as a composite
+  likelihood and the $\chi^2_1$ threshold 1.92 is applied without a sandwich
+  correction, so the interval can be too narrow when many siblings share one
+  mother (more so under the default marginalised fit). Use `--per-family` for
+  family-resolved inference in that regime.
 
 ---
 

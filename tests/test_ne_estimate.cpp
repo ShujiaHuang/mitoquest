@@ -1018,6 +1018,11 @@ TEST(NeEstTrio, TrioDiffersFrom2GenWhenHasGOne) {
 }
 
 // Global LL with trio rows should equal the sum of per-row trio LLs.
+//
+// The plug-in is requested explicitly here.  ModelOptions now defaults to
+// marginalising p_M, so a positional call would route the has_g == 0 row
+// through compute_ll_single_marginalized() instead of
+// compute_ll_single_continuous() and this dispatch identity would not hold.
 TEST(NeEstTrio, GlobalLLDispatchesTrioRows) {
     NeEstimator::LogFactorial lf(500);
     const double ne = 10.0;
@@ -1025,11 +1030,46 @@ TEST(NeEstTrio, GlobalLLDispatchesTrioRows) {
     auto trio_pd = make_trio(100, 30, 50, 15, 80, 20, true);
     auto pair_pd = make_trio(0, 0, 80, 25, 120, 40, false);
     std::vector<NeEstimator::PairData> data = {trio_pd, pair_pd};
-    const double global = NeEstimator::compute_global_ll_continuous(ne, data, lf, 1);
+    const double global = NeEstimator::compute_global_ll_continuous(
+        ne, data, lf, 1, NeEstimator::ModelOptions{false});
     const double expected =
           NeEstimator::compute_ll_trio_continuous(trio_pd, ne, lf)
         + NeEstimator::compute_ll_single_continuous(pair_pd, ne, lf);
     EXPECT_NEAR(global, expected, 1e-9);
+}
+
+// Maternal marginalisation is the DEFAULT, so a positional call -- the one a
+// caller that never thought about ModelOptions makes -- must route has_g == 0
+// rows through the marginalised likelihood and must leave trio rows on their
+// own grandmother-informed path.
+TEST(NeEstTrio, GlobalLLMarginalisesMaternalByDefault) {
+    EXPECT_TRUE(NeEstimator::ModelOptions{}.marginalize_maternal);
+
+    NeEstimator::LogFactorial lf(500);
+    const double ne = 10.0;
+    const auto trio_pd = make_trio(100, 30, 50, 15, 80, 20, true);
+    const auto pair_pd = make_trio(0, 0, 80, 25, 120, 40, false);
+    std::vector<NeEstimator::PairData> data = {trio_pd, pair_pd};
+
+    const double by_default =
+        NeEstimator::compute_global_ll_continuous(ne, data, lf, 1);
+    const double expected =
+          NeEstimator::compute_ll_trio_continuous(trio_pd, ne, lf)
+        + NeEstimator::compute_ll_single_marginalized(pair_pd, ne, lf);
+    EXPECT_NEAR(by_default, expected, 1e-9);
+    EXPECT_TRUE(std::isfinite(by_default));
+
+    // The opt-out has to differ, otherwise the switch is not reaching the
+    // likelihood at all and the assertion above would pass vacuously.
+    const double plug_in = NeEstimator::compute_global_ll_continuous(
+        ne, data, lf, 1, NeEstimator::ModelOptions{false});
+    EXPECT_TRUE(std::isfinite(plug_in));
+    EXPECT_NE(by_default, plug_in);
+
+    // Requesting the default by name must be a no-op relative to omitting it.
+    const double by_name = NeEstimator::compute_global_ll_continuous(
+        ne, data, lf, 1, NeEstimator::ModelOptions{true});
+    EXPECT_DOUBLE_EQ(by_default, by_name);
 }
 
 TEST(NeEstTrio, IntegerContinuousGlobalDispatchesTrioRows) {

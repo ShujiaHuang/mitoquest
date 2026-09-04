@@ -25,6 +25,7 @@
 #include "ne_estimate.h"
 #include "external/thread_pool.h"
 #include "io/utils.h"           // ngslib::is_readable
+#include "version.h"
 
 // ---------------------------------------------------------------------
 // LogFactorial implementation lives in src/log_factorial.cpp; we only
@@ -61,8 +62,7 @@ double NeEstimator::log_sum_exp_pair(double a, double b) {
 // The inner sum has Ne + 1 terms; we accumulate it in log-space with
 // log_sum_exp_pair to avoid underflow when individual terms are
 // extremely small (which is the common case at high depth).
-double NeEstimator::compute_ll_single(const PairData& pd, int ne,
-                                      const LogFactorial& lf) {
+double NeEstimator::compute_ll_single(const PairData& pd, int ne, const LogFactorial& lf) {
     if (ne < 1) return -std::numeric_limits<double>::infinity();
 
     // Maternal posterior on the true VAF: Beta(alpha, beta) given a
@@ -78,6 +78,7 @@ double NeEstimator::compute_ll_single(const PairData& pd, int ne,
         const double log_jt  = log_bb + log_seq;
         total = log_sum_exp_pair(total, log_jt);
     }
+    
     return total;
 }
 
@@ -92,14 +93,12 @@ double NeEstimator::compute_ll_single(const PairData& pd, int ne,
 // At Ne=1 the Kimura diffusion degenerates (complete drift to fixation)
 // with endpoint masses 1-p_m and p_m. This is distinct from the legacy
 // discrete model, which integrates a separate maternal Beta posterior.
-namespace {
-double compute_ll_single_continuous_degenerate(const NeEstimator::PairData& pd,
-                                               double p_m) {
+static double compute_ll_single_continuous_degenerate(const NeEstimator::PairData& pd, double p_m) {
     if (pd.c_ad_alt == 0) return std::log1p(-p_m);
     if (pd.c_ad_alt == pd.c_dp) return std::log(p_m);
+    
     return -std::numeric_limits<double>::infinity();
 }
-}  // namespace
 
 double NeEstimator::compute_ll_single_continuous(const PairData& pd, int ne,
                                                  const LogFactorial& lf) {
@@ -138,8 +137,6 @@ double NeEstimator::compute_ll_single_continuous(const PairData& pd, double ne,
                                 pm * ne1, (1.0 - pm) * ne1);
 }
 
-namespace {
-
 constexpr double kTrioQuadratureTolerance = 1e-10;
 constexpr int kTrioInitialQuadratureOrder = 16;
 constexpr int kTrioMinimumAdaptiveOrder = 64;
@@ -174,16 +171,37 @@ struct BetaGaussJacobiRule {
 BetaGaussJacobiRule make_beta_gauss_jacobi_rule(double alpha, double beta,
                                                  int n_nodes);
 
-// Per-evaluation Gauss-Jacobi rule cache.
+// Gauss-Jacobi rule cache.
 //
 // The quadrature rule for the maternal posterior Beta(posterior_alpha,
 // posterior_beta) depends only on those two shape parameters and the node
 // count -- not on the child read counts.  Rows that share the same
 // (grandmother, mother) read signature therefore reuse one rule per
-// refinement order inside a single global-likelihood evaluation (multi-row
-// trios).  The cache is scoped to one evaluation: its key grid changes with
-// Ne, so retaining rules across Ne values has almost no hit rate while
-// growing without bound during the CI sweep.
+// refinement order.
+//
+// Two lifetimes are in use, because the two paths have different keys:
+//
+//   * trio rows are keyed on (alpha_G + k_M, beta_G + d_M - k_M, order) with
+//     alpha_G = p_hat_G (Ne-1) and beta_G = (1-p_hat_G) (Ne-1), so the key
+//     grid MOVES with Ne.  Retaining those rules across Ne values has almost
+//     no hit rate while growing without bound during the CI sweep, so the
+//     trio cache stays scoped to a single global-likelihood evaluation
+//     (constructed unbounded, as before).
+//   * maternal-marginalised rows are keyed on (k_M+1, d_M-k_M+1, order),
+//     which carries NO Ne at all.  One rule therefore serves every Ne in the
+//     scan, and hoisting this cache to scan lifetime is what makes the
+//     marginalised likelihood affordable as the default: rule construction is
+//     the Golub-Welsch tridiagonal eigendecomposition and dominates the
+//     per-row cost (measured 97.5% of it at d_M=d_C=2000, where an
+//     order-128 rule alone costs ~329 us against ~11 us for all 240
+//     Beta-Binomial node evaluations).
+//
+// A scan-lifetime cache is bounded by `node_budget`: once that many nodes are
+// stored, further misses are built locally and not retained, so a cohort with
+// tens of thousands of distinct maternal signatures degrades to the old
+// rebuild-per-Ne behaviour instead of exhausting memory.  Eviction is
+// deliberately absent -- it would change nothing numerically (same key always
+// yields the same rule) but would cost hit rate.
 struct TrioQuadratureCache {
     struct Key {
         double alpha;
@@ -204,25 +222,49 @@ struct TrioQuadratureCache {
 
     std::mutex mu;
     std::unordered_map<Key, BetaGaussJacobiRule, KeyHash> rules;
+    size_t node_budget  = 0;   // 0 = unlimited (per-evaluation caches)
+    size_t nodes_stored = 0;
+
+    explicit TrioQuadratureCache(size_t node_budget_ = 0) : node_budget(node_budget_) {}
 
     // Returns the rule for (alpha, beta, order), constructing it at most
     // once.  Construction happens outside the lock so parallel workers do
     // not serialize on rule construction; duplicate constructions are
     // possible only when threads race on the identical key, which is rare.
-    const BetaGaussJacobiRule& get(double alpha, double beta, int order) {
+    //
+    // Returns nullptr when the node budget is exhausted; the caller must then
+    // build the rule itself.  A non-null pointer stays valid for the lifetime
+    // of the cache: std::unordered_map keeps element addresses stable across
+    // rehash, and insertion is the only mutation.
+    const BetaGaussJacobiRule* try_get(double alpha, double beta, int order) {
         const Key key{alpha, beta, order};
         {
             std::lock_guard<std::mutex> lock(mu);
             const auto it = rules.find(key);
-            if (it != rules.end()) return it->second;
+            if (it != rules.end()) return &it->second;
+            if (node_budget != 0
+                && nodes_stored + static_cast<size_t>(order) > node_budget) {
+                return nullptr;
+            }
         }
         BetaGaussJacobiRule rule = make_beta_gauss_jacobi_rule(alpha, beta, order);
         std::lock_guard<std::mutex> lock(mu);
         const auto it = rules.find(key);
-        if (it != rules.end()) return it->second;
-        return rules.emplace(key, std::move(rule)).first->second;
+        if (it != rules.end()) return &it->second;
+        if (node_budget != 0 && nodes_stored + static_cast<size_t>(order) > node_budget) {
+            return nullptr;
+        }
+        nodes_stored += static_cast<size_t>(order);
+
+        return &rules.emplace(key, std::move(rule)).first->second;
     }
 };
+
+// Node budget for a scan-lifetime maternal cache.  4M nodes x 16 bytes
+// (node + log-weight) is ~64 MB, enough to hold every rule of a ~16k-row
+// cohort (up to 4 refinement orders per distinct maternal signature) while
+// keeping pathological inputs bounded.
+constexpr size_t kMaternalScanCacheNodeBudget = 4u << 20;
 
 // Diagonalize a real symmetric tridiagonal matrix with implicit QL steps.
 // We only need the first component of every normalized eigenvector: its
@@ -326,8 +368,7 @@ BetaGaussJacobiRule make_beta_gauss_jacobi_rule(double alpha, double beta, int n
             off_diagonal_squared = alpha * beta / (total * total * (total + 1.0));
         } else {
             off_diagonal_squared = n * (n + alpha - 1.0) * (n + beta - 1.0)
-                * (n + total - 2.0)
-                / (center * center * (center - 1.0) * (center + 1.0));
+                * (n + total - 2.0) / (center * center * (center - 1.0) * (center + 1.0));
         }
         if (!(off_diagonal_squared > 0.0) || !std::isfinite(off_diagonal_squared)) {
             throw std::runtime_error("[ne-estimate] Invalid Gauss-Jacobi recurrence coefficient.");
@@ -386,9 +427,18 @@ double compute_ll_trio_gauss_jacobi_at_order(const NeEstimator::PairData& pd,
     const double beta_g = (1.0 - pg) * s;
     const double posterior_alpha = alpha_g + static_cast<double>(pd.m_ad_alt);
     const double posterior_beta = beta_g + static_cast<double>(pd.m_dp - pd.m_ad_alt);
-    const BetaGaussJacobiRule& rule = (cache != nullptr)
-        ? cache->get(posterior_alpha, posterior_beta, n_nodes)
-        : make_beta_gauss_jacobi_rule(posterior_alpha, posterior_beta, n_nodes);
+    // A miss (no cache handed in, or the cache's node budget is spent) falls
+    // back to building the rule here.  Both routes produce the same rule, so
+    // the returned log-likelihood is bit-identical either way.
+    BetaGaussJacobiRule local_rule;
+    const BetaGaussJacobiRule* rule_ptr = (cache != nullptr)
+        ? cache->try_get(posterior_alpha, posterior_beta, n_nodes) : nullptr;
+
+    if (rule_ptr == nullptr) {
+        local_rule = make_beta_gauss_jacobi_rule(posterior_alpha, posterior_beta, n_nodes);
+        rule_ptr = &local_rule;
+    }
+    const BetaGaussJacobiRule& rule = *rule_ptr;
 
     std::vector<double> log_terms;
     log_terms.reserve(rule.nodes.size());
@@ -405,20 +455,36 @@ double compute_ll_trio_gauss_jacobi_at_order(const NeEstimator::PairData& pd,
          + log_sum_exp_values(log_terms);
 }
 
-double compute_ll_trio_gauss_jacobi(const NeEstimator::PairData& pd,
-                                    double ne,
-                                    const NeEstimator::LogFactorial& lf,
-                                    TrioQuadratureCache* cache) {
-    const int exact_order = (pd.c_dp + 2) / 2;
+// Adaptive Gauss-Jacobi order driver, shared by the trio path and the maternal-
+// marginalisation path.  `ll_at_order(n)` evaluates the row log-likelihood with
+// an n-node rule; the loop starts at kTrioInitialQuadratureOrder, doubles, and
+// returns once kTrioRequiredStableRefinements consecutive refinements agree
+// within kTrioQuadratureTolerance at an order of at least
+// kTrioMinimumAdaptiveOrder, or when the polynomial-exact cap is reached.
+//
+// Reaching `exact_order` is NOT a correctness guarantee.  The child factor is a
+// degree-d_C polynomial in p_M, so a rule with n >= (d_C+1)/2 nodes is exact in
+// real arithmetic, but the Golub-Welsch nodes/weights themselves lose double-
+// precision fidelity at very high order, so the capped value can be *worse*
+// than the converged low-order one.  Measured on the row (d_M,k_M,d_C,k_C) =
+// (2000,1000,2000,40) at Ne=100: orders 16-512 all give log E[g] = -102.9067,
+// agreeing with an independent 400k-point trapezoid reference, while order 1001
+// gives -99.2613 -- off by +3.65 log units.  The cap is therefore a last-resort
+// bound, not a target.  Empirically it is never reached at deep coverage (0 of
+// 4761 evaluations at d_C=2000 and 0 of 4719 at d_C=500, over Ne in
+// {2,30,200}), because the sequence stabilises by order 128; at shallow
+// coverage the cap *is* the exact order and is small (16 nodes at d_C=30, 51 at
+// d_C=100), where it agrees with a 256-node rule to ~2e-13.
+template <typename FnLlAtOrder>
+double adaptive_gauss_jacobi_ll(int exact_order, FnLlAtOrder ll_at_order) {
     int order = std::min(kTrioInitialQuadratureOrder, exact_order);
-    double previous = compute_ll_trio_gauss_jacobi_at_order(pd, ne, lf, order, cache);
+    double previous = ll_at_order(order);
     if (order == exact_order) return previous;
 
     int stable_refinements = 0;
     while (order < exact_order) {
         const int next_order = std::min(exact_order, order * 2);
-        const double current = compute_ll_trio_gauss_jacobi_at_order(
-            pd, ne, lf, next_order, cache);
+        const double current = ll_at_order(next_order);
         if (next_order >= std::min(kTrioMinimumAdaptiveOrder, exact_order)
             && std::abs(current - previous) <= kTrioQuadratureTolerance) {
             ++stable_refinements;
@@ -433,6 +499,16 @@ double compute_ll_trio_gauss_jacobi(const NeEstimator::PairData& pd,
         order = next_order;
     }
     return previous;
+}
+
+double compute_ll_trio_gauss_jacobi(const NeEstimator::PairData& pd,
+                                    double ne,
+                                    const NeEstimator::LogFactorial& lf,
+                                    TrioQuadratureCache* cache) {
+    const int exact_order = (pd.c_dp + 2) / 2;
+    return adaptive_gauss_jacobi_ll(exact_order, [&](int n_nodes) {
+        return compute_ll_trio_gauss_jacobi_at_order(pd, ne, lf, n_nodes, cache);
+    });
 }
 
 double compute_ll_trio_degenerate(const NeEstimator::PairData& pd, double pg) {
@@ -463,7 +539,122 @@ double compute_ll_trio_continuous_cached(const NeEstimator::PairData& pd,
     return compute_ll_trio_gauss_jacobi(pd, ne, lf, cache);
 }
 
-}  // namespace
+// -----------------------------------------------------------------
+// Two-generation M-C pair with the maternal heteroplasmy integrated out
+// (the default; --no-maternal-marginalization selects the plug-in).  See the
+// declaration comment in ne_estimate.h for the formula, the normalisation
+// identities and the Ne == 1 closed form.
+// -----------------------------------------------------------------
+
+// Ne == 1 degenerate limit: s = Ne - 1 = 0 collapses the child Beta transition
+// onto the two endpoint masses {0, 1} with weights (1 - p_M, p_M), so E[g]
+// reduces to E[1 - p_M] or E[p_M] under Beta(k_M+1, d_M-k_M+1), whose mean is
+// (k_M+1)/(d_M+2).  The joint normalisation log C(d_M,k_M) +
+// log B(k_M+1, d_M-k_M+1) is exactly -log(d_M+1).  e_pm is strictly inside
+// (0,1) for every admissible row, so both logs are finite.
+double compute_ll_single_marginalized_degenerate(const NeEstimator::PairData& pd) {
+    const double e_pm = (static_cast<double>(pd.m_ad_alt) + 1.0)
+                      / (static_cast<double>(pd.m_dp) + 2.0);
+
+    const double log_norm = -std::log(static_cast<double>(pd.m_dp) + 1.0);
+    if (pd.c_ad_alt == 0)        return log_norm + std::log1p(-e_pm);
+    if (pd.c_ad_alt == pd.c_dp)  return log_norm + std::log(e_pm);
+
+    return -std::numeric_limits<double>::infinity();
+}
+
+// Fixed-order evaluation.  Structurally identical to
+// compute_ll_trio_gauss_jacobi_at_order with the grandmother-informed prior
+// replaced by Beta(1,1): the rule weight becomes the maternal posterior
+// Beta(k_M+1, d_M-k_M+1) itself, so the `- log_beta(alpha_g, beta_g)` prior
+// term drops out (log B(1,1) = 0) and only the posterior normalisation remains.
+// The rule parameters do not depend on Ne, so the caller passes a cache whose
+// lifetime spans the whole Ne scan (see compute_global_ll_continuous), giving
+// a strictly better hit rate than the trio path, whose alpha_g / beta_g move
+// with Ne and which therefore keeps a per-evaluation cache.
+double compute_ll_single_marginalized_at_order(const NeEstimator::PairData& pd,
+                                               double ne,
+                                               const NeEstimator::LogFactorial& lf,
+                                               int n_nodes,
+                                               TrioQuadratureCache* cache) {
+
+    const double s     = ne - 1.0;
+    const double alpha = static_cast<double>(pd.m_ad_alt) + 1.0;
+    const double beta  = static_cast<double>(pd.m_dp - pd.m_ad_alt) + 1.0;
+    // Same local fallback as the trio path; bit-identical on a cache miss.
+    BetaGaussJacobiRule local_rule;
+    const BetaGaussJacobiRule* rule_ptr = (cache != nullptr)
+        ? cache->try_get(alpha, beta, n_nodes) : nullptr;
+
+    if (rule_ptr == nullptr) {
+        local_rule = make_beta_gauss_jacobi_rule(alpha, beta, n_nodes);
+        rule_ptr = &local_rule;
+    }
+    const BetaGaussJacobiRule& rule = *rule_ptr;
+
+    std::vector<double> log_terms;
+    log_terms.reserve(rule.nodes.size());
+
+    for (size_t i = 0; i < rule.nodes.size(); ++i) {
+        const double p_m = rule.nodes[i];
+        const double child_ll = lf.log_betabinom_pmf(pd.c_dp, pd.c_ad_alt, s * p_m, s * (1.0 - p_m));
+        log_terms.push_back(rule.log_weights[i] + child_ll);
+    }
+
+    return lf.log_comb(pd.m_dp, pd.m_ad_alt) + log_beta(alpha, beta) + log_sum_exp_values(log_terms);
+}
+
+double compute_ll_single_marginalized_cached(const NeEstimator::PairData& pd,
+                                             double ne,
+                                             const NeEstimator::LogFactorial& lf,
+                                             TrioQuadratureCache* cache) {
+
+    if (!std::isfinite(ne) || ne < 1.0 || pd.m_dp <= 0 || pd.c_dp <= 0
+        || pd.m_ad_alt < 0 || pd.m_ad_alt > pd.m_dp
+        || pd.c_ad_alt < 0 || pd.c_ad_alt > pd.c_dp) {
+        return -std::numeric_limits<double>::infinity();
+    }
+    if (ne == 1.0) return compute_ll_single_marginalized_degenerate(pd);
+
+    // Deliberately NO homoplasmic shortcut here.  The plug-in path returns the
+    // constant 0.0 when p_hat_M is 0 or 1 because a point estimate at the
+    // boundary carries no drift information; the whole point of marginalising
+    // is that k_M = 0 out of d_M reads still leaves a proper Beta(1, d_M+1)
+    // posterior over p_M, against which the child's k_C IS informative.  Such
+    // rows are excluded by the default VAF window anyway and only enter under
+    // --min-vaf 0, where recovering them is the desired behaviour.
+    //
+    // No new -infinity risk is introduced: make_beta_gauss_jacobi_rule clamps
+    // every node strictly inside (0,1), so s * p_m > 0 for ne > 1 and the
+    // Beta-Binomial log-pmf stays finite at all nodes.
+    const int exact_order = (pd.c_dp + 2) / 2;
+    return adaptive_gauss_jacobi_ll(exact_order, [&](int n_nodes) {
+        return compute_ll_single_marginalized_at_order(pd, ne, lf, n_nodes, cache);
+    });
+}
+
+// Single place that decides which per-row likelihood a continuous-model
+// evaluation uses.  Trio rows always marginalise p_M over the grandmother-
+// informed posterior, so opts is only consulted for two-generation rows.
+//
+// The two caches have deliberately different lifetimes (see
+// TrioQuadratureCache): `trio_cache` is scoped to one global-likelihood
+// evaluation because the trio key moves with Ne, while `maternal_cache` spans
+// the whole Ne scan because the maternal key does not.
+double compute_row_ll_continuous(const NeEstimator::PairData& pd, double ne,
+                                 const NeEstimator::LogFactorial& lf,
+                                 TrioQuadratureCache* trio_cache,
+                                 TrioQuadratureCache* maternal_cache,
+                                 const NeEstimator::ModelOptions& opts) {
+    if (pd.has_g == 1) {
+        return compute_ll_trio_continuous_cached(pd, ne, lf, trio_cache);
+    }
+    if (opts.marginalize_maternal) {
+        return compute_ll_single_marginalized_cached(pd, ne, lf, maternal_cache);
+    }
+
+    return NeEstimator::compute_ll_single_continuous(pd, ne, lf);
+}
 
 // -----------------------------------------------------------------
 // Three-generation G-M-C trio marginal log-likelihood.
@@ -479,8 +670,22 @@ double compute_ll_trio_continuous_cached(const NeEstimator::PairData& pd,
 // production path uses adaptive Gauss-Jacobi quadrature for this Beta weight,
 // capped at the polynomial-exact order ceil((d_C + 1) / 2).
 double NeEstimator::compute_ll_trio_continuous(const PairData& pd, double ne,
-                                                const LogFactorial& lf) {
+                                               const LogFactorial& lf) {
     return compute_ll_trio_continuous_cached(pd, ne, lf, nullptr);
+}
+
+// -----------------------------------------------------------------
+// Two-generation M-C pair with the maternal heteroplasmy integrated out.
+// -----------------------------------------------------------------
+//
+// Public entry point; the optimizer uses compute_ll_single_marginalized_cached
+// with a real quadrature cache.  Validated against the shipped trio path: at
+// Ne = 3 with p_hat_G = 0.5 the trio prior Beta(p_hat_G s, (1-p_hat_G) s) is
+// exactly Beta(1,1), so compute_ll_trio_continuous() on a row carrying
+// g_dp = 2, g_ad_alt = 1 returns precisely this function's value.
+double NeEstimator::compute_ll_single_marginalized(const PairData& pd, double ne,
+                                                   const LogFactorial& lf) {
+    return compute_ll_single_marginalized_cached(pd, ne, lf, nullptr);
 }
 
 // -----------------------------------------------------------------
@@ -499,22 +704,22 @@ double NeEstimator::compute_ll_trio_continuous(const PairData& pd, double ne,
 // We map t in [-1,1] to p_M = (1+t)/2 using standard GL nodes/weights.
 // -----------------------------------------------------------------
 double NeEstimator::compute_ll_trio_quadrature(const PairData& pd, double ne,
-                                                const LogFactorial& lf,
-                                                int n_nodes) {
+                                               const LogFactorial& lf,
+                                               int n_nodes) {
+
     if (pd.has_g == 0) return compute_ll_single_continuous(pd, ne, lf);
     if (!std::isfinite(ne) || ne < 1.0 || n_nodes < 1 || pd.g_dp <= 0
         || pd.g_ad_alt < 0 || pd.g_ad_alt > pd.g_dp) {
         return -std::numeric_limits<double>::infinity();
     }
 
-    const double pg = static_cast<double>(pd.g_ad_alt)
-                    / static_cast<double>(pd.g_dp);
+    const double pg = static_cast<double>(pd.g_ad_alt) / static_cast<double>(pd.g_dp);
     if (ne == 1.0 || pg <= 0.0 || pg >= 1.0) {
         return compute_ll_trio_degenerate(pd, pg);
     }
 
-    const double ne1    = ne - 1.0;
-    const double alpha_G = pg       * ne1;
+    const double ne1     = ne - 1.0;
+    const double alpha_G = pg * ne1;
     const double beta_G  = (1.0-pg) * ne1;
 
     // Compute GL nodes and weights on [-1, 1] (Golub-Welsch / Newton).
@@ -543,18 +748,16 @@ double NeEstimator::compute_ll_trio_quadrature(const PairData& pd, double ne,
         // Recompute P_{n-1}(z) at the converged root for the weight.
         double pjm1 = 1.0, pj = z;
         for (int j = 1; j < n_nodes; ++j) {
-            const double pjp1 =
-                ((2.0*j + 1.0)*z*pj - static_cast<double>(j)*pjm1)
-                / static_cast<double>(j + 1);
+            const double pjp1 = ((2.0*j + 1.0)*z*pj - static_cast<double>(j)*pjm1) / static_cast<double>(j + 1);
             pjm1 = pj; pj = pjp1;
         }
-        const double deriv = static_cast<double>(n_nodes)
-                             * (z * pj - pjm1) / (z * z - 1.0);
-        nodes[static_cast<size_t>(i)]                       = -z;
-        nodes[static_cast<size_t>(n_nodes - 1 - i)]         =  z;
+        const double deriv = static_cast<double>(n_nodes) * (z * pj - pjm1) / (z * z - 1.0);
+        nodes[static_cast<size_t>(i)]               = -z;
+        nodes[static_cast<size_t>(n_nodes - 1 - i)] =  z;
+
         const double w = 2.0 / ((1.0 - z * z) * deriv * deriv);
-        weights[static_cast<size_t>(i)]                     = w;
-        weights[static_cast<size_t>(n_nodes - 1 - i)]       = w;
+        weights[static_cast<size_t>(i)]               = w;
+        weights[static_cast<size_t>(n_nodes - 1 - i)] = w;
     }
 
     // Accumulate the integrand at each node.
@@ -568,9 +771,8 @@ double NeEstimator::compute_ll_trio_quadrature(const PairData& pd, double ne,
     const int k_C = pd.c_ad_alt, d_C = pd.c_dp;
 
     // Precompute the log-normalisation of the Beta prior.
-    const double log_beta_norm =
-          std::lgamma(alpha_G) + std::lgamma(beta_G)
-        - std::lgamma(alpha_G + beta_G);
+    const double log_beta_norm = std::lgamma(alpha_G) + std::lgamma(beta_G) 
+                               - std::lgamma(alpha_G + beta_G);
 
     // Evaluate log-integrand at each node and track max for log-sum-exp.
     std::vector<double> log_vals(static_cast<size_t>(n_nodes));
@@ -579,32 +781,28 @@ double NeEstimator::compute_ll_trio_quadrature(const PairData& pd, double ne,
         const double t  = nodes[static_cast<size_t>(i)];
         const double pM = 0.5 * (1.0 + t);
         if (pM <= 0.0 || pM >= 1.0) {
-            log_vals[static_cast<size_t>(i)] =
-                -std::numeric_limits<double>::infinity();
+            log_vals[static_cast<size_t>(i)] = -std::numeric_limits<double>::infinity();
             continue;
         }
-        const double log_prior_pdf =
-              (alpha_G - 1.0) * std::log(pM)
-            + (beta_G  - 1.0) * std::log(1.0 - pM)
-            - log_beta_norm;
-        const double log_binom_m =
-              static_cast<double>(k_M) * std::log(pM)
-            + static_cast<double>(d_M - k_M) * std::log(1.0 - pM);
-        const double log_betabin_c =
-            lf.log_betabinom_pmf(d_C, k_C, pM * ne1, (1.0 - pM) * ne1);
+        const double log_prior_pdf = (alpha_G - 1.0) * std::log(pM) 
+                                   + (beta_G  - 1.0) * std::log(1.0 - pM)
+                                   - log_beta_norm;
+        const double log_binom_m = static_cast<double>(k_M) * std::log(pM)
+                                 + static_cast<double>(d_M - k_M) * std::log(1.0 - pM);
+        const double log_betabin_c = lf.log_betabinom_pmf(d_C, k_C, pM * ne1, (1.0 - pM) * ne1);
         // Jacobian dp_M/dt = 0.5; we add log(0.5) = -log(2) at the end.
-        log_vals[static_cast<size_t>(i)] =
-            log_prior_pdf + log_binom_m + log_betabin_c;
-        if (log_vals[static_cast<size_t>(i)] > max_log)
+        log_vals[static_cast<size_t>(i)] = log_prior_pdf + log_binom_m + log_betabin_c;
+        
+        if (log_vals[static_cast<size_t>(i)] > max_log) {
             max_log = log_vals[static_cast<size_t>(i)];
+        }
     }
 
     // Weighted sum via log-sum-exp for stability.
     double sum_exp = 0.0;
     for (int i = 0; i < n_nodes; ++i) {
         if (!std::isfinite(log_vals[static_cast<size_t>(i)])) continue;
-        sum_exp += weights[static_cast<size_t>(i)]
-                   * std::exp(log_vals[static_cast<size_t>(i)] - max_log);
+        sum_exp += weights[static_cast<size_t>(i)] * std::exp(log_vals[static_cast<size_t>(i)] - max_log);
     }
     if (sum_exp <= 0.0) return -std::numeric_limits<double>::infinity();
 
@@ -682,8 +880,8 @@ int NeEstimator::find_optimal_ne(const std::vector<PairData>& data,
                                  const LogFactorial& lf,
                                  int min_ne, int max_ne, int threads,
                                  bool continuous) {
-    if (min_ne < 1)          min_ne = 1;
-    if (max_ne < min_ne)     max_ne = min_ne;
+    if (min_ne < 1)      min_ne = 1;
+    if (max_ne < min_ne) max_ne = min_ne;
 
     int    best_ne = min_ne;
     double best_ll = compute_global_ll_parallel(min_ne, data, lf, threads, continuous);
@@ -707,26 +905,33 @@ int NeEstimator::find_optimal_ne(const std::vector<PairData>& data,
 //             with  chi2_{1, 0.95} / 2 = 3.841 / 2 ~~ 1.92.
 static constexpr double kProfileLLThresholdDelta = 1.92;
 
-double NeEstimator::compute_global_ll_continuous(
-    double ne, const std::vector<PairData>& data,
-    const LogFactorial& lf, int threads) {
-    // Per-evaluation quadrature cache: rows sharing the same
-    // (grandmother, mother) signature reuse the Gauss-Jacobi rules for this
-    // Ne instead of rebuilding them per row.
-    TrioQuadratureCache rule_cache;
-    // Per-row dispatch: trio rows (has_g == 1) use the three-generation
-    // Gauss-Jacobi marginal likelihood; all others use the standard two-
-    // generation continuous model.
-    auto row_ll = [&](const PairData& pd) {
-        return (pd.has_g == 1)
-            ? compute_ll_trio_continuous_cached(pd, ne, lf, &rule_cache)
-            : compute_ll_single_continuous(pd, ne, lf);
-    };
+namespace {
+
+// Body of NeEstimator::compute_global_ll_continuous(), split out so the
+// scan-level callers (estimate_continuous and the --ne-profile grid walk) can
+// hand in a maternal cache that outlives a single evaluation.  It stays in
+// this translation unit because TrioQuadratureCache is internal and must not
+// leak into the public header.
+//
+// `maternal_scan_cache` may be null, in which case a per-evaluation cache is
+// used -- the behaviour the public entry point had before, and numerically
+// identical either way since a rule is a pure function of its key.
+double global_ll_continuous_impl(
+    double ne, const std::vector<NeEstimator::PairData>& data,
+    const NeEstimator::LogFactorial& lf, int threads,
+    const NeEstimator::ModelOptions& opts,
+    TrioQuadratureCache* maternal_scan_cache) 
+{
+    // Trio rules are rebuilt at every evaluation: their key moves with Ne.
+    TrioQuadratureCache trio_cache;
+    TrioQuadratureCache maternal_local(kMaternalScanCacheNodeBudget);
+    TrioQuadratureCache* maternal_cache = (maternal_scan_cache != nullptr) ? maternal_scan_cache : &maternal_local;
 
     if (threads <= 1 || data.size() < 64) {
         double total = 0.0;
-        for (const PairData& pd : data) {
-            total += row_ll(pd);
+        for (const NeEstimator::PairData& pd : data) {
+            total += compute_row_ll_continuous(pd, ne, lf, &trio_cache,
+                                               maternal_cache, opts);
         }
         return total;
     }
@@ -737,12 +942,11 @@ double NeEstimator::compute_global_ll_continuous(
     futures.reserve(static_cast<size_t>(threads));
     for (size_t start = 0; start < n; start += chunk) {
         const size_t end = std::min(start + chunk, n);
-        futures.emplace_back(pool.submit([&, start, end, ne]() {
+        futures.emplace_back(pool.submit([&, start, end, ne, opts]() {
             double s = 0.0;
             for (size_t i = start; i < end; ++i) {
-                s += (data[i].has_g == 1)
-                    ? compute_ll_trio_continuous_cached(data[i], ne, lf, &rule_cache)
-                    : compute_ll_single_continuous(data[i], ne, lf);
+                s += compute_row_ll_continuous(data[i], ne, lf, &trio_cache,
+                                               maternal_cache, opts);
             }
             return s;
         }));
@@ -751,53 +955,72 @@ double NeEstimator::compute_global_ll_continuous(
     for (auto& f : futures) total += f.get();
     return total;
 }
+}  // namespace
+
+double NeEstimator::compute_global_ll_continuous(
+    double ne, const std::vector<PairData>& data,
+    const LogFactorial& lf, int threads, ModelOptions opts) 
+{
+    return global_ll_continuous_impl(ne, data, lf, threads, opts, nullptr);
+}
 
 // Golden-section search to find the maximum of a unimodal function
 // on [a, b] to within tolerance `tol`.  Returns the Ne that maximizes
 // compute_global_ll_continuous.
+//
+// `maternal_cache` is the scan-lifetime Gauss-Jacobi rule cache owned by
+// estimate_continuous(); every evaluation in this refinement reuses it.
 static double golden_section_max(
     double a, double b, double tol,
     const std::vector<NeEstimator::PairData>& data,
-    const NeEstimator::LogFactorial& lf, int threads) 
+    const NeEstimator::LogFactorial& lf, int threads,
+    NeEstimator::ModelOptions opts,
+    TrioQuadratureCache* maternal_cache) 
 {
     constexpr double phi = 0.6180339887498949;  // 黄金分割点：(sqrt(5)-1)/2
     double x1 = b - phi * (b - a);
     double x2 = a + phi * (b - a);
-    double f1 = NeEstimator::compute_global_ll_continuous(x1, data, lf, threads);
-    double f2 = NeEstimator::compute_global_ll_continuous(x2, data, lf, threads);
+    double f1 = global_ll_continuous_impl(x1, data, lf, threads, opts, maternal_cache);
+    double f2 = global_ll_continuous_impl(x2, data, lf, threads, opts, maternal_cache);
     while ((b - a) > tol) {
         if (f1 < f2) {
             a  = x1;
             x1 = x2;
             f1 = f2;
             x2 = a + phi * (b - a);
-            f2 = NeEstimator::compute_global_ll_continuous(x2, data, lf, threads);
+            f2 = global_ll_continuous_impl(x2, data, lf, threads, opts, maternal_cache);
         } else {
             b  = x2;
             x2 = x1;
             f2 = f1;
             x1 = b - phi * (b - a);
-            f1 = NeEstimator::compute_global_ll_continuous(x1, data, lf, threads);
+            f1 = global_ll_continuous_impl(x1, data, lf, threads, opts, maternal_cache);
         }
     }
     return (a + b) * 0.5;
 }
 
-double NeEstimator::find_optimal_ne_continuous(
-    const std::vector<PairData>& data, 
-    const LogFactorial& lf,
-    int min_ne, int max_ne, int threads) 
+// Body of NeEstimator::find_optimal_ne_continuous(); split out for the same
+// reason as global_ll_continuous_impl, so the caller's scan-lifetime cache can
+// be threaded through both the coarse integer sweep and the golden-section
+// refinement.
+static double find_optimal_ne_continuous_impl(
+    const std::vector<NeEstimator::PairData>& data,
+    const NeEstimator::LogFactorial& lf,
+    int min_ne, int max_ne, int threads,
+    NeEstimator::ModelOptions opts,
+    TrioQuadratureCache* maternal_cache)
 {
     if (min_ne < 1) min_ne = 1;
     if (max_ne < min_ne) max_ne = min_ne;
 
     // Phase 1: coarse integer scan to bracket the peak.
     int    best_int = min_ne;
-    double best_ll  = compute_global_ll_continuous(
-        static_cast<double>(min_ne), data, lf, threads);
+    double best_ll  = global_ll_continuous_impl(
+        static_cast<double>(min_ne), data, lf, threads, opts, maternal_cache);
     for (int ne = min_ne + 1; ne <= max_ne; ++ne) {
-        const double ll = compute_global_ll_continuous(
-            static_cast<double>(ne), data, lf, threads);
+        const double ll = global_ll_continuous_impl(
+            static_cast<double>(ne), data, lf, threads, opts, maternal_cache);
         if (ll > best_ll) {
             best_ll  = ll;
             best_int = ne;
@@ -814,15 +1037,25 @@ double NeEstimator::find_optimal_ne_continuous(
     // Phase 2: golden-section refinement in [best_int - 1, best_int + 1].
     const double lo = std::max(static_cast<double>(min_ne), static_cast<double>(best_int) - 1.0);
     const double hi = std::min(static_cast<double>(max_ne), static_cast<double>(best_int) + 1.0);
-    return golden_section_max(lo, hi, 0.01, data, lf, threads);
+    return golden_section_max(lo, hi, 0.01, data, lf, threads, opts, maternal_cache);
+}
+
+double NeEstimator::find_optimal_ne_continuous(
+    const std::vector<PairData>& data, 
+    const LogFactorial& lf,
+    int min_ne, int max_ne, int threads, ModelOptions opts) 
+{
+    return find_optimal_ne_continuous_impl(data, lf, min_ne, max_ne, 
+                                           threads, opts, nullptr);
 }
 
 NeEstimator::Result NeEstimator::estimate_continuous(
     const std::vector<PairData>& data, 
-    int min_ne, int max_ne, int threads) 
+    int min_ne, int max_ne, int threads, ModelOptions opts) 
 {
     Result r;
     r.n_pairs = data.size();
+    r.maternal_marginalization = opts.marginalize_maternal;
     if (data.empty()) {
         throw std::runtime_error("[ne-estimate] No transmission pairs to fit.");
     }
@@ -832,8 +1065,20 @@ NeEstimator::Result NeEstimator::estimate_continuous(
     const int cache_size = required_cache_size(data, max_ne);
     LogFactorial lf(cache_size);
 
-    r.ne          = find_optimal_ne_continuous(data, lf, min_ne, max_ne, threads);
-    r.max_log_lik = compute_global_ll_continuous(r.ne, data, lf, threads);
+    // Scan-lifetime Gauss-Jacobi rule cache.  The maternal-marginalised rule
+    // key (k_M+1, d_M-k_M+1, order) carries no Ne, so the single cache built
+    // here serves the coarse integer sweep, the golden-section refinement, the
+    // maximum-LL re-evaluation and both profile-likelihood CI walks -- a few
+    // hundred evaluations that would otherwise each rebuild every row's rule
+    // from scratch.  Rule construction is the dominant per-row cost (97.5% at
+    // d_M=d_C=2000), so this is what keeps the marginalised likelihood, which
+    // is the default, affordable.  Bounded by kMaternalScanCacheNodeBudget;
+    // trio rows do not use it because their key moves with Ne.
+    TrioQuadratureCache maternal_cache(kMaternalScanCacheNodeBudget);
+
+    r.ne = find_optimal_ne_continuous_impl(data, lf, min_ne, max_ne, threads, opts, &maternal_cache);
+    r.max_log_lik = global_ll_continuous_impl(r.ne, data, lf, threads, opts, &maternal_cache);
+
     if (!std::isfinite(r.max_log_lik)) {
         throw std::runtime_error(
             "[ne-estimate] No finite continuous-model likelihood exists in the requested Ne range.");
@@ -844,7 +1089,7 @@ NeEstimator::Result NeEstimator::estimate_continuous(
     constexpr double coarse_step = 0.10;
 
     auto ll_at = [&](double ne) {
-        return compute_global_ll_continuous(ne, data, lf, threads);
+        return global_ll_continuous_impl(ne, data, lf, threads, opts, &maternal_cache);
     };
 
     // Coarse-to-fine profile-likelihood CI walk.
@@ -856,9 +1101,7 @@ NeEstimator::Result NeEstimator::estimate_continuous(
     // around the MLE, so the coarse grid cannot skip the crossing in
     // practice; this yields the same boundary as the legacy walk (up to
     // float grid alignment) with ~10x fewer evaluations.
-    auto walk_ci_side = [&](double start_ne, double direction, double bound,
-                            bool* clipped_out) 
-    {
+    auto walk_ci_side = [&](double start_ne, double direction, double bound, bool* clipped_out) {
         // Phase 1: coarse walk.  `cursor` stops at the first
         // below-threshold coarse point or exits the search range.
         double last_above = start_ne;
@@ -884,6 +1127,7 @@ NeEstimator::Result NeEstimator::estimate_continuous(
             if (fine == end) break;   // endpoint handled below
             fine += direction * fine_step;
         }
+        
         if (crossed) {
             // Every fine-grid point above the bracket held; the coarse
             // crossing point is the first below-threshold point.
@@ -903,14 +1147,21 @@ NeEstimator::Result NeEstimator::estimate_continuous(
 
 NeEstimator::Result NeEstimator::estimate(const std::vector<PairData>& data,
                                           int min_ne, int max_ne, int threads,
-                                          bool continuous) {
+                                          bool continuous, ModelOptions opts) {
     // For the continuous model, delegate to the real-valued optimizer.
     if (continuous) {
-        return estimate_continuous(data, min_ne, max_ne, threads);
+        return estimate_continuous(data, min_ne, max_ne, threads, opts);
     }
+    // The discrete model already integrates the maternal frequency over
+    // Beta(m_alt+1, m_dp-m_alt+1), so ModelOptions has no meaning here and is
+    // a silent no-op.  Reporting that is the CLI's job (_parse_args), because
+    // marginalize_maternal is now true by default: warning here would fire on
+    // every `--model discrete` run and describe the default configuration as
+    // if the user had misconfigured it.
 
     const auto trio_row = std::find_if(data.begin(), data.end(),
         [](const PairData& pd) { return pd.has_g == 1; });
+    
     if (trio_row != data.end()) {
         throw std::runtime_error(
             "[ne-estimate] --model discrete does not support HAS_G=1 trio rows; "
@@ -922,8 +1173,8 @@ NeEstimator::Result NeEstimator::estimate(const std::vector<PairData>& data,
     if (data.empty()) {
         throw std::runtime_error("[ne-estimate] No transmission pairs to fit.");
     }
-    if (min_ne < 1)            min_ne = 1;
-    if (max_ne < min_ne)       max_ne = min_ne;
+    if (min_ne < 1)      min_ne = 1;
+    if (max_ne < min_ne) max_ne = min_ne;
 
     const int cache_size = required_cache_size(data, max_ne);
     LogFactorial lf(cache_size);
@@ -989,24 +1240,23 @@ int NeEstimator::required_cache_size(const std::vector<PairData>& data,
 // TSV input loader
 // ---------------------------------------------------------------------
 
-namespace {
-
 // Locate column index by case-sensitive name; throws when missing.
-int col_index(const std::vector<std::string>& cols, const std::string& name) {
+static int col_index(const std::vector<std::string>& cols, const std::string& name) {
     for (size_t i = 0; i < cols.size(); ++i) {
         if (cols[i] == name) return static_cast<int>(i);
     }
     throw std::runtime_error("[ne-estimate] Required column missing in TSV: " + name);
 }
 
-}  // namespace
-
 std::vector<NeEstimator::PairData>
 NeEstimator::load_pairs(const std::string& tsv_path, double min_vaf, double max_vaf,
-                       NeEstimator::LoadStats* stats) {
+                       NeEstimator::LoadStats* stats, int min_depth) {
     if (!std::isfinite(min_vaf) || !std::isfinite(max_vaf) ||
         min_vaf < 0.0 || max_vaf > 1.0 || min_vaf > max_vaf) {
         throw std::invalid_argument("[ne-estimate] Invalid finite maternal-VAF window.");
+    }
+    if (min_depth < 0) {
+        throw std::invalid_argument("[ne-estimate] --min-depth must be >= 0 (0 disables the filter).");
     }
     std::ifstream in_file(tsv_path);
     if (!in_file.is_open()) {
@@ -1090,6 +1340,21 @@ NeEstimator::load_pairs(const std::string& tsv_path, double min_vaf, double max_
             if (pd.m_ad_alt < 0 || pd.m_ad_alt > pd.m_dp) continue;
             if (pd.c_ad_alt < 0 || pd.c_ad_alt > pd.c_dp) continue;
 
+            // Optional minimum-coverage gate, applied to BOTH sides.  A shallow
+            // mother makes p_hat_M unreliable (the plug-in bias scales as
+            // 1/d_M) and a shallow child makes k_C nearly uninformative about
+            // the bottleneck.  This is a QC lever that complements, rather than
+            // replaces, the default maternal marginalisation: it removes the
+            // shallow rows instead of modelling them, so it also shrinks the
+            // sample and moves the estimand with the retained depth
+            // composition.  Under the default its remaining job is to gate out
+            // the d_M ~ 30 regime where the Beta(1,1) prior mismatch is still
+            // ~+14%.
+            if (min_depth > 0 && (pd.m_dp < min_depth || pd.c_dp < min_depth)) {
+                if (stats) ++stats->min_depth_skipped;
+                continue;
+            }
+
             // MOTHER_VAF remains a required provenance column in the TSV
             // schema, but AD/DP is the canonical value used everywhere in
             // the estimator. Filtering on it prevents stale or non-finite
@@ -1166,11 +1431,15 @@ NeEstimator::load_pairs(const std::string& tsv_path, double min_vaf, double max_
 // The Wonnapinij 2010 sampling-error correction subtracts that noise:
 //
 //     d_i  =  (p_c_i - p_m_i)^2
-//     s_i  =  p_m_i (1 - p_m_i) / m_dp_i  +  p_c_i (1 - p_c_i) / c_dp_i
-//                       ^ mother variance is        ^ child variance is
-//                         divided by the mother       divided by the child
-//                         depth (where p_m was        depth (where p_c was
-//                         actually sampled)           actually sampled)
+//     s_i  =  p_m_i (1 - p_m_i) / (m_dp_i - 1)  +  p_c_i (1 - p_c_i) / (c_dp_i - 1)
+//                       ^ mother sampling           ^ child sampling
+//                         variance, unbiasedly         variance, unbiasedly
+//                         estimated: since             estimated: since
+//                         E[p_hat(1-p_hat)] =          E[p_hat(1-p_hat)] =
+//                         p(1-p)(d-1)/d, dividing      p(1-p)(d-1)/d, dividing
+//                         by (d-1) is unbiased for     by (d-1) is unbiased for
+//                         p(1-p)/d = Var(p_hat).       p(1-p)/d = Var(p_hat).
+//                         Depth-1 rows are excluded    (variance not identifiable).
 //     V    =  Sigma_i (d_i - s_i)  /  Sigma_i p_m_i (1 - p_m_i)
 //     b    =  1 - V
 //     Ne_kimura  =  1 / (1 - b)               (single generation, g = 1)
@@ -1189,7 +1458,6 @@ NeEstimator::load_pairs(const std::string& tsv_path, double min_vaf, double max_
 //
 // A single-pair contribution helper, factored out so the bootstrap loop
 // can reuse it cheaply.
-namespace {
 
 struct PairContribution {
     size_t idx;  // 0-based index back into the original PairData vector
@@ -1223,10 +1491,8 @@ prepare_pair_contributions(const std::vector<NeEstimator::PairData>& data) {
         if (c.w <= 0.0) { out.push_back(c); continue; }   // mother homoplasmic
 
         const double d = (c.pc - c.pm) * (c.pc - c.pm);
-        const double s = c.pm * (1.0 - c.pm)
-                           / static_cast<double>(pd.m_dp - 1)
-                       + c.pc * (1.0 - c.pc)
-                           / static_cast<double>(pd.c_dp - 1);
+        const double s = c.pm * (1.0 - c.pm) / static_cast<double>(pd.m_dp - 1)
+                       + c.pc * (1.0 - c.pc) / static_cast<double>(pd.c_dp - 1);
         c.r = d - s;
         c.informative = true;
         out.push_back(c);
@@ -1239,11 +1505,16 @@ prepare_pair_contributions(const std::vector<NeEstimator::PairData>& data) {
 double b_from_aggregates(double num, double den) {
     constexpr double kEps = 1e-9;
     if (!(den > 0.0)) return std::numeric_limits<double>::quiet_NaN();
+
     double V = num / den;
-    if (V < 0.0)              V = 0.0;       // sampling noise dominates
+    if (V < 0.0) V = 0.0;       // sampling noise dominates
+    
     double b = 1.0 - V;
-    if (b < kEps)             b = kEps;
-    else if (b > 1.0 - kEps)  b = 1.0 - kEps;
+    if (b < kEps) {
+        b = kEps;
+    } else if (b > 1.0 - kEps) {
+        b = 1.0 - kEps;
+    }
     return b;
 }
 
@@ -1254,15 +1525,15 @@ double quantile(const std::vector<double>& xs, double q) {
     if (xs.empty()) return std::numeric_limits<double>::quiet_NaN();
     if (q <= 0.0)   return xs.front();
     if (q >= 1.0)   return xs.back();
+    
     const double pos = q * static_cast<double>(xs.size() - 1);
     const size_t lo  = static_cast<size_t>(std::floor(pos));
     const size_t hi  = static_cast<size_t>(std::ceil(pos));
-    if (lo == hi)   return xs[lo];
-    const double w   = pos - static_cast<double>(lo);
+    
+    if (lo == hi) return xs[lo];
+    const double w = pos - static_cast<double>(lo);
     return xs[lo] * (1.0 - w) + xs[hi] * w;
 }
-
-}  // namespace
 
 NeEstimator::KimuraCheck
 NeEstimator::compute_kimura_check(const std::vector<PairData>& data,
@@ -1298,9 +1569,13 @@ NeEstimator::compute_kimura_check(const std::vector<PairData>& data,
         // pure sampling noise (i.e. very small drift). Report b ~~ 1.
         out.note = "variance after sampling correction <= 0; b clipped to ~1 (Ne -> infinity)";
     }
+
     double b = b_from_aggregates(num, den);
-    if (b == kEps && out.note.empty())              out.note = "b clipped to lower bound";
-    else if (b == 1.0 - kEps && out.note.empty())   out.note = "b clipped to upper bound";
+    if (b == kEps && out.note.empty()) { 
+        out.note = "b clipped to lower bound"; 
+    } else if (b == 1.0 - kEps && out.note.empty()) { 
+        out.note = "b clipped to upper bound"; 
+    }
 
     out.b         = b;
     out.ne_kimura = 1.0 / (1.0 - b);
@@ -1376,8 +1651,7 @@ NeEstimator::compute_kimura_check(const std::vector<PairData>& data,
                   [](const PairContribution& a, const PairContribution& b) {
                       return (a.r / a.w) > (b.r / b.w);
                   });
-        const size_t n_drop = static_cast<size_t>(
-            std::floor(trim_frac * static_cast<double>(info.size())));
+        const size_t n_drop = static_cast<size_t>(std::floor(trim_frac * static_cast<double>(info.size())));
         const size_t n_keep = (n_drop >= info.size()) ? 0 : info.size() - n_drop;
 
         double tnum = 0.0, tden = 0.0;
@@ -1552,7 +1826,8 @@ std::vector<NeEstimator::NeProfileRow>
 NeEstimator::compute_ne_profile(const std::vector<PairData>& data,
                                 const LogFactorial& lf,
                                 double min_ne, double max_ne, double step,
-                                int threads, bool continuous) {
+                                int threads, bool continuous,
+                                ModelOptions opts) {
     if (!std::isfinite(min_ne) || !std::isfinite(max_ne) || !std::isfinite(step)) {
         throw std::invalid_argument("[ne-estimate] Ne-profile bounds and step must be finite.");
     }
@@ -1584,15 +1859,20 @@ NeEstimator::compute_ne_profile(const std::vector<PairData>& data,
     double max_ll  = -std::numeric_limits<double>::infinity();
     double min_ssr =  std::numeric_limits<double>::infinity();
 
+    // The profile is itself a scan over Ne (up to (max_ne - min_ne) / step
+    // evaluations, thousands at the default step of 0.1), so it gets the same
+    // scan-lifetime maternal rule cache the optimizer uses.  Captured by
+    // reference into append_profile_row below.
+    TrioQuadratureCache profile_maternal_cache(kMaternalScanCacheNodeBudget);
+
     auto append_profile_row = [&](double ne, int discrete_ne) {
         NeProfileRow row;
         row.ne_candidate = ne;
 
         if (continuous) {
-            row.mmle_log_lik = compute_global_ll_continuous(ne, data, lf, threads);
+            row.mmle_log_lik = global_ll_continuous_impl(ne, data, lf, threads, opts, &profile_maternal_cache);
         } else {
-            row.mmle_log_lik = compute_global_ll_parallel(
-                discrete_ne, data, lf, threads, false);
+            row.mmle_log_lik = compute_global_ll_parallel(discrete_ne, data, lf, threads, false);
         }
         if (row.mmle_log_lik > max_ll) max_ll = row.mmle_log_lik;
 
@@ -1702,7 +1982,7 @@ NeEstimator::group_into_families(const std::vector<PairData>& data) {
 NeEstimator::FamilyResult
 NeEstimator::estimate_family(const FamilyData& fam,
                               int min_ne, int max_ne,
-                              int min_family_sites) {
+                              int min_family_sites, ModelOptions opts) {
     FamilyResult fr;
     fr.fam_id    = fam.fam_id;
     fr.mother_id = fam.mother_id;
@@ -1710,8 +1990,14 @@ NeEstimator::estimate_family(const FamilyData& fam,
     fr.n_pairs   = fam.pairs.size();
 
     // Count informative sites (mother heteroplasmic: 0 < p_M < 1).
+    // Note this count is a property of the plug-in view of the data: under the
+    // default marginalisation a homoplasmic mother (k_M = 0 or k_M = d_M)
+    // still leaves a proper Beta posterior over p_M and does carry information,
+    // so min_family_sites stays a deliberately conservative gate either way.
     size_t n_info = 0;
     double sum_m_dp = 0.0, sum_c_dp = 0.0;
+    double sum_inv_m_dp = 0.0, sum_inv_c_dp = 0.0;
+    size_t n_depth = 0;
     for (const auto& pd : fam.pairs) {
         if (pd.m_dp <= 0) continue;
         const double pm = static_cast<double>(pd.m_ad_alt)
@@ -1719,10 +2005,17 @@ NeEstimator::estimate_family(const FamilyData& fam,
         if (pm > 0.0 && pm < 1.0) ++n_info;
         sum_m_dp += pd.m_dp;
         sum_c_dp += pd.c_dp;
+        sum_inv_m_dp += 1.0 / static_cast<double>(pd.m_dp);
+        if (pd.c_dp > 0) sum_inv_c_dp += 1.0 / static_cast<double>(pd.c_dp);
+        ++n_depth;
     }
     fr.n_informative = n_info;
     fr.mean_mother_dp = fam.pairs.empty() ? 0.0 : sum_m_dp / fam.pairs.size();
     fr.mean_child_dp  = fam.pairs.empty() ? 0.0 : sum_c_dp / fam.pairs.size();
+    fr.harmonic_mother_dp = (n_depth == 0 || !(sum_inv_m_dp > 0.0))
+                          ? 0.0 : static_cast<double>(n_depth) / sum_inv_m_dp;
+    fr.harmonic_child_dp  = (n_depth == 0 || !(sum_inv_c_dp > 0.0))
+                          ? 0.0 : static_cast<double>(n_depth) / sum_inv_c_dp;
 
     if (static_cast<int>(n_info) < min_family_sites) {
         fr.skipped = true;
@@ -1732,7 +2025,7 @@ NeEstimator::estimate_family(const FamilyData& fam,
     }
 
     // Reuse the existing continuous MMLE estimator on this family's pairs.
-    Result est = estimate_continuous(fam.pairs, min_ne, max_ne, /*threads=*/1);
+    Result est = estimate_continuous(fam.pairs, min_ne, max_ne, /*threads=*/1, opts);
     fr.ne             = est.ne;
     fr.ci_low         = est.ci_low;
     fr.ci_high        = est.ci_high;
@@ -1756,14 +2049,14 @@ std::vector<NeEstimator::FamilyResult>
 NeEstimator::estimate_all_families(const std::vector<FamilyData>& families,
                                     int min_ne, int max_ne,
                                     int min_family_sites,
-                                    int threads) {
+                                    int threads, ModelOptions opts) {
     std::vector<FamilyResult> results(families.size());
 
     if (threads <= 1 || families.size() <= 1) {
         // Serial path.
         for (size_t i = 0; i < families.size(); ++i) {
             results[i] = estimate_family(families[i], min_ne, max_ne,
-                                          min_family_sites);
+                                          min_family_sites, opts);
         }
         return results;
     }
@@ -1773,7 +2066,7 @@ NeEstimator::estimate_all_families(const std::vector<FamilyData>& families,
     auto worker = [&](size_t start, size_t end) {
         for (size_t i = start; i < end; ++i) {
             results[i] = estimate_family(families[i], min_ne, max_ne,
-                                          min_family_sites);
+                                          min_family_sites, opts);
         }
     };
 
@@ -1901,7 +2194,7 @@ void NeEstimator::_write_family_tsv(
             << fr.n_informative << "\t";
         if (fr.skipped) {
             out << "NA\tNA\tNA\tNA\tNA\tNA\t"
-                << std::setprecision(2) << fr.mean_mother_dp << "\t"
+                << std::setprecision(8) << fr.mean_mother_dp << "\t"
                 << fr.mean_child_dp;
         } else {
             out << std::setprecision(4)
@@ -1911,7 +2204,7 @@ void NeEstimator::_write_family_tsv(
                 << (fr.ci_low_clipped  ? "TRUE" : "FALSE") << "\t"
                 << (fr.ci_high_clipped ? "TRUE" : "FALSE") << "\t"
                 << std::setprecision(8) << fr.max_log_lik << "\t"
-                << std::setprecision(2) << fr.mean_mother_dp << "\t"
+                << std::setprecision(8) << fr.mean_mother_dp << "\t"
                 << fr.mean_child_dp;
         }
         if (any_kimura) {
@@ -1961,15 +2254,15 @@ NeEstimator::NeEstimator(Config config) : _config(std::move(config)) {
         !std::isfinite(_config.ne_profile_step)) {
         throw std::invalid_argument("[ne-estimate] Floating-point options must be finite.");
     }
-    if (_config.min_ne < 1)       _config.min_ne = 1;
-    if (_config.max_ne < _config.min_ne) _config.max_ne = _config.min_ne;
-    if (_config.threads < 1)      _config.threads = 1;
-    if (_config.kimura_bootstrap < 0) _config.kimura_bootstrap = 0;
+    if (_config.min_ne < 1)                                      _config.min_ne = 1;
+    if (_config.max_ne < _config.min_ne)                         _config.max_ne = _config.min_ne;
+    if (_config.threads < 1)                                     _config.threads = 1;
+    if (_config.kimura_bootstrap < 0)                            _config.kimura_bootstrap = 0;
     if (_config.kimura_trim < 0.0 || _config.kimura_trim >= 1.0) _config.kimura_trim = 0.0;
-    if (_config.top_drift_k < 0)  _config.top_drift_k = 0;
-    if (_config.bin_simulation_n_bins < 1) _config.bin_simulation_n_bins = 1;
-    if (_config.ne_profile_step <= 0.0)    _config.ne_profile_step = 0.1;
-    if (_config.model.empty())    _config.model = "continuous";
+    if (_config.top_drift_k < 0)                                 _config.top_drift_k = 0;
+    if (_config.bin_simulation_n_bins < 1)                       _config.bin_simulation_n_bins = 1;
+    if (_config.ne_profile_step <= 0.0)                          _config.ne_profile_step = 0.1;
+    if (_config.model.empty())                                   _config.model = "continuous";
     if (_config.model != "continuous" && _config.model != "discrete") {
         throw std::invalid_argument("[ne-estimate] model must be continuous or discrete.");
     }
@@ -1978,6 +2271,10 @@ NeEstimator::NeEstimator(Config config) : _config(std::move(config)) {
             "[ne-estimate] per-family estimation currently requires model=continuous.");
     }
     if (_config.min_family_sites < 1) _config.min_family_sites = 1;
+    if (_config.min_depth < 0) {
+        throw std::invalid_argument(
+            "[ne-estimate] min_depth must be >= 0 (0 disables the filter).");
+    }
     // kimura_check defaults to false; callers may flip it explicitly.
 }
 
@@ -1985,12 +2282,19 @@ void NeEstimator::usage() {
     std::cerr << "Usage: mitoquest ne-estimate [options] -i <pairs.tsv>\n\n"
                  "Description:\n"
                  "  Estimate the mitochondrial DNA bottleneck size (Ne) from mother-child\n"
-                 "  transmission pairs using the Maximum Marginal Likelihood Estimator\n"
-                 "  (MMLE).  The latent mother / child true allele frequencies are\n"
-                 "  analytically integrated out (Beta-Binomial conjugacy), and\n"
-                 "  pairs are treated as independent (composite likelihood),\n"
-                 "  yielding a per-pair marginal log-likelihood that is maximised\n"
+                 "  transmission pairs using the Maximum Marginal Likelihood Estimator (MMLE).\n"
+                 "  The child's latent true allele frequency is analytically integrated out\n"
+                 "  (Beta-Binomial conjugacy) and pairs are treated as independent (composite\n"
+                 "  likelihood), yielding a per-pair marginal log-likelihood that is maximised\n"
                  "  jointly over Ne.\n"
+                 "\n"
+                 "  The maternal frequency p_m is integrated out against its Beta\n"
+                 "  read-sampling posterior BY DEFAULT under the continuous model.\n"
+                 "  --no-maternal-marginalization falls back to the legacy plug-in\n"
+                 "  point estimate p_m = m_alt / m_dp, which folds the mother's own\n"
+                 "  read noise into drift and makes the fitted Ne depth-dependent\n"
+                 "  (see Notes).  The legacy --model discrete path always integrates\n"
+                 "  a maternal Beta posterior.\n"
                  "\n"
                  "  Default model (continuous / Beta-diffusion):\n"
                  "    p_child | p_mother  ~  Beta(p_m*(Ne-1), (1-p_m)*(Ne-1))\n"
@@ -2004,7 +2308,7 @@ void NeEstimator::usage() {
                  "  This restricts child heteroplasmy to the grid {0, 1/Ne, ..., 1}\n"
                  "  and can suffer from upward bias at high sequencing depth.\n"
                  "\n"
-                 "  Reports the MMLE point estimate of Ne and its 95%% profile-likelihood\n"
+                 "  Reports the MMLE point estimate of Ne and its 95% profile-likelihood\n"
                  "  confidence interval (LL_max - 1.92).\n"
                  "\nRequired options:\n"
                  "  -i, --input     FILE   Input transmission pairs TSV produced by\n"
@@ -2013,8 +2317,26 @@ void NeEstimator::usage() {
                  "  -o, --output    FILE   JSON output file (default: stdout).\n"
                  "      --model     NAME   Marginal-likelihood model: `continuous` (default,\n"
                  "                         recommended for mtDNA) or `discrete`.\n"
+                 "      --no-maternal-marginalization\n"
+                 "                         Fall back to the legacy plug-in p_m = m_alt /\n"
+                 "                         m_dp for the continuous model's two-generation\n"
+                 "                         rows.  By default p_m is integrated out against\n"
+                 "                         its Beta(m_alt+1, m_ref+1) read-sampling\n"
+                 "                         posterior by adaptive Gauss-Jacobi quadrature;\n"
+                 "                         the plug-in is faster but biased low by\n"
+                 "                         ~d_M/(Ne+d_M) and is not comparable across\n"
+                 "                         coverage, so it is available only by explicit\n"
+                 "                         request.  Continuous model only: --model discrete\n"
+                 "                         always integrates p_m and cannot honour this flag\n"
+                 "                         (warned on stderr); trio rows also already\n"
+                 "                         integrate p_m given the grandmother, so it is a\n"
+                 "                         no-op for them.\n"
                  "      --min-vaf   FLOAT  Lower maternal VAF gate, inclusive [0.10].\n"
                  "      --max-vaf   FLOAT  Upper maternal VAF gate, inclusive [0.90].\n"
+                 "      --min-depth INT    Drop pairs whose MOTHER or CHILD depth is below\n"
+                 "                         this value (both sides are gated: a shallow child\n"
+                 "                         makes k_C uninformative just as a shallow mother\n"
+                 "                         makes p_m unreliable).  0 disables [0].\n"
                  "      --min-ne    INT    Smallest Ne value to consider [1].\n"
                  "      --max-ne    INT    Largest Ne value to consider  [100].\n"
                  "  -t, --threads   INT    Worker threads for the inner sum [1].\n"
@@ -2022,8 +2344,8 @@ void NeEstimator::usage() {
                  "                           MMLE. Supported value: `kimura`, which\n"
                  "                           computes the Wonnapinij b and the implied\n"
                  "                           Ne (single-generation approximation).\n"
-                "      --kimura-bootstrap  INT  Non-parametric bootstrap iterations for the\n"
-                 "                              Kimura cross-check 95%% CI.  0 disables [1000].\n"
+                 "      --kimura-bootstrap  INT  Non-parametric bootstrap iterations for the\n"
+                 "                              Kimura cross-check 95% CI.  0 disables [1000].\n"
                  "      --kimura-seed      INT  RNG seed for the Kimura bootstrap [42].\n"
                  "      --kimura-trim    FLOAT  Fraction of highest-drift pairs to drop before\n"
                  "                              recomputing the Kimura b (robust trimmed mean,\n"
@@ -2034,7 +2356,7 @@ void NeEstimator::usage() {
                  "      --bin-simulation FILE   Emit a per-bin drift summary TSV: per\n"
                  "                              maternal-VAF bin observed mean drift vs\n"
                  "                              analytical Kimura prediction p_m(1 - p_m) / Ne\n"
-                 "                              under the fitted Ne (and its 95%% CI).  Bin\n"
+                 "                              under the fitted Ne (and its 95% CI).  Bin\n"
                  "                              range = [--min-vaf, --max-vaf].\n"
                  "      --bin-simulation-bins INT  Number of equal-width maternal-VAF bins\n"
                  "                                 for --bin-simulation [10].\n"
@@ -2060,14 +2382,67 @@ void NeEstimator::usage() {
                  "    about Ne, hence the default 0.10 - 0.90 window.\n"
                  "  * Confidence-interval bounds are flagged with `_clipped = true` in the\n"
                  "    JSON output when they hit the search boundary.\n"
+                 "  * The plug-in maternal VAF (--no-maternal-marginalization) makes the\n"
+                 "    fitted value a pseudo-true Ne_app obeying 1/Ne_app = 1/Ne + 1/d_M at a\n"
+                 "    SINGLE maternal depth d_M, so plug-in estimates from cohorts sequenced\n"
+                 "    at different coverage are not directly comparable.  That identity is not\n"
+                 "    invertible on a mixed-depth cohort: no arithmetic, harmonic or\n"
+                 "    depth-weighted summary of the reported Mean_Mother_DP /\n"
+                 "    Harmonic_Mother_DP reproduces the plug-in fit, so those fields are\n"
+                 "    descriptive only.  The default marginalisation removes the bias instead\n"
+                 "    of trying to back-correct the reported Ne.\n"
+                 "  * Cross-depth comparability of the default, measured at true Ne=30 with\n"
+                 "    d_M swept over 30..5000 (240 pairs, d_C=2000, 20 replicate cohorts per\n"
+                 "    depth): the plug-in fit moves over [16.5, 30.3], a spread of 46% of the\n"
+                 "    true Ne, while the marginalised fit moves over [29.4, 34.2], 16% -- 2.9x\n"
+                 "    tighter.  Over d_M in [60, 5000] alone the marginalised fit spans\n"
+                 "    [29.4, 30.7], i.e. 4.5%, so at d_M >= 60 the reported Ne really is\n"
+                 "    comparable across coverage.\n"
+                 "  * Per-family fits need SITES, not depth.  At true Ne=30 with d_C=2000,\n"
+                 "    d_M=200 and 8 replicates of nested truths (every site count shares one\n"
+                 "    bottleneck realisation), growing a family from 12 to 48 to 192\n"
+                 "    segregating sites takes the marginalised median bias +11.2% -> +2.9% ->\n"
+                 "    +1.5% and the share of families pinned at --max-ne 9% -> 0% -> 0%,\n"
+                 "    converging on the cohort-level +1.7..2.4%.  Over the same sweep the\n"
+                 "    plug-in moves -4.7% -> -10.6% -> -11.3%, i.e. towards its own\n"
+                 "    pseudo-true -13.0% at d_M=200: its apparent accuracy on 12 sites is a\n"
+                 "    small-sample MLE right-skew cancelling the depth bias, and the\n"
+                 "    cancellation breaks as soon as either factor changes.  Across depth the\n"
+                 "    marginalised per-family median is the comparable quantity -- +1.5% at\n"
+                 "    d_M=200 against +1.1% at d_M=2000 on 192 sites, 0.4 points apart,\n"
+                 "    where the plug-in is 11.0 points apart.\n"
+                 "  * Maternal marginalisation does not repair a mis-specified bottleneck.\n"
+                 "    If the true bottleneck draws an integer number of genomes, the\n"
+                 "    continuous Beta-diffusion transition is the wrong model form and both\n"
+                 "    the plug-in and the marginalised fit stay biased; use --model discrete\n"
+                 "    in that regime.  It also assumes a Beta(1,1) prior on the maternal true\n"
+                 "    frequency (matching --model discrete).  When the cohort's true maternal\n"
+                 "    frequencies are truncated away from 0 and 1 that prior is over-dispersed\n"
+                 "    and the fitted Ne comes out HIGH, by an amount that decays with maternal\n"
+                 "    depth: measured +14% at d_M=30, <= +5% for d_M >= 60 and <= 2.5% (about\n"
+                 "    one standard error) for d_M >= 500.  It is not exactly unbiased, so\n"
+                 "    prefer --min-depth over interpreting very shallow maternal rows at face\n"
+                 "    value.\n"
+                 "  * The VAF window is not the source of that residual.  Whether a row passes\n"
+                 "    k_M/d_M in [--min-vaf, --max-vaf] depends on p_m and the prior but not\n"
+                 "    on Ne, so the window contributes an Ne-independent factor to the\n"
+                 "    likelihood and cannot shift the MLE.  Confirmed with p_m drawn right at\n"
+                 "    the window edge (U[0.10,0.30], only 90% of rows passing at d_M=30):\n"
+                 "    +13.0% bias with the default window against +11.6% with --min-vaf 0\n"
+                 "    --max-vaf 1, a difference inside the standard error at every depth.\n"
+                 "  * The pair log-likelihoods are summed as a composite likelihood: pairs are\n"
+                 "    treated as independent even when several come from the same mother.  The\n"
+                 "    95% profile-likelihood interval therefore applies the chi2_1 threshold\n"
+                 "    1.92 without a sandwich correction and can be too narrow for cohorts\n"
+                 "    with many siblings per mother; use --per-family for family-resolved\n"
+                 "    inference.\n"
                  "  * The Kimura cross-check is approximate; the default continuous MMLE uses\n"
                  "    a plug-in maternal VAF and a Beta-Binomial child-count working likelihood\n"
                  "    and is the reported primary estimate. On real data the two can diverge\n"
                  "    when many concordant heteroplasmic pairs co-exist with a few high-\n"
                  "    drift outliers (errors / NUMTs / mixed populations).  Use\n"
-                 "    --kimura-trim 0.10 (drops the top 10%% of high-drift pairs) and/or\n"
-                 "    --top-drift-k 20 (lists the worst pairs) to diagnose this -- see\n"
-                 "    release notes for v1.8.2.\n\n"
+                 "    --kimura-trim 0.10 (drops the top 10% of high-drift pairs) and/or\n"
+                 "    --top-drift-k 20 (lists the worst pairs) to diagnose this.\n\n"
               << "Version: " << MITOQUEST_VERSION << "\n"
               << std::endl;
 }
@@ -2093,6 +2468,18 @@ void NeEstimator::_parse_args(int argc, char* argv[]) {
     _config.per_family            = false;
     _config.min_family_sites      = 3;
     _config.per_family_output_file.clear();
+    _config.maternal_marginalization = true;
+    _config.min_depth           = 0;
+
+    // Set only by --no-maternal-marginalization, the one maternal switch that
+    // is left now that marginalisation is the default.  It exists so that
+    // `--model discrete` can be told the truth: that model always integrates
+    // p_m and therefore cannot honour an opt-out, so without this the tool
+    // would silently return a marginalised fit to a user who explicitly asked
+    // for the plug-in.  The other direction needs no tracking -- a continuous
+    // run marginalises whether or not anyone asked, and a discrete run gets
+    // the equivalent treatment regardless.
+    bool plug_in_requested = false;
 
     _cmdline_string = "#mitoquest_ne_estimate_command=";
     for (int i = 0; i < argc; ++i) {
@@ -2119,6 +2506,8 @@ void NeEstimator::_parse_args(int argc, char* argv[]) {
         {"per-family",           no_argument,       0, 15 },
         {"min-family-sites",     required_argument, 0, 16 },
         {"per-family-output",    required_argument, 0, 17 },
+        {"no-maternal-marginalization", no_argument, 0, 20 },
+        {"min-depth",            required_argument, 0, 19 },
         {"threads",          required_argument, 0, 't'},
         {"help",             no_argument,       0, 'h'},
         {0, 0, 0, 0}
@@ -2170,7 +2559,10 @@ void NeEstimator::_parse_args(int argc, char* argv[]) {
             case 15 : _config.per_family            = true;              break;
             case 16 : _config.min_family_sites      = std::stoi(optarg); break;
             case 17 : _config.per_family_output_file = optarg;           break;
-            case 't': _config.threads     = std::stoi(optarg);           break;
+            case 19 : _config.min_depth = std::stoi(optarg);             break;
+            case 20 : _config.maternal_marginalization = false;
+                      plug_in_requested = true;                          break;
+            case 't': _config.threads   = std::stoi(optarg);             break;
             case 'h': usage(); std::exit(EXIT_SUCCESS);
             case '?':
             default:  usage(); std::exit(EXIT_FAILURE);
@@ -2209,6 +2601,20 @@ void NeEstimator::_parse_args(int argc, char* argv[]) {
     if (_config.per_family && _config.model != "continuous") {
         throw std::runtime_error(
             "[ne-estimate] --per-family currently requires --model continuous.");
+    }
+    if (_config.min_depth < 0) {
+        throw std::runtime_error(
+            "[ne-estimate] --min-depth must be >= 0 (0 disables the filter).");
+    }
+    // The discrete model already integrates the maternal Beta posterior, so it
+    // cannot honour an opt-out.  Report that rather than quietly handing back a
+    // marginalised fit to someone who asked for the plug-in by name.  Verified
+    // on 5 pairs: discrete yields the same Ne=21 and logL=-41.8442 with and
+    // without the flag, i.e. the request really is dropped on the floor.
+    if (plug_in_requested && _config.model == "discrete") {
+        std::cerr << "[ne-estimate] WARNING: --no-maternal-marginalization has no effect "
+                     "with --model discrete (that model always integrates the maternal "
+                     "frequency over its Beta posterior); the plug-in was NOT selected.\n";
     }
 }
 
@@ -2250,6 +2656,62 @@ void emit_json_number(std::ostream& out, double value) {
     }
 }
 
+// Per-family Ne summary statistics.
+//
+// The median and the clipped count are first-class results here, not
+// decoration.  A family whose marginal likelihood has no interior maximum gets
+// pinned at --max-ne, and under the default maternal marginalisation that is
+// common at shallow maternal depth: measured on 20 families x 12 sites at true
+// Ne=30 with d_C=2000, 72% of families pin at the boundary when d_M=30 (42% at
+// d_M=60, 26% at d_M=100, 10% at d_M=200, <=4% for d_M>=500), against 0% for
+// the plug-in at those depths, because marginalising p_M removes the
+// read-noise term that the plug-in misreads as drift and so pushes the
+// likelihood towards LARGER Ne.  On such a cohort the mean quotes the search
+// boundary back to the user as if it were an estimate -- mean 64.9 against
+// median 41.4 for a truth of 30.  The mean only becomes the right summary once
+// the clip rate is low.
+//
+// The pinning is a FEW-SITES failure more than a depth failure.  Holding
+// d_M=200 and d_C=2000 fixed and growing the sites per family (8 replicates of
+// nested truths, so every site count shares one bottleneck realisation) the
+// clip rate runs 9% -> 0% -> 0% and the median bias +11.2% -> +2.9% -> +1.5%
+// for 12 -> 48 -> 192 sites, converging on the cohort-level +1.7..2.4%.  The
+// lever for a family-level study is therefore more segregating sites per
+// family, not more maternal depth once d_M >= 200.
+//
+// Note the clipped families are still counted in both statistics: excluding
+// them would silently drop exactly the families the depth made unestimable,
+// which is the opposite of what a comparability diagnostic should do.
+struct FamilyNeSummary {
+    size_t n_estimated = 0;
+    size_t n_skipped   = 0;
+    size_t n_clipped   = 0;
+    double mean_ne     = 0.0;
+    double median_ne   = 0.0;
+};
+
+FamilyNeSummary summarize_family_ne(const std::vector<NeEstimator::FamilyResult>& families) {
+    FamilyNeSummary summary;
+    std::vector<double> ne;
+    ne.reserve(families.size());
+
+    for (const auto& fr : families) {
+        if (fr.skipped) { ++summary.n_skipped; continue; }
+        ++summary.n_estimated;
+        if (fr.ci_low_clipped || fr.ci_high_clipped) ++summary.n_clipped;
+        ne.push_back(fr.ne);
+    }
+
+    if (!ne.empty()) {
+        summary.mean_ne = std::accumulate(ne.begin(), ne.end(), 0.0) / static_cast<double>(ne.size());
+        std::sort(ne.begin(), ne.end());
+        const size_t mid = ne.size() / 2;
+        summary.median_ne = (ne.size() % 2 == 1) ? ne[mid] : 0.5 * (ne[mid - 1] + ne[mid]);
+    }
+
+    return summary;
+}
+
 }  // namespace
 
 void NeEstimator::_write_json(const Result& r, std::ostream& out) const {
@@ -2276,13 +2738,25 @@ void NeEstimator::_write_json(const Result& r, std::ostream& out) const {
         << "  \"Pairs_Used\":      " << r.n_pairs << ",\n"
         << "  \"Trio_Founder_Mismatch_Skipped\": " << r.load_stats.trio_founder_mismatch_skipped << ",\n"
         << "  \"Trio_Founder_Hom_Skipped\":      " << r.load_stats.trio_founder_hom_skipped << ",\n"
+        << "  \"Min_Depth_Skipped\":             " << r.load_stats.min_depth_skipped << ",\n"
         << "  \"Estimator\":       \"MMLE (composite marginal likelihood)\",\n"
         << "  \"Max_Marginal_LogLik\": " << std::setprecision(8) << r.max_log_lik << ",\n"
         << "  \"Model\":           \"" << json_escape(_config.model) << "\",\n"
         << "  \"Min_VAF\":         " << _config.min_vaf << ",\n"
         << "  \"Max_VAF\":         " << _config.max_vaf << ",\n"
         << "  \"Search_Min_Ne\":   " << _config.min_ne  << ",\n"
-        << "  \"Search_Max_Ne\":   " << _config.max_ne;
+        << "  \"Search_Max_Ne\":   " << _config.max_ne  << ",\n"
+        << "  \"Min_Depth\":       " << r.min_depth     << ",\n"
+        << "  \"Maternal_Marginalization\": "
+        << (r.maternal_marginalization ? "true" : "false") << ",\n"
+        // Depth descriptors, descriptive only -- see Result::mean_mother_dp in
+        // ne_estimate.h for why no aggregate of these is a plug-in
+        // back-correction handle.  Ambient precision is already 8 (set by
+        // Max_Marginal_LogLik above) and the format is defaultfloat.
+        << "  \"Mean_Mother_DP\":     " << std::setprecision(8) << r.mean_mother_dp     << ",\n"
+        << "  \"Mean_Child_DP\":      " << r.mean_child_dp      << ",\n"
+        << "  \"Harmonic_Mother_DP\": " << r.harmonic_mother_dp << ",\n"
+        << "  \"Harmonic_Child_DP\":  " << r.harmonic_child_dp;
 
     if (r.kimura.computed) {
         out << ",\n"
@@ -2341,14 +2815,13 @@ void NeEstimator::_write_json(const Result& r, std::ostream& out) const {
 
     // Per-family estimates (when --per-family is set).
     if (!r.family_results.empty()) {
+        const FamilyNeSummary fam_summary = summarize_family_ne(r.family_results);
         out << ",\n  \"Per_Family_Estimates\": [\n";
         bool first_fam = true;
-        size_t n_estimated = 0, n_skipped = 0;
         for (const auto& fr : r.family_results) {
-            if (fr.skipped) { ++n_skipped; continue; }
+            if (fr.skipped) continue;
             if (!first_fam) out << ",\n";
             first_fam = false;
-            ++n_estimated;
             out << "    {\n"
                 << "      \"FAM_ID\":            \"" << json_escape(fr.fam_id) << "\",\n"
                 << "      \"Mother_ID\":         \"" << json_escape(fr.mother_id) << "\",\n"
@@ -2362,8 +2835,13 @@ void NeEstimator::_write_json(const Result& r, std::ostream& out) const {
                 << "      \"CI_Low_Clipped\":    " << (fr.ci_low_clipped ? "true" : "false") << ",\n"
                 << "      \"CI_High_Clipped\":   " << (fr.ci_high_clipped ? "true" : "false") << ",\n"
                 << "      \"Max_Marginal_LogLik\": " << std::setprecision(8) << fr.max_log_lik << ",\n"
-                << "      \"Mean_Mother_DP\":    " << std::setprecision(2) << fr.mean_mother_dp << ",\n"
-                << "      \"Mean_Child_DP\":     " << fr.mean_child_dp;
+                // Depth descriptors at 8 significant digits under defaultfloat, matching
+                // the top-level Mean_/Harmonic_ DP contract. This was setprecision(2),
+                // which rendered e.g. 674.75 as 6.7e+02 and silently dropped precision.
+                << "      \"Mean_Mother_DP\":    " << std::setprecision(8) << fr.mean_mother_dp << ",\n"
+                << "      \"Mean_Child_DP\":     " << fr.mean_child_dp << ",\n"
+                << "      \"Harmonic_Mother_DP\": " << fr.harmonic_mother_dp << ",\n"
+                << "      \"Harmonic_Child_DP\":  " << fr.harmonic_child_dp;
             if (fr.kimura.computed) {
                 out << ",\n      \"Kimura_Cross_Check\": {\n"
                     << "        \"b\":             " << std::setprecision(8) << fr.kimura.b << ",\n"
@@ -2394,9 +2872,23 @@ void NeEstimator::_write_json(const Result& r, std::ostream& out) const {
         }
         out << "\n  ],\n"
             << "  \"Per_Family_Summary\": {\n"
-            << "    \"N_Families_Estimated\": " << n_estimated << ",\n"
-            << "    \"N_Families_Skipped\":   " << n_skipped << "\n"
-            << "  }";
+            << "    \"N_Families_Estimated\":  " << fam_summary.n_estimated << ",\n"
+            << "    \"N_Families_Skipped\":    " << fam_summary.n_skipped   << ",\n"
+            // Families whose CI hit the search boundary: their Ne is a bound
+            // rather than an estimate, and they inflate Mean_Ne towards
+            // --max-ne.  Median_Ne is the summary to quote while this is
+            // non-zero (see summarize_family_ne).
+            << "    \"N_Families_CI_Clipped\": " << fam_summary.n_clipped   << ",\n"
+            // Same fixed two decimals as Per_Family_Estimates[].Ne above, so a
+            // reader can recompute both summaries from the array and reproduce
+            // the printed values.  emit_json_number()'s 8 significant digits
+            // would carry more precision than the entries themselves have, and
+            // the recomputation would then disagree in the third decimal --
+            // measured 3.4447831 against 3.446 from the rounded entries.
+            << "    \"Mean_Ne\":               " << std::fixed << std::setprecision(2)
+            << fam_summary.mean_ne << ",\n"
+            << "    \"Median_Ne\":             " << fam_summary.median_ne
+            << std::defaultfloat << "\n  }";
     }
 
     out << "\n}\n";
@@ -2407,11 +2899,24 @@ NeEstimator::Result NeEstimator::run() {
     std::vector<PairData> data = load_pairs(_config.input_tsv,
                                             _config.min_vaf,
                                             _config.max_vaf,
-                                            &load_stats);
+                                            &load_stats,
+                                            _config.min_depth);
     if (data.empty()) {
-        throw std::runtime_error("[ne-estimate] No PASS pairs survived the maternal-VAF "
-                                 "filter; nothing to fit.");
+        std::string reason =
+            "[ne-estimate] No PASS pairs survived the maternal-VAF filter";
+        if (_config.min_depth > 0) {
+            reason += " and the --min-depth " + std::to_string(_config.min_depth)
+                    + " gate";
+        }
+        throw std::runtime_error(reason + "; nothing to fit.");
     }
+
+    // Model-form switches threaded down to the per-row likelihood.  The
+    // discrete model and the trio rows ignore `opts` because both already
+    // integrate the maternal frequency; _parse_args warns about the discrete
+    // case when the user asked for the switch explicitly, so it is never a
+    // silent no-op for someone who chose it.
+    const ModelOptions opts{_config.maternal_marginalization};
 
     std::cerr << "[ne-estimate] Fitting Ne on " << data.size()
               << " pairs (maternal VAF in [" << _config.min_vaf
@@ -2426,6 +2931,57 @@ NeEstimator::Result NeEstimator::run() {
                   << " with segregating descendants (model-incompatible, -inf) and "
                   << load_stats.trio_founder_hom_skipped
                   << " with all-homoplasmic descendants (Ne-independent constant).\n";
+    }
+    // Remaining non-default levers are logged only when set.
+    if (_config.min_depth > 0) {
+        std::cerr << "[ne-estimate] --min-depth " << _config.min_depth
+                  << " dropped " << load_stats.min_depth_skipped
+                  << " pair(s) whose mother or child depth fell below the gate.\n";
+    }
+    // Rows the switch can actually reach.  Trio rows (has_g == 1) integrate
+    // p_M over the grandmother-informed posterior whatever the switch says,
+    // and --model discrete integrates p_M as well, so on an all-trio
+    // continuous run the opt-out is a genuine no-op.  Announcing "the maternal
+    // frequency is the plug-in" there was simply false: measured on
+    // tests/data/ne_pipeline/smoke_trio.tsv (300/300 rows HAS_G=1, 289
+    // retained pairs) the opt-out arm marginalised every pair and produced a
+    // fit bit-identical to the default arm (Ne=23.1765, logL=-2516.298), yet
+    // it printed the plug-in banner and echoed Maternal_Marginalization=false.
+    // A mixed input pins the scope from the other side: 20 trio + 20
+    // two-generation rows do change the fit (logL -344.35218 default against
+    // -244.66186 opted out).  Counting the reachable rows once here lets both
+    // the banner and the JSON echo below describe what was APPLIED.
+    size_t n_two_gen = 0;
+    for (const PairData& pd : data) {
+        if (pd.has_g == 0) ++n_two_gen;
+    }
+    const bool plug_in_applied = (_config.model == "continuous")
+                                && !_config.maternal_marginalization
+                                && n_two_gen > 0;
+
+    // The maternal treatment IS reported either way, because it decides
+    // whether the Ne below is comparable across coverage -- that belongs in a
+    // default invocation's stderr as much as in an opted-out one.
+    if (_config.model == "continuous") {
+        if (_config.maternal_marginalization) {
+            std::cerr << "[ne-estimate] Maternal heteroplasmy is integrated out against "
+                         "its Beta(m_alt+1, m_ref+1) read-sampling posterior (the default; "
+                         "--no-maternal-marginalization selects the plug-in); "
+                         "two-generation rows only.\n";
+        } else if (plug_in_applied) {
+            std::cerr << "[ne-estimate] --no-maternal-marginalization: the maternal "
+                         "frequency is the plug-in p_m = m_alt / m_dp for the "
+                      << n_two_gen
+                      << " two-generation pair(s), so the mother's read noise is "
+                         "folded into drift.  The fit targets Ne_app with "
+                         "1/Ne_app = 1/Ne + 1/d_M and is NOT comparable across cohorts "
+                         "or families sequenced at different depth.\n";
+        } else {
+            std::cerr << "[ne-estimate] --no-maternal-marginalization has NO EFFECT on "
+                         "this input: all " << data.size() << " retained pair(s) are "
+                         "three-generation rows, which always integrate p_M over the "
+                         "grandmother-informed posterior.\n";
+        }
     }
 
     // Warn when Kimura-specific options are set without --cross-check kimura.
@@ -2448,8 +3004,38 @@ NeEstimator::Result NeEstimator::run() {
     }
 
     Result r = estimate(data, _config.min_ne, _config.max_ne, _config.threads,
-                        _config.model == "continuous");
+                        _config.model == "continuous", opts);
     r.load_stats = load_stats;
+    r.min_depth  = _config.min_depth;
+    // Authoritative echo of what was *applied*, not merely requested.  Two
+    // things can make the request and the application differ, and both are
+    // reflected here: --model discrete integrates p_M itself, so it reports
+    // false even though the switch is on by default (_parse_args warns on
+    // stderr only when the user asked for it by name); and an opt-out on an
+    // all-trio input reaches no row at all, so p_M WAS marginalised for every
+    // retained pair and the honest echo is true.  The previous form,
+    // `_config.maternal_marginalization && _config.model == "continuous"`,
+    // handled the first case and reported `false` for the second -- i.e. it
+    // echoed the request, contradicting this comment.
+    r.maternal_marginalization = (_config.model == "continuous") && !plug_in_applied;
+
+    // Cohort-level depth descriptors, computed on exactly the rows that
+    // entered the likelihood.  load_pairs() guarantees m_dp > 0 and c_dp > 0
+    // for every retained row, so the reciprocals below are always finite.
+    {
+        const double n = static_cast<double>(data.size());
+        double sum_m = 0.0, sum_c = 0.0, sum_inv_m = 0.0, sum_inv_c = 0.0;
+        for (const PairData& pd : data) {
+            sum_m     += static_cast<double>(pd.m_dp);
+            sum_c     += static_cast<double>(pd.c_dp);
+            sum_inv_m += 1.0 / static_cast<double>(pd.m_dp);
+            sum_inv_c += 1.0 / static_cast<double>(pd.c_dp);
+        }
+        r.mean_mother_dp     = sum_m / n;
+        r.mean_child_dp      = sum_c / n;
+        r.harmonic_mother_dp = (sum_inv_m > 0.0) ? n / sum_inv_m : 0.0;
+        r.harmonic_child_dp  = (sum_inv_c > 0.0) ? n / sum_inv_c : 0.0;
+    }
 
     if (_config.kimura_check) {
         r.kimura = compute_kimura_check(data,
@@ -2471,7 +3057,7 @@ NeEstimator::Result NeEstimator::run() {
 
         r.family_results = estimate_all_families(
             families, _config.min_ne, _config.max_ne,
-            _config.min_family_sites, _config.threads);
+            _config.min_family_sites, _config.threads, opts);
 
         // Optional: per-family Kimura cross-check.
         if (_config.kimura_check) {
@@ -2484,21 +3070,32 @@ NeEstimator::Result NeEstimator::run() {
             }
         }
 
-        // Summary stats.
-        size_t n_estimated = 0, n_skipped = 0;
-        double sum_ne = 0.0;
-        for (const auto& fr : r.family_results) {
-            if (fr.skipped) { ++n_skipped; continue; }
-            ++n_estimated;
-            sum_ne += fr.ne;
-        }
+        // Summary stats.  Reported as mean AND median plus the clipped count,
+        // because a family with no interior likelihood maximum is pinned at
+        // --max-ne and the mean then quotes the search boundary back as if it
+        // were an estimate (see summarize_family_ne for the measured clip
+        // rates by maternal depth).
+        const FamilyNeSummary fam_summary = summarize_family_ne(r.family_results);
         std::cerr << "[ne-estimate] Per-family results: "
-                  << n_estimated << " families estimated, "
-                  << n_skipped << " skipped (< "
+                  << fam_summary.n_estimated << " families estimated, "
+                  << fam_summary.n_skipped << " skipped (< "
                   << _config.min_family_sites << " informative sites).\n";
-        if (n_estimated > 0) {
-            std::cerr << "[ne-estimate] Per-family mean Ne = "
-                      << std::setprecision(4) << (sum_ne / n_estimated) << "\n";
+        if (fam_summary.n_estimated > 0) {
+            std::cerr << "[ne-estimate] Per-family Ne: mean = "
+                      << std::setprecision(4) << fam_summary.mean_ne
+                      << ", median = " << fam_summary.median_ne << "\n";
+        }
+        if (fam_summary.n_clipped > 0) {
+            std::cerr << "[ne-estimate] WARNING: " << fam_summary.n_clipped
+                      << " of " << fam_summary.n_estimated
+                      << " families hit the Ne search boundary ["
+                      << _config.min_ne << ", " << _config.max_ne
+                      << "]; their Ne is a bound, not an estimate, and they "
+                         "pull the mean above the median. Quote the median, or "
+                         "widen --max-ne / raise --min-depth. The usual cause "
+                         "is shallow maternal depth: with p_m marginalised out "
+                         "(the default) a few-site family's likelihood can rise "
+                         "monotonically in Ne and have no interior maximum.\n";
         }
 
         // Per-family TSV output.
@@ -2517,8 +3114,14 @@ NeEstimator::Result NeEstimator::run() {
                     << "#min_ne="             << _config.min_ne    << "\n"
                     << "#max_ne="             << _config.max_ne    << "\n"
                     << "#n_families="         << r.family_results.size() << "\n"
-                    << "#n_families_estimated=" << n_estimated << "\n"
-                    << "#n_families_skipped="  << n_skipped   << "\n"
+                    << "#n_families_estimated=" << fam_summary.n_estimated << "\n"
+                    << "#n_families_skipped="  << fam_summary.n_skipped   << "\n"
+                    // Boundary-pinned families, and the two summaries that
+                    // differ exactly because of them: while the clipped count
+                    // is non-zero, #median_family_ne is the comparable one.
+                    << "#n_families_ci_clipped=" << fam_summary.n_clipped  << "\n"
+                    << "#mean_family_ne="      << std::setprecision(8) << fam_summary.mean_ne   << "\n"
+                    << "#median_family_ne="    << std::setprecision(8) << fam_summary.median_ne << "\n"
                     << "#population_ne="       << std::setprecision(8) << r.ne      << "\n"
                     << "#population_ne_ci_low=" << std::setprecision(8) << r.ci_low  << "\n"
                     << "#population_ne_ci_high=" << std::setprecision(8) << r.ci_high << "\n";
@@ -2633,7 +3236,7 @@ NeEstimator::Result NeEstimator::run() {
             static_cast<double>(_config.min_ne),
             static_cast<double>(_config.max_ne),
             _config.ne_profile_step,
-            _config.threads, continuous);
+            _config.threads, continuous, opts);
 
         // Locate the best Ne under each metric (already encoded in the
         // normalised columns, but we surface them in metadata for the
@@ -2724,6 +3327,136 @@ NeEstimator::Result NeEstimator::run() {
               << "), max marginal logL = " << r.max_log_lik
               << " on " << r.n_pairs << " pairs.\n";
 
+    // Runtime depth advisory for the DEFAULT path.
+    //
+    // The opt-out banner above tells the user in terms that the plug-in fit is
+    // depth-dependent.  The default banner said nothing about depth at all, so
+    // making marginalisation the default quietly removed the only depth
+    // sensitivity message a shallow-coverage run would print; --help carries
+    // the measured numbers, but help is read once and stderr on every run.
+    //
+    // Marginalising removes the 1/Ne_app = 1/Ne + 1/d_M bias, it does not make
+    // the fit depth-blind: the Beta(1,1) prior on the maternal true frequency
+    // is over-dispersed against a cohort whose p_M is truncated away from 0
+    // and 1, and the resulting over-estimate decays with maternal depth.
+    // Measured at true Ne=30, d_C=2000, 240 pairs per cohort and 20 replicate
+    // cohorts per depth (.cache/depth_comparability.py, re-run 2026-09-04
+    // against the post-flip binary), the marginalised cohort fit carries
+    // +14.1% bias at d_M=30 against |bias| <= 2.4% at every d_M >= 60 --
+    // individually +1.9 / +1.7 / +2.1 / -2.1 / +2.4 / +0.9 / +1.6% at
+    // d_M = 60 / 100 / 200 / 500 / 1000 / 2000 / 5000.  An earlier revision
+    // quoted "+1.6..2.4% for d_M >= 500", which dropped the -2.1% at 500 and
+    // the +0.9% at 2000 and so mis-signed the former.
+    // It never pins at the search boundary at ANY depth, including d_M=30, so
+    // the advisory is about residual bias; boundary pinning belongs to few-row
+    // fits and is reported by the per-family clip WARNING instead.
+    //
+    // Over the two-generation rows only: trio rows (has_g == 1) integrate p_M
+    // over the grandmother-informed posterior, the switch is a no-op for them,
+    // and quoting their maternal depth here would advise on a quantity this
+    // code path does not use.
+    if (r.maternal_marginalization) {
+        double sum_inv_m2 = 0.0;
+        size_t n2 = 0;
+        for (const PairData& pd : data) {
+            if (pd.has_g != 0) continue;
+            sum_inv_m2 += 1.0 / static_cast<double>(pd.m_dp);
+            ++n2;
+        }
+        const double harm_m2 = (n2 == 0 || !(sum_inv_m2 > 0.0)) ? 0.0 : static_cast<double>(n2) / sum_inv_m2;
+        if (harm_m2 > 0.0 && harm_m2 < 60.0) {
+            const std::streamsize prec = std::cerr.precision(4);
+            std::cerr << "[ne-estimate] NOTE: harmonic maternal depth over the "
+                      << n2 << " two-generation pair(s) is " << harm_m2
+                      << ", below 60 -- the shallowest depth at which the default "
+                         "marginalised fit was measured to stay comparable across "
+                         "coverage (true Ne=30, d_C=2000, 240 pairs, 20 replicate "
+                         "cohorts per depth: +14.1% bias at d_M=30 against <= 2.4% "
+                         "at every d_M >= 60).  The Ne above is therefore likely "
+                         "HIGH by roughly that margin.  Re-run with --min-depth 60 "
+                         "or higher to drop the shallow maternal rows.\n";
+            std::cerr.precision(prec);
+        }
+    }
+
+    // Symmetric advisory for the OPT-OUT path.  The banner above states the
+    // identity in the abstract; this prices it on the rows actually fitted, so
+    // someone who opted out for speed sees the magnitude they accepted instead
+    // of having to look it up.  Before this, opting out was a silent downgrade:
+    // the only depth-specific number a run ever printed belonged to the path
+    // the user had just declined.
+    //
+    // 1/Ne_app = 1/Ne + 1/d_M rearranges to Ne_app = Ne*d_M/(Ne+d_M), hence
+    // Ne_app/d_M = Ne/(Ne+d_M) EXACTLY -- so the fitted value's own shortfall
+    // is Ne_app/d_M, computable from the fit and the harmonic depth alone and
+    // therefore incapable of going stale the way a hardcoded bias table would.
+    //
+    // Printed at every depth rather than below a threshold: the number carries
+    // its own significance (0.1305% on the shipped 2000x demo cohort, where the
+    // plug-in fits Ne_app=2.60917, against 50% at d_M=30 for a true Ne of 30),
+    // and an arbitrary cutoff would hide the mid-depth cases where the
+    // trade-off is real but not obvious.
+    //
+    // The REALISED shortfall tracks this without equalling it, because a finite
+    // site count contributes its own upward bias that partially cancels.  Same
+    // synthetic sweep as the marginalised NOTE above (true Ne=30, d_C=2000, 240
+    // pairs per cohort, 20 replicate cohorts per depth): -45.0% realised at
+    // d_M=30 against -50.0% from the identity, -21.2% against -23.1% at 100,
+    // -7.4% against -5.7% at 500, -0.6% against -1.5% at 2000.  Quoting the
+    // identity alone would overstate the deep-coverage penalty by ~2.5x, so
+    // both are printed and neither is presented as the answer.
+    if (plug_in_applied) {
+        double sum_inv_m3 = 0.0;
+        size_t n3 = 0;
+        for (const PairData& pd : data) {
+            if (pd.has_g != 0) continue;
+            sum_inv_m3 += 1.0 / static_cast<double>(pd.m_dp);
+            ++n3;
+        }
+
+        const double harm_m3 = (n3 == 0 || !(sum_inv_m3 > 0.0)) 
+                             ? 0.0 : static_cast<double>(n3) / sum_inv_m3;
+        if (harm_m3 > 0.0 && r.ne > 0.0 && r.ne < harm_m3) {
+            const std::streamsize prec = std::cerr.precision(4);
+            std::cerr << "[ne-estimate] NOTE: plug-in shortfall on this input -- the "
+                         "switch reached " << n3
+                      << " two-generation pair(s) at harmonic maternal depth "
+                      << harm_m3 << ", and 1/Ne_app = 1/Ne + 1/d_M puts the value "
+                         "above low by Ne_app/d_M = " << 100.0 * r.ne / harm_m3
+                      << "% relative to the Ne marginalisation targets.  Realised "
+                         "shortfall on synthetic cohorts (true Ne=30, d_C=2000, 240 "
+                         "pairs, 20 replicates per depth): -45.0% at d_M=30, -21.2% "
+                         "at 100, -7.4% at 500, -0.6% at 2000, against "
+                         "-50.0%/-23.1%/-5.7%/-1.5% from this identity -- same sign "
+                         "and magnitude, not equal, because a finite site count adds "
+                         "its own upward bias.  Re-run without "
+                         "--no-maternal-marginalization to marginalise; the two "
+                         "fits are not comparable.\n";
+            std::cerr.precision(prec);
+        } else if (harm_m3 > 0.0 && r.ne >= harm_m3) {
+            // Ne_app = Ne*d_M/(Ne+d_M) is strictly below d_M for every finite
+            // Ne, and tends to d_M only as Ne -> infinity.  A plug-in fit at or
+            // above the harmonic maternal depth therefore has NO finite
+            // shortfall to quote -- Ne_app/d_M would read >= 100%.  Found by
+            // execution on a 4-row d_M=30 cohort whose plug-in fit pinned at
+            // --max-ne 100: the branch above stayed silent, i.e. the advisory
+            // vanished precisely in the shallow, boundary-pinned regime where
+            // it matters most.  Say so instead of printing nothing.
+            const std::streamsize prec = std::cerr.precision(4);
+            std::cerr << "[ne-estimate] NOTE: the plug-in was applied to " << n3
+                      << " two-generation pair(s) at harmonic maternal depth "
+                      << harm_m3 << ", but the fitted value " << r.ne
+                      << " is at or above that depth.  Since "
+                         "Ne_app = Ne*d_M/(Ne+d_M) stays strictly below d_M for "
+                         "every finite Ne, 1/Ne_app = 1/Ne + 1/d_M has no finite "
+                         "shortfall to quote here: the fit is boundary-pinned or "
+                         "carries no detectable drift signal at this depth.  "
+                         "Re-run without --no-maternal-marginalization, and widen "
+                         "--max-ne if the CI is clipped.\n";
+            std::cerr.precision(prec);
+        }
+    }
+
     if (r.kimura.computed) {
         std::cerr << "[ne-estimate] Kimura cross-check: b = " << r.kimura.b
                   << ", Ne_kimura = " << r.kimura.ne_kimura
@@ -2741,7 +3474,7 @@ NeEstimator::Result NeEstimator::run() {
         if (r.kimura.trimmed_computed) {
             if (std::isfinite(r.kimura.ne_kimura_trimmed)) {
                 std::cerr << "[ne-estimate] Trimmed Kimura (trim "
-                          << r.kimura.trim_frac * 100.0 << "%%): b_trimmed = "
+                          << r.kimura.trim_frac * 100.0 << "%): b_trimmed = "
                           << r.kimura.b_trimmed
                           << ", Ne_kimura_trimmed = "
                           << r.kimura.ne_kimura_trimmed
@@ -2749,7 +3482,7 @@ NeEstimator::Result NeEstimator::run() {
             } else {
                 std::cerr << "[ne-estimate] Trimmed Kimura (trim "
                           << r.kimura.trim_frac * 100.0
-                          << "%%): not computable (too few informative pairs after trim)\n";
+                          << "%): not computable (too few informative pairs after trim)\n";
             }
         }
 
@@ -2786,7 +3519,7 @@ NeEstimator::Result NeEstimator::run() {
                     std::cerr << "\n*** WARNING *** Ne_MMLE (" << r.ne
                               << ") and Ne_Kimura_trimmed (" << ne_kimura_ref
                               << ") still disagree by >3x even after trimming "
-                              << r.kimura.trim_frac * 100.0 << "%% of high-drift pairs.\n"
+                              << r.kimura.trim_frac * 100.0 << "% of high-drift pairs.\n"
                               << "    The untrimmed Ne_Kimura was " << r.kimura.ne_kimura
                               << ".\n"
                               << "    Consider increasing --kimura-trim or inspecting the top drift\n"
@@ -2815,7 +3548,7 @@ NeEstimator::Result NeEstimator::run() {
                 ratio_trimmed <= 3.0 && ratio_trimmed >= 1.0/3.0) {
                 std::cerr << "[ne-estimate] NOTE: trimming "
                           << r.kimura.trim_frac * 100.0
-                          << "%% of high-drift pairs reconciled Ne_Kimura_trimmed ("
+                          << "% of high-drift pairs reconciled Ne_Kimura_trimmed ("
                           << ne_kimura_ref << ") with Ne_MMLE (" << r.ne
                           << ").\n";
             }
