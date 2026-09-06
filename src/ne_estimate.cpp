@@ -3529,12 +3529,18 @@ NeEstimator::Result NeEstimator::run() {
                     std::cerr << "\n*** WARNING *** Ne_MMLE (" << r.ne
                               << ") and Ne_Kimura (" << r.kimura.ne_kimura
                               << ") disagree by >3x.\n"
-                              << "    This usually indicates the data contain high-drift outlier pairs\n"
-                              << "    (NUMTs / sequencing errors / mixed populations) that collapse the\n"
-                              << "    variance-of-moments Kimura estimator but do not affect the MMLE.\n"
-                              << "    Recommendation: re-run with --kimura-trim 0.10 --top-drift-k 20\n"
-                              << "    to inspect the outlier pairs and compare the trimmed Ne_Kimura\n"
-                              << "    against the MMLE.\n\n";
+                              << "    Possible causes, in order of checks to run:\n"
+                              << "      (a) high-drift outlier pairs (NUMTs / sequencing errors / mixed\n"
+                              << "          populations) that collapse the variance-of-moments Kimura\n"
+                              << "          estimator but not the MMLE: re-run with --kimura-trim 0.10\n"
+                              << "          --top-drift-k 20 to inspect and compare trimmed Ne_Kimura;\n"
+                              << "      (b) model-form mis-specification: --model discrete restricts child\n"
+                              << "          heteroplasmy to the grid {0,1/Ne,..,1} and is upward-biased at\n"
+                              << "          high depth, so prefer --model continuous for mtDNA;\n"
+                              << "      (c) near-fixed sites admitted by a loose --max-vaf (>0.95), which\n"
+                              << "          inflate the MMLE: tighten --max-vaf and re-run.\n"
+                              << "    Distinguish (a) from (b)/(c) with a VAF-window scan and a per-site\n"
+                              << "    deviation-shape diagnostic before trimming outliers.\n\n";
                 }
             }
         }
