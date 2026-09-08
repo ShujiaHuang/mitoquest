@@ -264,6 +264,65 @@ public:
         std::vector<DriftOutlier> top_drift_outliers;
     };
 
+    /// Optional deCODE-style binned Kimura method-of-moments cross-check.
+    ///
+    /// Faithful reproduction of the estimator in Arnadottir et al., Cell 2024
+    /// (deCODE), Table 2 + STAR Methods, provided ONLY so mitoquest's Ne can be
+    /// placed on the same numerical footing as the published deCODE values
+    /// (M-C Ne = 2.29, GM-GC Ne = 2.36).  Mothers are grouped by their plug-in
+    /// read-frequency p_hat_M into 5% bins spanning [--min-vaf, --max-vaf]
+    /// (default [0.10, 0.90] -> 16 bins, exactly deCODE's 16 intervals).  Within
+    /// each bin, for a single mother->child transmission (g = 1):
+    ///
+    ///     b_bin  = 1 - var(h) / [ pbar_M * (1 - pbar_M) ]
+    ///     Ne_bin = -g / ln(b_bin)                        (diffusion convention)
+    ///
+    /// where h is the vector of CHILD read-frequencies in the bin, var(h) is
+    /// their UNBIASED sample variance (ddof = 1) about the bin mean hbar (the
+    /// group-mean reference point), and pbar_M is the bin's mean MOTHER
+    /// read-frequency (the pooled-het normalisation denominator).  The overall
+    /// Ne is the child-count-weighted mean of Ne_bin over the bins that yield a
+    /// finite Ne in (0, 1) (Table 2 caption: "weighted average ... using the
+    /// number of children as weights").
+    ///
+    /// THREE deliberate differences from the default Wonnapinij cross-check
+    /// (compute_kimura_check), each matching deCODE rather than mitoquest's
+    /// better small-sample behaviour -- see
+    /// HANDOFF_ne_estimate_vs_deCODE_methodology.md §15.1:
+    ///   (1) inversion: Ne = -g/ln b (diffusion) instead of 1/(1-b) (discrete WF);
+    ///   (2) NO Wonnapinij sampling-noise correction s_i is subtracted -- deCODE
+    ///       can omit it only because its median 3322x depth makes read noise
+    ///       ~0.2% of the drift term; at conventional mtDNA depth this estimator
+    ///       is therefore statistically WORSE and is opt-in, never default;
+    ///   (3) group-mean binning instead of per-pair plug-in aggregation.
+    struct DecodeStyleCheck {
+        bool   computed     = false;  // populated only when --kimura-decode-style is set
+        int    g            = 1;      // transmission generations in Ne = -g/ln b (M-C = 1)
+        double bin_width    = 0.05;   // deCODE groups mothers at 5% intervals
+        double min_vaf      = 0.0;    // binning window lower edge (= --min-vaf)
+        double max_vaf      = 0.0;    // binning window upper edge (= --max-vaf)
+        size_t n_bins       = 0;      // number of 5% bins spanned by the window
+        size_t n_bins_valid = 0;      // bins that yielded a finite Ne in (0, 1)
+        size_t n_pairs_used = 0;      // pairs falling in the valid bins
+        double ne_weighted  = 0.0;    // child-count-weighted mean of Ne_bin
+        std::string note;             // free-text caveat (comparability-only warning)
+
+        /// One 5% maternal-VAF bin.
+        struct Bin {
+            double lo = 0.0;         // bin lower edge (inclusive)
+            double hi = 0.0;         // bin upper edge (exclusive; top bin inclusive)
+            size_t n  = 0;           // pairs (children) in the bin
+            double pbar_m = 0.0;     // mean mother read-frequency
+            double hbar   = 0.0;     // mean child read-frequency (group-mean ref point)
+            double var_h  = 0.0;     // unbiased sample variance of child freqs (ddof=1)
+            double denom  = 0.0;     // pooled het pbar_M (1 - pbar_M)
+            double b      = 0.0;     // 1 - var_h/denom; NaN when undefined
+            double ne_bin = 0.0;     // -g/ln b; NaN when b not in (0, 1)
+            std::string status;      // "ok" | "empty" | "single" | "b<=0" | "b>=1"
+        };
+        std::vector<Bin> bins;
+    };
+
     // One family's worth of transmission data (grouped by FAM_ID + MOTHER_ID).
     struct FamilyData {
         std::string fam_id;
@@ -347,6 +406,7 @@ public:
         int    min_depth                = 0;
 
         KimuraCheck kimura;               // populated only when requested
+        DecodeStyleCheck decode_style;    // populated only when --kimura-decode-style is set
         // Per-family results (populated only when --per-family is set).
         std::vector<FamilyResult> family_results;
 
@@ -374,6 +434,13 @@ public:
         int         top_drift_k;     // emit the top-K drift outlier pairs in the
                                      // JSON output for diagnostic inspection;
                                      // 0 disables (default).
+        bool        kimura_decode_style = false; // --kimura-decode-style; emit the
+                                     // deCODE-style binned, uncorrected, group-mean
+                                     // Kimura moment estimator (Ne = -g/ln b) as a
+                                     // comparability-only report alongside the default
+                                     // cross-check.  Opt-in, never default: at
+                                     // conventional mtDNA depth it is statistically
+                                     // worse than the Wonnapinij-corrected path.
         std::string bin_simulation_file; // when non-empty, write a per-bin
                                          // observed-drift summary TSV (per
                                          // maternal-VAF bin: observed mean
@@ -686,6 +753,27 @@ public:
                                             uint64_t seed        = 42,
                                             double   trim_frac   = 0.0,
                                             int      top_drift_k = 0);
+
+    /**
+     * @brief deCODE-style binned Kimura method-of-moments Ne (comparability only).
+     *
+     * Reproduces Arnadottir et al. (Cell 2024) Table 2: mothers grouped into
+     * `bin_width` (5%) VAF bins over [min_vaf, max_vaf]; within each bin
+     *     b_bin  = 1 - var(h) / [ pbar_M (1 - pbar_M) ],
+     *     Ne_bin = -g / ln(b_bin),
+     * with var(h) the UNCORRECTED unbiased sample variance (ddof = 1) of the
+     * child read-frequencies about the bin mean, and the overall Ne the
+     * child-count-weighted mean over bins yielding a finite Ne.  Bins with
+     * fewer than 2 pairs (variance not identifiable) or with b outside (0, 1)
+     * are skipped.  See DecodeStyleCheck for the full caveat: this is a
+     * report-layer compatibility path, statistically worse than the default
+     * Wonnapinij-corrected compute_kimura_check() at conventional depth, and
+     * is never enabled by default.
+     */
+    static DecodeStyleCheck
+    compute_decode_style_check(const std::vector<PairData>& data,
+                               double min_vaf, double max_vaf,
+                               double bin_width = 0.05, int g = 1);
 
     /**
      * @brief Aggregate per-pair drift statistics into equal-width

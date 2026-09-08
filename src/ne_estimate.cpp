@@ -2156,6 +2156,167 @@ NeEstimator::compute_family_kimura_check(const FamilyData& fam,
     return out;
 }
 
+// ---------------------------------------------------------------------
+// deCODE-style binned Kimura method-of-moments estimator (optional)
+// ---------------------------------------------------------------------
+//
+// Faithful port of Arnadottir et al., Cell 2024 (deCODE), Table 2 + STAR
+// Methods.  Mothers are grouped by their plug-in read-frequency p_hat_M
+// into 5% bins over [min_vaf, max_vaf] (default [0.10, 0.90] -> 16 bins).
+// Within each bin, for a single mother->child transmission (g = 1):
+//
+//     b_bin  = 1 - var(h) / [ pbar_M (1 - pbar_M) ]
+//     Ne_bin = -g / ln(b_bin)                    (diffusion convention)
+//
+// var(h) is the UNBIASED sample variance (ddof = 1) of the CHILD read
+// frequencies about the bin mean hbar (the group-mean reference point);
+// pbar_M is the bin's mean MOTHER read-frequency (pooled-het denominator).
+// NO Wonnapinij sampling-noise correction is applied -- this is the
+// defining difference from compute_kimura_check() and the reason the path
+// is opt-in: deCODE can omit the correction only because its median 3322x
+// depth makes read noise ~0.2% of the drift term.  The overall Ne is the
+// child-count-weighted mean of Ne_bin over the bins that yield a finite
+// Ne in (0, 1) (Table 2 caption: "weighted average ... using the number
+// of children as weights").  Bins with < 2 pairs (variance not
+// identifiable) or with b outside (0, 1) are skipped and flagged.
+//
+// This is the C++ leg of the three-way consistency check; the independent
+// pure-Python reference is .cache/decode_style_kimura_reference.py.
+NeEstimator::DecodeStyleCheck
+NeEstimator::compute_decode_style_check(const std::vector<PairData>& data,
+                                        double min_vaf, double max_vaf,
+                                        double bin_width, int g) {
+    DecodeStyleCheck out;
+    out.g         = g;
+    out.bin_width = bin_width;
+    out.min_vaf   = min_vaf;
+    out.max_vaf   = max_vaf;
+
+    const double NaN = std::numeric_limits<double>::quiet_NaN();
+
+    if (!(bin_width > 0.0) || !(max_vaf > min_vaf)) {
+        out.computed = false;
+        out.note = "invalid binning window (need bin_width > 0 and max_vaf > min_vaf)";
+        return out;
+    }
+
+    // Number of 5% bins spanned by [min_vaf, max_vaf]; the default
+    // [0.10, 0.90] window gives exactly deCODE's 16 intervals.
+    const int n_bins = static_cast<int>(std::lround((max_vaf - min_vaf) / bin_width));
+    if (n_bins <= 0) {
+        out.computed = false;
+        out.note = "VAF window narrower than one bin";
+        return out;
+    }
+    out.n_bins = static_cast<size_t>(n_bins);
+
+    // Assign each pair to a bin by its plug-in maternal read-frequency.
+    std::vector<std::vector<const PairData*>> buckets(static_cast<size_t>(n_bins));
+    for (const auto& pd : data) {
+        if (pd.m_dp <= 0 || pd.c_dp <= 0) continue;   // defensive; load_pairs already gated
+        const double pm = static_cast<double>(pd.m_ad_alt) / static_cast<double>(pd.m_dp);
+        int idx = static_cast<int>(std::floor((pm - min_vaf) / bin_width));
+        if (idx < 0)            idx = 0;
+        else if (idx >= n_bins) idx = n_bins - 1;     // inclusive upper edge -> last bin
+        buckets[static_cast<size_t>(idx)].push_back(&pd);
+    }
+
+    double weighted_num = 0.0;
+    double weighted_den = 0.0;
+    out.bins.reserve(static_cast<size_t>(n_bins));
+    for (int k = 0; k < n_bins; ++k) {
+        DecodeStyleCheck::Bin bn;
+        bn.lo = min_vaf + static_cast<double>(k) * bin_width;
+        bn.hi = bn.lo + bin_width;
+        const std::vector<const PairData*>& bucket = buckets[static_cast<size_t>(k)];
+        bn.n = bucket.size();
+
+        if (bn.n == 0) {
+            bn.pbar_m = bn.hbar = bn.var_h = bn.denom = NaN;
+            bn.b = bn.ne_bin = NaN;
+            bn.status = "empty";
+            out.bins.push_back(bn);
+            continue;
+        }
+        if (bn.n == 1) {
+            // Variance not identifiable from a single observation.
+            const double pm = static_cast<double>(bucket[0]->m_ad_alt) / static_cast<double>(bucket[0]->m_dp);
+            const double pc = static_cast<double>(bucket[0]->c_ad_alt) / static_cast<double>(bucket[0]->c_dp);
+            bn.pbar_m = pm;
+            bn.hbar   = pc;
+            bn.var_h  = NaN;
+            bn.denom  = pm * (1.0 - pm);
+            bn.b = bn.ne_bin = NaN;
+            bn.status = "single";
+            out.bins.push_back(bn);
+            continue;
+        }
+
+        const double nf = static_cast<double>(bn.n);
+        double sum_pm = 0.0, sum_pc = 0.0;
+        for (const PairData* pd : bucket) {
+            sum_pm += static_cast<double>(pd->m_ad_alt) / static_cast<double>(pd->m_dp);
+            sum_pc += static_cast<double>(pd->c_ad_alt) / static_cast<double>(pd->c_dp);
+        }
+        bn.pbar_m = sum_pm / nf;
+        bn.hbar   = sum_pc / nf;
+
+        // Unbiased sample variance (ddof = 1) of child frequencies about hbar.
+        double ss = 0.0;
+        for (const PairData* pd : bucket) {
+            const double pc  = static_cast<double>(pd->c_ad_alt) / static_cast<double>(pd->c_dp);
+            const double dev = pc - bn.hbar;
+            ss += dev * dev;
+        }
+        bn.var_h = ss / (nf - 1.0);
+        bn.denom = bn.pbar_m * (1.0 - bn.pbar_m);
+
+        if (!(bn.denom > 0.0)) {
+            bn.b = bn.ne_bin = NaN;
+            bn.status = "b<=0";
+            out.bins.push_back(bn);
+            continue;
+        }
+
+        bn.b = 1.0 - bn.var_h / bn.denom;
+        if (!(bn.b > 0.0)) {                 // var(h) >= pooled het: ln(b) undefined
+            bn.ne_bin = NaN;
+            bn.status = "b<=0";
+            out.bins.push_back(bn);
+            continue;
+        }
+        if (!(bn.b < 1.0)) {                 // var(h) <= 0: Ne -> infinity
+            bn.ne_bin = NaN;
+            bn.status = "b>=1";
+            out.bins.push_back(bn);
+            continue;
+        }
+
+        bn.ne_bin = -static_cast<double>(g) / std::log(bn.b);
+        bn.status = "ok";
+        out.bins.push_back(bn);
+
+        // Child-count weighting (Table 2 caption: "number of children as weights").
+        weighted_num += nf * bn.ne_bin;
+        weighted_den += nf;
+        out.n_pairs_used += bn.n;
+        out.n_bins_valid += 1;
+    }
+
+    out.computed = true;
+    if (weighted_den > 0.0) {
+        out.ne_weighted = weighted_num / weighted_den;
+        out.note = "deCODE-style (Arnadottir et al., Cell 2024, Table 2): uncorrected "
+                   "group-mean binned moment estimator, Ne = -g/ln b (diffusion "
+                   "convention); comparability-only, statistically worse than the "
+                   "Wonnapinij-corrected cross-check at conventional mtDNA depth";
+    } else {
+        out.ne_weighted = NaN;
+        out.note = "no bin yielded a finite Ne (all bins empty, single-pair, or b outside (0,1))";
+    }
+    return out;
+}
+
 void NeEstimator::_write_family_tsv(
     const std::vector<FamilyResult>& results, std::ostream& out) const
 {
@@ -2353,6 +2514,19 @@ void NeEstimator::usage() {
                  "      --top-drift-k     INT   Emit the top-K highest-drift pairs in the JSON\n"
                  "                              output for outlier inspection (NUMTs / errors).\n"
                  "                              0 disables [0].\n"
+                 "      --kimura-decode-style   ALSO emit a deCODE-style binned Kimura moment\n"
+                 "                              estimator (Arnadottir et al., Cell 2024, Table 2):\n"
+                 "                              mothers grouped into 5% VAF bins over\n"
+                 "                              [--min-vaf, --max-vaf]; per bin\n"
+                 "                              b = 1 - var(h)/[pbar_M(1-pbar_M)] with var(h) the\n"
+                 "                              UNCORRECTED sample variance of child read-frequencies\n"
+                 "                              about the bin mean, Ne_bin = -g/ln b (diffusion), and\n"
+                 "                              the overall Ne the child-count-weighted mean.  This is\n"
+                 "                              a comparability-only report (it omits the Wonnapinij\n"
+                 "                              sampling-noise correction the default cross-check\n"
+                 "                              applies), so at conventional mtDNA depth it is\n"
+                 "                              statistically WORSE; opt-in, never default.  Independent\n"
+                 "                              of --cross-check kimura [off].\n"
                  "      --bin-simulation FILE   Emit a per-bin drift summary TSV: per\n"
                  "                              maternal-VAF bin observed mean drift vs\n"
                  "                              analytical Kimura prediction p_m(1 - p_m) / Ne\n"
@@ -2461,6 +2635,7 @@ void NeEstimator::_parse_args(int argc, char* argv[]) {
     _config.kimura_seed      = 42;
     _config.kimura_trim      = 0.0;
     _config.top_drift_k      = 0;
+    _config.kimura_decode_style = false;
     _config.bin_simulation_file.clear();
     _config.bin_simulation_n_bins = 10;
     _config.ne_profile_file.clear();
@@ -2499,6 +2674,7 @@ void NeEstimator::_parse_args(int argc, char* argv[]) {
         {"kimura-seed",      required_argument, 0,  7 },
         {"kimura-trim",      required_argument, 0,  8 },
         {"top-drift-k",      required_argument, 0,  9 },
+        {"kimura-decode-style",  no_argument,       0, 21 },
         {"bin-simulation",       required_argument, 0, 11 },
         {"bin-simulation-bins",  required_argument, 0, 12 },
         {"ne-profile",           required_argument, 0, 13 },
@@ -2541,6 +2717,7 @@ void NeEstimator::_parse_args(int argc, char* argv[]) {
             case  7 : _config.kimura_seed      = static_cast<uint64_t>(std::stoull(optarg)); break;
             case  8 : _config.kimura_trim      = std::stod(optarg); break;
             case  9 : _config.top_drift_k      = std::stoi(optarg); break;
+            case 21 : _config.kimura_decode_style = true;           break;
             case 10 : {
                 const std::string m(optarg);
                 if (m == "continuous" || m == "discrete") {
@@ -2813,6 +2990,46 @@ void NeEstimator::_write_json(const Result& r, std::ostream& out) const {
             << "  }";
     }
 
+    // deCODE-style binned Kimura moment estimator (when --kimura-decode-style is set).
+    if (r.decode_style.computed) {
+        out << ",\n"
+            << "  \"Decode_Style_Kimura\": {\n"
+            << "    \"Ne_Decode_Style\": "; emit_json_number(out, r.decode_style.ne_weighted); out << ",\n"
+            << "    \"g\":               " << r.decode_style.g            << ",\n"
+            << "    \"Bin_Width\":       " << std::setprecision(8) << r.decode_style.bin_width << ",\n"
+            << "    \"Min_VAF\":         " << r.decode_style.min_vaf      << ",\n"
+            << "    \"Max_VAF\":         " << r.decode_style.max_vaf      << ",\n"
+            << "    \"N_Bins\":          " << r.decode_style.n_bins       << ",\n"
+            << "    \"N_Bins_Valid\":    " << r.decode_style.n_bins_valid << ",\n"
+            << "    \"N_Pairs_Used\":    " << r.decode_style.n_pairs_used << ",\n"
+            << "    \"Bins\": [\n";
+        for (size_t bi = 0; bi < r.decode_style.bins.size(); ++bi) {
+            const auto& bn = r.decode_style.bins[bi];
+            out << "      { \"Lo\": "     << std::setprecision(8) << bn.lo
+                << ", \"Hi\": "           << bn.hi
+                << ", \"N\": "            << bn.n
+                << ", \"Pbar_M\": "; emit_json_number(out, bn.pbar_m);
+            out << ", \"Hbar\": ";   emit_json_number(out, bn.hbar);
+            out << ", \"Var_H\": ";  emit_json_number(out, bn.var_h);
+            out << ", \"Denom\": ";  emit_json_number(out, bn.denom);
+            out << ", \"b\": ";      emit_json_number(out, bn.b);
+            out << ", \"Ne_Bin\": "; emit_json_number(out, bn.ne_bin);
+            out << ", \"Status\": \"" << json_escape(bn.status) << "\" }";
+            if (bi + 1 < r.decode_style.bins.size()) out << ",";
+            out << "\n";
+        }
+        out << "    ],\n"
+            << "    \"Note\":   \"" << json_escape(r.decode_style.note) << "\",\n"
+            << "    \"Method\": \"deCODE-style (Arnadottir et al., Cell 2024, Table 2): "
+            << "mothers binned at 5% VAF intervals; per-bin b = 1 - var(h)/[pbar_M(1-pbar_M)] "
+            << "with var(h) the UNCORRECTED sample variance (ddof=1) of child read-frequencies "
+            << "about the bin mean; Ne_bin = -g/ln b (diffusion convention); overall Ne = "
+            << "child-count-weighted mean over valid bins. Comparability-only: no Wonnapinij "
+            << "sampling-noise correction, so statistically worse than the default cross-check "
+            << "at conventional mtDNA depth.\"\n"
+            << "  }";
+    }
+
     // Per-family estimates (when --per-family is set).
     if (!r.family_results.empty()) {
         const FamilyNeSummary fam_summary = summarize_family_ne(r.family_results);
@@ -3043,6 +3260,20 @@ NeEstimator::Result NeEstimator::run() {
                                         _config.kimura_seed,
                                         _config.kimura_trim,
                                         _config.top_drift_k);
+    }
+
+    // Optional deCODE-style binned Kimura moment estimator (comparability only).
+    // Independent of --cross-check kimura: it is a separate report-layer path
+    // that reproduces Arnadottir et al. (Cell 2024) Table 2 so the Ne can be
+    // placed on the same numerical footing as the published deCODE values.
+    if (_config.kimura_decode_style) {
+        r.decode_style = compute_decode_style_check(
+            data, _config.min_vaf, _config.max_vaf, 0.05, 1);
+        std::cerr << "[ne-estimate] deCODE-style binned Kimura (comparability only): Ne = "
+                  << r.decode_style.ne_weighted
+                  << " over " << r.decode_style.n_bins_valid << "/" << r.decode_style.n_bins
+                  << " valid 5% bins (" << r.decode_style.n_pairs_used
+                  << " pairs); uncorrected group-mean moment estimator, Ne = -g/ln b.\n";
     }
 
     // ---------------------------------------------------------------

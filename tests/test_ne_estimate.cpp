@@ -586,6 +586,146 @@ TEST(NeEstKimura, EmptyOrHomoplasmicReturnsInformativeFlag) {
 }
 
 // =====================================================================
+// deCODE-style binned Kimura moment estimator (--kimura-decode-style)
+// =====================================================================
+
+TEST(NeEstDecodeStyle, ExercisesEveryBinStatusBranch) {
+    // Small crafted cohort graded against the INDEPENDENT pure-Python
+    // reference (.cache/decode_style_kimura_reference.py, driven by
+    // .cache/gen_decode_style_unit_expectations.py).  The expected numbers
+    // below come from that oracle, never from the C++ code under test.
+    //
+    // Window [0.10, 0.40] at 5% -> 6 bins, one per status branch:
+    //   B0 ok | B1 single | B2 empty | B3 b>=1 | B4 b<=0 | B5 ok
+    const std::vector<NeEstimator::PairData> data = {
+        // B0 [0.10,0.15) -> ok (normal drift)
+        {100, 10, 100, 12},
+        {100, 13, 100, 18},
+        // B1 [0.15,0.20) -> single (variance not identifiable from n=1)
+        {100, 17, 100, 15},
+        // B2 [0.20,0.25) -> empty (no rows)
+        // B3 [0.25,0.30) -> b>=1 (both children h = 0.27, var_h = 0)
+        {100, 26, 100, 27},
+        {100, 28, 100, 27},
+        // B4 [0.30,0.35) -> b<=0 (children h = 0.0 and 1.0, var_h > denom)
+        {100, 31, 100,   0},
+        {100, 33, 100, 100},
+        // B5 [0.35,0.40] -> ok (upper edge p_m = 0.40 clamps into last bin)
+        {100, 36, 100, 34},
+        {100, 38, 100, 38},
+        {100, 40, 100, 42},
+    };
+
+    const auto r = NeEstimator::compute_decode_style_check(
+        data, /*min_vaf=*/0.10, /*max_vaf=*/0.40, /*bin_width=*/0.05, /*g=*/1);
+
+    EXPECT_TRUE(r.computed);
+    EXPECT_EQ(r.n_bins, 6u);
+    EXPECT_EQ(r.n_bins_valid, 2u);   // only B0 and B5 yield a finite Ne
+    EXPECT_EQ(r.n_pairs_used, 5u);   // 2 (B0) + 3 (B5)
+    ASSERT_EQ(r.bins.size(), 6u);
+
+    // Overall child-count-weighted Ne = (2*Ne_B0 + 3*Ne_B5) / 5.
+    EXPECT_NEAR(r.ne_weighted, 110.46573114194473, 1e-9);
+
+    // --- B0: ok -------------------------------------------------------
+    EXPECT_EQ(r.bins[0].status, "ok");
+    EXPECT_EQ(r.bins[0].n, 2u);
+    EXPECT_NEAR(r.bins[0].pbar_m, 0.115,    1e-12);
+    EXPECT_NEAR(r.bins[0].hbar,   0.15,     1e-12);
+    EXPECT_NEAR(r.bins[0].var_h,  0.0018,   1e-12);
+    EXPECT_NEAR(r.bins[0].denom,  0.101775, 1e-12);
+    EXPECT_NEAR(r.bins[0].b,      0.9823139277818718, 1e-12);
+    EXPECT_NEAR(r.bins[0].ne_bin, 56.040179646253556, 1e-9);
+
+    // --- B1: single (var_h / b / ne_bin undefined) --------------------
+    EXPECT_EQ(r.bins[1].status, "single");
+    EXPECT_EQ(r.bins[1].n, 1u);
+    EXPECT_NEAR(r.bins[1].pbar_m, 0.17,   1e-12);
+    EXPECT_NEAR(r.bins[1].hbar,   0.15,   1e-12);
+    EXPECT_TRUE(std::isnan(r.bins[1].var_h));
+    EXPECT_NEAR(r.bins[1].denom,  0.1411, 1e-12);
+    EXPECT_TRUE(std::isnan(r.bins[1].b));
+    EXPECT_TRUE(std::isnan(r.bins[1].ne_bin));
+
+    // --- B2: empty (everything undefined) -----------------------------
+    EXPECT_EQ(r.bins[2].status, "empty");
+    EXPECT_EQ(r.bins[2].n, 0u);
+    EXPECT_TRUE(std::isnan(r.bins[2].pbar_m));
+    EXPECT_TRUE(std::isnan(r.bins[2].hbar));
+    EXPECT_TRUE(std::isnan(r.bins[2].var_h));
+    EXPECT_TRUE(std::isnan(r.bins[2].denom));
+    EXPECT_TRUE(std::isnan(r.bins[2].b));
+    EXPECT_TRUE(std::isnan(r.bins[2].ne_bin));
+
+    // --- B3: b>=1 (zero child variance -> b == 1, Ne -> infinity) -----
+    EXPECT_EQ(r.bins[3].status, "b>=1");
+    EXPECT_EQ(r.bins[3].n, 2u);
+    EXPECT_NEAR(r.bins[3].pbar_m, 0.27,   1e-12);
+    EXPECT_NEAR(r.bins[3].var_h,  0.0,    1e-12);
+    EXPECT_NEAR(r.bins[3].denom,  0.1971, 1e-12);
+    EXPECT_NEAR(r.bins[3].b,      1.0,    1e-12);
+    EXPECT_TRUE(std::isnan(r.bins[3].ne_bin));
+
+    // --- B4: b<=0 (child variance exceeds pooled het) -----------------
+    EXPECT_EQ(r.bins[4].status, "b<=0");
+    EXPECT_EQ(r.bins[4].n, 2u);
+    EXPECT_NEAR(r.bins[4].pbar_m, 0.32,   1e-12);
+    EXPECT_NEAR(r.bins[4].hbar,   0.5,    1e-12);
+    EXPECT_NEAR(r.bins[4].var_h,  0.5,    1e-12);
+    EXPECT_NEAR(r.bins[4].denom,  0.2176, 1e-12);
+    EXPECT_NEAR(r.bins[4].b,     -1.2977941176470589, 1e-12);
+    EXPECT_TRUE(std::isnan(r.bins[4].ne_bin));
+
+    // --- B5: ok -------------------------------------------------------
+    EXPECT_EQ(r.bins[5].status, "ok");
+    EXPECT_EQ(r.bins[5].n, 3u);
+    EXPECT_NEAR(r.bins[5].pbar_m, 0.38,   1e-12);
+    EXPECT_NEAR(r.bins[5].hbar,   0.38,   1e-12);
+    EXPECT_NEAR(r.bins[5].var_h,  0.0016, 1e-12);
+    EXPECT_NEAR(r.bins[5].denom,  0.2356, 1e-12);
+    EXPECT_NEAR(r.bins[5].b,      0.9932088285229203, 1e-12);
+    EXPECT_NEAR(r.bins[5].ne_bin, 146.74943213907218, 1e-9);
+}
+
+TEST(NeEstDecodeStyle, EmptyCohortIsComputedButHasNoValidBin) {
+    // No pairs at all: every bin is empty, ne_weighted is NaN, but the
+    // check still reports computed=true with an informative note.
+    const auto r = NeEstimator::compute_decode_style_check(
+        {}, /*min_vaf=*/0.10, /*max_vaf=*/0.90, /*bin_width=*/0.05, /*g=*/1);
+    EXPECT_TRUE(r.computed);
+    EXPECT_EQ(r.n_bins, 16u);          // deCODE's 16 intervals over [0.1, 0.9]
+    EXPECT_EQ(r.n_bins_valid, 0u);
+    EXPECT_EQ(r.n_pairs_used, 0u);
+    EXPECT_TRUE(std::isnan(r.ne_weighted));
+    EXPECT_FALSE(r.note.empty());
+}
+
+TEST(NeEstDecodeStyle, DiffusionInversionOnLargeCohort) {
+    // On a big Wright-Fisher cohort (true Ne = 3) the per-bin drift variance
+    // is var(h)/[pbar(1-pbar)] ~ 1/Ne + 1/c_dp, so b ~ 1 - 1/3 = 2/3 and the
+    // DIFFUSION inversion Ne = -g/ln b lands near -1/ln(2/3) = 2.466 -- i.e.
+    // deliberately BELOW the discrete-WF inversion 1/(1-b) = 3.  Asserting the
+    // value sits in (2.0, 3.0) therefore checks that the -g/ln b convention
+    // (not 1/(1-b)) is what the estimator applies.
+    auto data = simulate_pairs(/*true_ne=*/3,
+                               /*n_pairs=*/4000,
+                               /*m_dp=*/2000,
+                               /*c_dp=*/2000,
+                               /*vaf_low=*/0.10,
+                               /*vaf_high=*/0.90,
+                               /*seed=*/20260908u);
+    const auto r = NeEstimator::compute_decode_style_check(
+        data, /*min_vaf=*/0.10, /*max_vaf=*/0.90, /*bin_width=*/0.05, /*g=*/1);
+    EXPECT_TRUE(r.computed);
+    EXPECT_EQ(r.n_bins, 16u);
+    EXPECT_GT(r.n_bins_valid, 10u);    // most 5% bins populated at n=4000
+    EXPECT_GT(r.n_pairs_used, 3000u);
+    EXPECT_GT(r.ne_weighted, 2.0);     // diffusion inversion ~2.46, not discrete 3.0
+    EXPECT_LT(r.ne_weighted, 3.0);
+}
+
+// =====================================================================
 // Continuous (Beta-diffusion) model tests (v1.8.2)
 // =====================================================================
 
