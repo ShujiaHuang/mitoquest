@@ -23,11 +23,11 @@ Default model:
 
 Bottleneck models:
   * discrete   (default) - sample `round(true_ne)` integer copies via
-                            Multinomial; matches `--model discrete` MMLE.
+                            Multinomial; matches `--model discrete` MCMLE.
   * continuous           - draw post-bottleneck heteroplasmy from a
                             Beta-diffusion (Wright-Fisher diffusion limit),
                             i.e. `p_child ~ Beta(p_m*(Ne-1), (1-p_m)*(Ne-1))`;
-                            matches `--model continuous` MMLE.  Permits a
+                            matches `--model continuous` MCMLE.  Permits a
                             non-integer `--true-ne`.
 
 Outlier injection (--outlier-frac):
@@ -423,8 +423,8 @@ def main() -> None:
                    choices=["discrete", "continuous"], default="discrete",
                    help="Bottleneck process: `discrete` (Multinomial over "
                         "true_ne integer copies, matches `--model discrete` "
-                        "MMLE) or `continuous` (Beta-diffusion / Dirichlet, "
-                        "matches `--model continuous` MMLE; allows fractional "
+                        "MCMLE) or `continuous` (Beta-diffusion / Dirichlet, "
+                        "matches `--model continuous` MCMLE; allows fractional "
                         "true_ne).")
     p.add_argument("--outlier-frac", type=float, default=0.0,
                    help="Fraction of (site, pair) cells whose post-bottleneck "

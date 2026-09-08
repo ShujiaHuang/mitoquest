@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""Plot the Ne-profile comparison between MMLE and Kimura SSR.
+"""Plot the Ne-profile comparison between MCMLE and Kimura SSR.
 
 This script visualises the dual-objective Ne scan produced by
 `mitoquest ne-estimate --ne-profile`.  The companion C++ command writes
 a TSV that scores every candidate Ne under both estimators in the
 program:
 
-    mmle_log_lik(Ne) -- global marginal log-likelihood under the configured
+    mcmle_log_lik(Ne) -- global marginal log-likelihood under the configured
                         model (continuous Beta-diffusion or discrete
-                        Beta-Binomial).  Maximised at the fitted Ne_MMLE.
+                        Beta-Binomial).  Maximised at the fitted Ne_MCMLE.
 
     kimura_ssr(Ne)   -- Sigma_i ((d_i - s_i) - p_m_i (1 - p_m_i) / Ne)^2.
                         Per-pair least-squares fit of the one-generation
@@ -18,7 +18,7 @@ program:
 The output figure has two panels:
 
     Left   --  -2(LL - LL_max) vs Ne, with the chi^2 95% CI threshold (3.84).
-               The fitted Ne_MMLE and its 95% profile CI are annotated.
+               The fitted Ne_MCMLE and its 95% profile CI are annotated.
 
     Right  --  Kimura per-pair SSR vs Ne, with the analytic Ne_kimura_ssr
                and the moment-based Ne_kimura (1 / (1 - b)) annotated, plus
@@ -65,17 +65,23 @@ def parse_header_metadata(tsv_path: str) -> dict:
 def load_ne_profile(tsv_path: str):
     """Return (metadata_dict, profile_dataframe).
 
-    Drops rows where mmle_log_lik is non-finite (Ne = 1 under the
+    Drops rows where mcmle_log_lik is non-finite (Ne = 1 under the
     continuous model is a degenerate point: see ne_estimate.cpp), so the
     plot does not blow up on the y-axis.
     """
     meta = parse_header_metadata(tsv_path)
     df = pd.read_csv(tsv_path, sep="\t", comment="#")
-    # v1.8.6 renamed mle_* columns to mmle_*; accept the legacy names too.
-    if "mmle_log_lik" not in df.columns and "mle_log_lik" in df.columns:
-        df = df.rename(columns={"mle_log_lik":   "mmle_log_lik",
-                                "mle_delta_2ll": "mmle_delta_2ll"})
-    df = df[np.isfinite(df["mmle_log_lik"])].reset_index(drop=True)
+    # Column history: mle_* (v1.8.5) -> mmle_* (v1.8.6..v1.12) -> mcmle_*
+    # (v1.13+).  Normalise every legacy generation to the current mcmle_*
+    # names so the checked-in sample profiles keep rendering.
+    if "mcmle_log_lik" not in df.columns:
+        for legacy in ("mmle_log_lik", "mle_log_lik"):
+            if legacy in df.columns:
+                df = df.rename(columns={legacy: "mcmle_log_lik",
+                                        legacy.replace("log_lik", "delta_2ll"):
+                                            "mcmle_delta_2ll"})
+                break
+    df = df[np.isfinite(df["mcmle_log_lik"])].reset_index(drop=True)
     return meta, df
 
 
@@ -89,38 +95,42 @@ def _meta_float(meta: dict, key: str) -> float:
         return float("nan")
 
 
-def plot_mmle_panel(ax, df: pd.DataFrame, meta: dict) -> None:
-    """Left panel: -2(LL - LL_max) vs Ne under the MMLE."""
-    ax.plot(df["ne_candidate"], df["mmle_delta_2ll"],
-            color="#c0392b", linewidth=2.0, label="MMLE  -2 (LL - LL_max)")
+def _meta_float_first(meta: dict, keys) -> float:
+    """Return the first parseable numeric among `keys` (schema-history fallback)."""
+    for key in keys:
+        val = _meta_float(meta, key)
+        if np.isfinite(val):
+            return val
+    return float("nan")
+
+
+def plot_mcmle_panel(ax, df: pd.DataFrame, meta: dict) -> None:
+    """Left panel: -2(LL - LL_max) vs Ne under the MCMLE."""
+    ax.plot(df["ne_candidate"], df["mcmle_delta_2ll"],
+            color="#c0392b", linewidth=2.0, label="MCMLE  -2 (LL - LL_max)")
 
     # 95% profile-likelihood threshold: chi2_{1, 0.95} = 3.841.
     ax.axhline(3.841, color="grey", linestyle="--", linewidth=1.0,
                label=r"$\chi^2_{1,\,0.95}=3.841$")
 
-    # v1.8.6 renamed metadata keys; fall back to the v1.8.5 names.
-    ne_mmle = _meta_float(meta, "fitted_ne_mmle")
-    if not np.isfinite(ne_mmle):
-        ne_mmle = _meta_float(meta, "fitted_ne_mle")
-    ne_lo   = _meta_float(meta, "fitted_ne_mmle_ci_low")
-    if not np.isfinite(ne_lo):
-        ne_lo = _meta_float(meta, "fitted_ne_mle_ci_low")
-    ne_hi   = _meta_float(meta, "fitted_ne_mmle_ci_high")
-    if not np.isfinite(ne_hi):
-        ne_hi = _meta_float(meta, "fitted_ne_mle_ci_high")
-    if np.isfinite(ne_mmle):
-        ax.axvline(ne_mmle, color="#c0392b", linestyle="-", linewidth=1.5,
-                   label=f"Fitted Ne_MMLE = {ne_mmle:.2f}")
+    # Metadata key history: fitted_ne_mle (v1.8.5) -> fitted_ne_mmle
+    # (v1.8.6..v1.12) -> fitted_ne_mcmle (v1.13+).  Accept any generation.
+    ne_mcmle = _meta_float_first(meta, ("fitted_ne_mcmle", "fitted_ne_mmle", "fitted_ne_mle"))
+    ne_lo    = _meta_float_first(meta, ("fitted_ne_mcmle_ci_low", "fitted_ne_mmle_ci_low", "fitted_ne_mle_ci_low"))
+    ne_hi    = _meta_float_first(meta, ("fitted_ne_mcmle_ci_high", "fitted_ne_mmle_ci_high", "fitted_ne_mle_ci_high"))
+    if np.isfinite(ne_mcmle):
+        ax.axvline(ne_mcmle, color="#c0392b", linestyle="-", linewidth=1.5,
+                   label=f"Fitted Ne_MCMLE = {ne_mcmle:.2f}")
     if np.isfinite(ne_lo) and np.isfinite(ne_hi):
         ax.axvspan(ne_lo, ne_hi, color="#c0392b", alpha=0.12,
                    label=f"95% CI [{ne_lo:.2f}, {ne_hi:.2f}]")
 
     ax.set_xlabel("Candidate Ne")
     ax.set_ylabel(r"$-2\,(\log L - \log L_{\max})$")
-    ax.set_title(f"MMLE marginal log-likelihood profile (model={meta.get('model', '?')})")
+    ax.set_title(f"MCMLE marginal log-likelihood profile (model={meta.get('model', '?')})")
     # Cap y-axis so the curve and 3.841 line are both visible; values
     # outside the cap usually correspond to far-off-optimum Ne.
-    finite_y = df["mmle_delta_2ll"][np.isfinite(df["mmle_delta_2ll"])]
+    finite_y = df["mcmle_delta_2ll"][np.isfinite(df["mcmle_delta_2ll"])]
     if len(finite_y) > 0:
         y_cap = float(np.clip(np.nanpercentile(finite_y, 99), 20.0, 200.0))
         ax.set_ylim(-1.0, y_cap)
@@ -177,10 +187,10 @@ def make_plot(tsv_path: str, output_path: str,
     meta, df = load_ne_profile(tsv_path)
     if df.empty:
         raise RuntimeError(
-            "[plot_ne_profile] No usable rows in profile (all mmle_log_lik are -inf?)")
+            "[plot_ne_profile] No usable rows in profile (all mcmle_log_lik are -inf?)")
 
     fig, (ax_left, ax_right) = plt.subplots(1, 2, figsize=figsize)
-    plot_mmle_panel(ax_left, df, meta)
+    plot_mcmle_panel(ax_left, df, meta)
     plot_kimura_panel(ax_right, df, meta)
 
     if title:
@@ -188,10 +198,12 @@ def make_plot(tsv_path: str, output_path: str,
 
     n_pairs = meta.get("n_pairs_used", "?")
     model   = meta.get("model", "?")
-    ne_mmle_disp = meta.get("fitted_ne_mmle", meta.get("fitted_ne_mle", "?"))
+    ne_mcmle_disp = meta.get("fitted_ne_mcmle", 
+                             meta.get("fitted_ne_mmle", 
+                                      meta.get("fitted_ne_mle", "?")))
     fig.text(0.5, 0.005,
              f"n_pairs_used = {n_pairs}, model = {model},  "
-             f"Ne_MMLE = {ne_mmle_disp},  "
+             f"Ne_MCMLE = {ne_mcmle_disp},  "
              f"Ne_Kimura_SSR = {meta.get('best_ne_kimura_analytic', '?')},  "
              f"Ne_Kimura_moments = {meta.get('kimura_ne_moments', '?')}",
              ha="center", fontsize=8, color="#555555")
@@ -203,7 +215,7 @@ def make_plot(tsv_path: str, output_path: str,
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Plot the MMLE vs Kimura Ne-profile diagnostic emitted by "
+        description="Plot the MCMLE vs Kimura Ne-profile diagnostic emitted by "
                     "`mitoquest ne-estimate --ne-profile`.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument("-i", "--input", required=True,

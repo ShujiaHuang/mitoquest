@@ -1,11 +1,11 @@
 /**
  * @file ne_estimate.h
  * @brief Estimate the mtDNA bottleneck size (Ne) from mother-child
- *        transmission pairs via Maximum Marginal Likelihood Estimation
- *        (MMLE), with an optional Wonnapinij/Kimura cross-check.
+ *        transmission pairs via Maximum Composite Marginal Likelihood Estimation
+ *        (MCMLE), with an optional Wonnapinij/Kimura cross-check.
  *
  * ====================================================================
- * Statistical model (primary estimator: continuous Beta-diffusion MMLE)
+ * Statistical model (primary estimator: continuous Beta-diffusion MCMLE)
  * ====================================================================
  *
  * For each independent mother-child (M-C) transmission pair the child's
@@ -26,7 +26,7 @@
  * log-likelihoods (a composite / pseudo-likelihood that is consistent
  * for Ne under the standard Wright-Fisher / Kimura assumptions).
  * Maximising this composite marginal likelihood over Ne yields the
- * Maximum Marginal Likelihood Estimator (MMLE) reported by this tool.
+ * Maximum Composite Marginal Likelihood Estimator (MCMLE) reported by this tool.
  *
  * The maternal frequency p_mother is integrated out by DEFAULT
  * (ModelOptions::marginalize_maternal).  The CLI exposes only the opt-out
@@ -101,7 +101,7 @@
  * The previous discrete model (k ~ BetaBin, c ~ Bin(c_dp, k/Ne))
  * restricted child heteroplasmy to the coarse grid {0, 1/Ne, ..., 1}
  * and suffered from systematic upward bias at high sequencing depths:
- * the tight Binomial likelihood forced the MMLE to inflate Ne to obtain
+ * the tight Binomial likelihood forced the MCMLE to inflate Ne to obtain
  * a fine enough grid, giving answers ~5-10x above the deCODE / Kimura
  * consensus.  See release_v1.8.2.md for details.
  *
@@ -123,7 +123,7 @@
  * method-of-moments estimator (Wonnapinij et al., 2008/2010; Helgason
  * et al., 2024 Cell), then convert to a single-generation Ne via
  *   Ne_kimura = 1 / (1 - b).
- * On well-behaved data the continuous MMLE and Wonnapinij b should
+ * On well-behaved data the continuous MCMLE and Wonnapinij b should
  * agree closely.  Residual discrepancies indicate either heavy-tailed
  * outliers (use `--kimura-trim`) or model misspecification.
  *
@@ -338,7 +338,7 @@ public:
         size_t      n_children    = 0;
         size_t      n_pairs       = 0;      // total variant sites used
         size_t      n_informative = 0;      // sites with 0 < p_M < 1
-        double      ne            = 0.0;    // per-family MMLE Ne
+        double      ne            = 0.0;    // per-family MCMLE Ne
         double      ci_low        = 0.0;
         double      ci_high       = 0.0;
         double      max_log_lik   = 0.0;
@@ -395,7 +395,7 @@ public:
         // the switch (--model discrete already integrates p_M; the CLI reports
         // that on stderr when the user asked for it explicitly).
         //
-        // Max_Marginal_LogLik is NOT comparable across this flag.  Switching it
+        // Max_Composite_Marginal_LogLik is NOT comparable across this flag.  Switching it
         // on replaces the plug-in child term log BB(k_C; d_C, p_hat_M s,
         // (1-p_hat_M) s) by log E_{Beta(k_M+1, d_M-k_M+1)}[BB(k_C; d_C, p_M s,
         // (1-p_M) s)], which is not the old term plus a constant: the fitted Ne
@@ -451,7 +451,7 @@ public:
                                            // when --bin-simulation is set.
         std::string ne_profile_file;     // when non-empty, write an Ne-profile
                                          // TSV that scores every candidate Ne
-                                         // under both the MMLE and Kimura
+                                         // under both the MCMLE and Kimura
                                          // models (dual-objective Ne scan).
         double      ne_profile_step;     // grid step on the Ne axis for
                                          // --ne-profile (default 0.1).
@@ -488,7 +488,7 @@ public:
     };
 
     /// One row of the per-bin observed-vs-theoretical drift summary.
-    /// All quantities are computed on the same pair set the MMLE /
+    /// All quantities are computed on the same pair set the MCMLE /
     /// Kimura cross-check was fit on.
     struct BinSimulationRow {
         int    bin_idx       = 0;
@@ -511,10 +511,10 @@ public:
     /// report two independent goodness-of-fit metrics so the user can see
     /// which Ne each of the two estimators in the program prefers:
     ///
-    ///   * `mmle_log_lik` -- global marginal log-likelihood under the configured
+    ///   * `mcmle_log_lik` -- global marginal log-likelihood under the configured
     ///                       model (continuous Beta-diffusion or discrete
     ///                       Beta-Binomial).  Maximised at the fitted
-    ///                       Ne_MMLE.
+    ///                       Ne_MCMLE.
     ///   * `kimura_ssr`   -- sum-of-squared per-pair residuals under the
     ///                       one-generation Wright-Fisher prediction
     ///                           E[d_i - s_i]  =  p_m_i (1 - p_m_i) / Ne.
@@ -525,8 +525,8 @@ public:
     /// script can render comparable curves on linear or log axes.
     struct NeProfileRow {
         double ne_candidate    = 0.0;
-        double mmle_log_lik    = 0.0;
-        double mmle_delta_2ll  = 0.0;   // -2 (LL - LL_max); 0 at fitted Ne_MMLE
+        double mcmle_log_lik   = 0.0;
+        double mcmle_delta_2ll = 0.0;   // -2 (LL - LL_max); 0 at fitted Ne_MCMLE
         double kimura_ssr      = 0.0;   // Sigma_i (r_i - w_i / Ne)^2
         double kimura_norm_ssr = 0.0;   // ssr / ssr_min (>= 1, =1 at best fit)
     };
@@ -797,10 +797,10 @@ public:
                            double vaf_low, double vaf_high, int n_bins);
 
     /**
-    * @brief Score every candidate Ne under both the MMLE marginal log-
+    * @brief Score every candidate Ne under both the MCMLE marginal log-
     *        likelihood and the Kimura sum-of-squared-residuals metric.
      *
-     * The MMLE column uses the continuous Beta-diffusion marginal log-
+     * The MCMLE column uses the continuous Beta-diffusion marginal log-
      * likelihood when `continuous == true` and the discrete Beta-Binomial
      * marginal log-likelihood otherwise.  The Kimura column is independent
      * of the model selection: for every informative pair we compute
@@ -808,7 +808,7 @@ public:
      *     residual_i(Ne)  =  (d_i - s_i)  -  p_m_i (1 - p_m_i) / Ne
      *     ssr(Ne)         =  Sigma_i residual_i(Ne)^2
      *
-     * After the scan we normalise: `mmle_delta_2ll = -2 (LL - LL_max)` and
+     * After the scan we normalise: `mcmle_delta_2ll = -2 (LL - LL_max)` and
     * `kimura_norm_ssr = ssr / ssr_min`. The continuous model uses `step`;
     * the discrete model evaluates and reports each integer Ne only. The
     * grid is clamped so that `step > 0` and `min_ne >= 1`.
@@ -830,7 +830,7 @@ public:
     static std::vector<FamilyData>
     group_into_families(const std::vector<PairData>& data);
 
-    // Estimate Ne for a single family using the continuous MMLE.
+    // Estimate Ne for a single family using the continuous MCMLE.
     // Returns a FamilyResult with skipped=true when n_informative < min_family_sites.
     static FamilyResult estimate_family(const FamilyData& fam,
                                          int min_ne, int max_ne,

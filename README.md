@@ -27,7 +27,7 @@ Commands:
   subsam       Extract mitochondrial variants for specified samples from VCF files and output a new VCF file.
   copynum      Estimate per-chromosome (incl. mtDNA) relative copy number from a BAM/CRAM file.
   trans-prep   Extract mother-child mtDNA allele transmission pairs from a multi-sample VCF + FAM file.
-  ne-estimate  Estimate the mtDNA bottleneck size (Ne) from transmission pairs via Beta-Binomial MMLE (Maximum Marginal Likelihood).
+  ne-estimate  Estimate the mtDNA bottleneck size (Ne) from transmission pairs via Beta-Binomial MCMLE (Maximum Composite Marginal Likelihood).
 
 ```
 
@@ -106,7 +106,7 @@ Commands:
   trans-prep   Extract mother-child mtDNA allele transmission pairs from a
                multi-sample VCF + a PLINK FAM file.
   ne-estimate  Estimate the mtDNA bottleneck size (Ne) from transmission
-               pairs via the Beta-Binomial Maximum Marginal Likelihood Estimator (MMLE).
+               pairs via the Beta-Binomial Maximum Composite Marginal Likelihood Estimator (MCMLE).
 ```
 
 ---
@@ -616,17 +616,17 @@ sample disagree (which prevents an unambiguous GT-aligned AD lookup).
 
 ---
 
-## `mitoquest ne-estimate` — Bottleneck size (Ne) Maximum Marginal Likelihood Estimation (MMLE)
+## `mitoquest ne-estimate` — Bottleneck size (Ne) Maximum Composite Marginal Likelihood Estimation (MCMLE)
 
 `mitoquest ne-estimate` fits the mitochondrial **transmission bottleneck
 size** Ne from the per-allele TSV produced by `mitoquest trans-prep`,
-using a count-based **Maximum Marginal Likelihood Estimator (MMLE)**. The
+using a count-based **Maximum Composite Marginal Likelihood Estimator (MCMLE)**. The
 default continuous model plugs the maternal count frequency into a working
 Beta transition model and analytically marginalizes the child's latent
 frequency; the alternative discrete model also integrates a maternal Beta
 posterior. Rows are treated as independent working observations, so the
 global objective is a composite log likelihood. We label the resulting
-estimator **MMLE** to keep those assumptions explicit.
+estimator **MCMLE** to keep those assumptions explicit.
 
 ### Statistical model
 
@@ -686,7 +686,7 @@ obeying
 $$
 \frac{1}{N_e^{\text{app}}}\;=\;\frac{1}{N_e}+\frac{1}{d_M}
 \qquad\Longleftrightarrow\qquad
-\frac{N_e^{\text{Kimura}}}{\widehat N_e^{\text{MMLE}}}\approx 1+\frac{N_e}{d_M}
+\frac{N_e^{\text{Kimura}}}{\widehat N_e^{\text{MCMLE}}}\approx 1+\frac{N_e}{d_M}
 $$
 
 at a **single** maternal depth $d_M$. Measured on synthetic data
@@ -724,7 +724,7 @@ plug-in — applies to the continuous model only, and reaches the per-family and
    default. The plug-in wall clock sits at the ~5 ms process-startup floor, so
    the ratio overstates the compute gap; the absolute cost is what matters and
    it is sub-second.
-2. **`Max_Marginal_LogLik` is not comparable across the flag.** Turning it on
+2. **`Max_Composite_Marginal_LogLik` is not comparable across the flag.** Turning it on
    replaces the whole child term and adds the maternal read and posterior
    normalisation, so the likelihood moves by hundreds of log units and the
    fitted $N_e$ can move too. Only the normalisation
@@ -900,14 +900,14 @@ Methodologically, deCODE uses the Wonnapinij bottleneck parameter `b`
 *variance* of frequency changes between relatives.
 
 Since v1.8.2, `mitoquest ne-estimate` uses a **continuous working Beta
-transition MMLE** as the default model:
+transition MCMLE** as the default model:
 
 ```txt
 p_child | p_mother  ~  Beta(p_m × (Ne − 1), (1 − p_m) × (Ne − 1))
 c_alt   | p_child   ~  BetaBinomial(c_dp, p_m × (Ne − 1), (1 − p_m) × (Ne − 1))
 ```
 
-The continuous MMLE and the Wonnapinij/Kimura cross-check share the
+The continuous MCMLE and the Wonnapinij/Kimura cross-check share the
 one-generation drift-variance target $p(1-p)/N_e$, but they are not the
 same likelihood or interchangeable estimators. Agreement is a useful
 diagnostic, not proof that all model assumptions hold. The current Kimura
@@ -916,7 +916,7 @@ explicit two-transition G-M-C likelihood or a general generation-count
 parameter. For declared G-M-C trios, use the continuous scorer described
 above.
 
-### Why two MMLE models?
+### Why two MCMLE models?
 
 The previous default (v1.8.0–v1.8.1) was the **discrete model**:
 
@@ -929,7 +929,7 @@ This restricts the child's heteroplasmy to the grid {0, 1/Ne, …, 1}.
 At high sequencing depths (DP ≥ 2000), the Binomial likelihood is an
 extremely tight spike, and any mismatch between the child's true VAF
 and the nearest grid point creates an enormous penalty — forcing the
-MMLE to inflate Ne upward (systematic ~5–10× bias; see
+MCMLE to inflate Ne upward (systematic ~5–10× bias; see
 `release_v1.8.2.md`).  In contrast, the continuous model allows the
 child's heteroplasmy to be any value in [0, 1], correctly capturing
 post-bottleneck vegetative segregation during cell division.
@@ -942,13 +942,13 @@ physical inoculum count is the target).
 
 | Estimator | Role | Strengths | Limitations |
 |-----------|------|-----------|-------------|
-| **Continuous MMLE** (default) | Primary | Real-valued parameter and full child count likelihood | Maternal frequency integrated out by default, which costs ~80× the plug-in wall clock (`--no-maternal-marginalization`); working Beta transition, composite-likelihood interval |
+| **Continuous MCMLE** (default) | Primary | Real-valued parameter and full child count likelihood | Maternal frequency integrated out by default, which costs ~80× the plug-in wall clock (`--no-maternal-marginalization`); working Beta transition, composite-likelihood interval |
 | **Kimura cross-check** (`--cross-check kimura`) | Secondary diagnostic | Sampling-error-corrected ratio of sums; fast and interpretable | Uses only corrected M-C shifts; sensitive to outliers and does not fit explicit trio transitions |
-| **Discrete MMLE** (`--model discrete`) | Specialised | Finite hard-bottleneck model for fixed-inoculum experiments | Integer grid, can inflate on deep mtDNA data, and rejects declared trio rows |
+| **Discrete MCMLE** (`--model discrete`) | Specialised | Finite hard-bottleneck model for fixed-inoculum experiments | Integer grid, can inflate on deep mtDNA data, and rejects declared trio rows |
 
 **Decision rule:**
 
-1. Use the **continuous MMLE** as the reported Ne (default behaviour).
+1. Use the **continuous MCMLE** as the reported Ne (default behaviour).
 2. Run `--cross-check kimura --kimura-trim 0.10` as a sanity check.
 3. Treat agreement or CI overlap as a diagnostic consistency check, not an
   independent validation of the shared assumptions.
@@ -966,9 +966,9 @@ physical inoculum count is the target).
    get the depth-dependent plug-in, whose estimates must not be compared across
    cohorts sequenced at different coverage.
 
-#### Why Ne_MMLE and Ne_Kimura can differ
+#### Why Ne_MCMLE and Ne_Kimura can differ
 
-There is no fixed ordering between the continuous MMLE and the Kimura
+There is no fixed ordering between the continuous MCMLE and the Kimura
 moment estimate. Their difference can arise from finite-sample behavior,
 outliers, input quality, or failure of the working one-generation model:
 
@@ -980,10 +980,10 @@ outliers, input quality, or failure of the working one-generation model:
    systematic upward bias in Ne_Kimura.
 
 2. **Full distribution vs. second moment only.**
-  The MMLE fits the entire Beta-Binomial count shape, while the
+  The MCMLE fits the entire Beta-Binomial count shape, while the
    Kimura estimator uses only the second central moment (variance).  At
    small Ne the Beta distribution is highly non-Gaussian (often U-shaped),
-   so the higher-order information captured by the MMLE carries real signal
+   so the higher-order information captured by the MCMLE carries real signal
    that the variance-only Kimura discards.
 
 3. **Different use of depth and count information.**
@@ -999,11 +999,11 @@ outliers, input quality, or failure of the working one-generation model:
 
 5. **The maternal plug-in — the one term that is predictable, not random.**
   The Kimura side subtracts the maternal sampling variance $s_i$, so it is
-  unbiased for the drift; the MMLE side cannot identify that term, because the
+  unbiased for the drift; the MCMLE side cannot identify that term, because the
   Beta-Binomial already marginalises the *child's* read noise but nothing
   marginalises the *mother's*. To first order
-  $1/\widehat N_e^{\text{MMLE}}\approx 1/N_e+1/d_M$, i.e.
-  $N_e^{\text{Kimura}}/\widehat N_e^{\text{MMLE}}\approx 1+N_e/d_M$.
+  $1/\widehat N_e^{\text{MCMLE}}\approx 1/N_e+1/d_M$, i.e.
+  $N_e^{\text{Kimura}}/\widehat N_e^{\text{MCMLE}}\approx 1+N_e/d_M$.
   The offset is set entirely by the ratio $N_e/d_M$: ~0.6% at
   $N_e=3,\ d_M=500$ (invisible) but ~30% at $N_e=30,\ d_M=100$. **Before
   deciding that a disagreement is anomalous, subtract this expected offset.**
@@ -1013,11 +1013,11 @@ outliers, input quality, or failure of the working one-generation model:
   Note it does *not* survive small samples — with only a handful
   of sites both estimators' sampling noise dwarfs the systematic term and the
   direction is random (the 5-site worked example in
-  `handoff/HANDOFF_ne_estimate_methods.md` §10 has Kimura *below* MMLE).
+  `handoff/HANDOFF_ne_estimate_methods.md` §10 has Kimura *below* MCMLE).
 
-**Is it always MMLE < Kimura?**  No — when high-drift outliers (NUMTs,
+**Is it always MCMLE < Kimura?**  No — when high-drift outliers (NUMTs,
 sequencing errors) dominate, they inflate V and collapse Ne_Kimura *below*
-Ne_MMLE.  The direction depends on the data:
+Ne_MCMLE.  The direction depends on the data:
 
 | Scenario | Typical relationship |
 | :----------: | :---------------------: |
@@ -1025,7 +1025,7 @@ Ne_MMLE.  The direction depends on the data:
 | High-drift outliers present | Kimura may be pulled downward by inflated corrected drift |
 | Sparse or shallow data | Either estimate can be unstable or boundary-clipped |
 
-**Bottom line:** Use the continuous MMLE as the configured primary estimate
+**Bottom line:** Use the continuous MCMLE as the configured primary estimate
 and treat Ne_Kimura as a qualitative diagnostic. Material disagreement is a
 reason to inspect data and assumptions; it is neither automatic evidence of
 a data problem nor a reason to choose an estimator solely by direction.
@@ -1067,7 +1067,7 @@ Optional options:
       --max-ne    INT    Largest Ne value to consider  [100].
   -t, --threads   INT    Worker threads for the inner sum [1].
       --cross-check NAME   Optional secondary estimator alongside the
-                           MMLE. Supported value: `kimura`, which
+                           MCMLE. Supported value: `kimura`, which
                            computes the Wonnapinij b and the implied
                            Ne (single-generation approximation).
       --kimura-bootstrap  INT  Non-parametric bootstrap iterations for the
@@ -1087,7 +1087,7 @@ Optional options:
       --bin-simulation-bins INT  Number of equal-width maternal-VAF bins
                                  for --bin-simulation [10].
       --ne-profile     FILE   Emit a TSV that scores every candidate Ne
-                              under both the MMLE marginal log-likelihood
+                              under both the MCMLE marginal log-likelihood
                               and the Kimura per-pair SSR metric.  Useful to
                               visually compare which Ne each estimator
                               prefers (dual-objective Ne scan).
@@ -1118,8 +1118,8 @@ Optional options:
   "Trio_Founder_Mismatch_Skipped": 0,
   "Trio_Founder_Hom_Skipped":      0,
   "Min_Depth_Skipped":             0,
-  "Estimator":       "MMLE (composite marginal likelihood)",
-  "Max_Marginal_LogLik": -812.34561,
+  "Estimator":       "MCMLE (composite marginal likelihood)",
+  "Max_Composite_Marginal_LogLik": -812.34561,
   "Model":           "continuous",
   "Min_VAF":         0.10,
   "Max_VAF":         0.90,
@@ -1170,12 +1170,12 @@ and `--top-drift-k > 0`, respectively.
   rows (`HAS_G=1`); `Min_Depth_Skipped` counts rows dropped by `--min-depth`.
 - `Min_Depth` and `Maternal_Marginalization` echo the model-form switches
   **actually applied**, so a reader can tell which likelihood the reported
-  `Max_Marginal_LogLik` belongs to. `Maternal_Marginalization` is `true` for a
+  `Max_Composite_Marginal_LogLik` belongs to. `Maternal_Marginalization` is `true` for a
   default continuous run, `false` when you opted out with
   `--no-maternal-marginalization`, and also `false` under `--model discrete` —
   that model always integrates $p_M$ and therefore cannot honour the opt-out,
   which it reports with a `WARNING:` rather than silently.
-  `Max_Marginal_LogLik` is **not comparable** across that flag.
+  `Max_Composite_Marginal_LogLik` is **not comparable** across that flag.
 - `Mean_*_DP` and `Harmonic_*_DP` describe the retained rows' coverage and are
   **descriptive only**. The plug-in pseudo-true identity
   $1/N_e^{\text{app}}=1/N_e+1/d_M$ holds at a single depth and is not
@@ -1218,14 +1218,14 @@ mitoquest ne-estimate \
 
 ### Diagnostic TSV outputs
 
-Two optional TSV outputs let you visually assess and compare the MMLE
+Two optional TSV outputs let you visually assess and compare the MCMLE
 and Kimura fits:
 
 | Flag                        | Purpose                                                                                       |
 | --------------------------- | --------------------------------------------------------------------------------------------- |
 | `--bin-simulation FILE`     | Per maternal-VAF bin observed drift vs. the analytical Kimura prediction `p_m(1 − p_m) / Ne`. |
 | `--bin-simulation-bins INT` | Number of equal-width bins across `[--min-vaf, --max-vaf]` (default: 10).                      |
-| `--ne-profile FILE`         | Per-candidate-Ne grid of MMLE marginal log-likelihood and Kimura SSR — lets you plot both objectives on the same axis and see which Ne each prefers. |
+| `--ne-profile FILE`         | Per-candidate-Ne grid of MCMLE marginal log-likelihood and Kimura SSR — lets you plot both objectives on the same axis and see which Ne each prefers. |
 | `--ne-profile-step FLOAT`   | Grid step on the Ne axis (default: 0.1).                                                       |
 
 ```bash
@@ -1254,7 +1254,7 @@ family** in the cohort. This is enabled by the `--per-family` flag.
 
 Per-family mode groups the transmission pairs by `(FAM_ID, MOTHER_ID)`
 (columns emitted by `mitoquest trans-prep`) and runs the continuous
-working-Beta MMLE on each group separately. It requires `--model continuous`.
+working-Beta MCMLE on each group separately. It requires `--model continuous`.
 The results are reported as:
 
 - A **per-family TSV** (`--per-family-output FILE`) with one row per
@@ -1271,7 +1271,7 @@ message. This prevents unreliable estimates from very small families.
 
 > **Note:** Per-family Ne estimation on a single family with only a
 > handful of variant sites will typically produce a very wide CI. This
-> is expected — the working-Beta MMLE is statistically consistent but
+> is expected — the working-Beta MCMLE is statistically consistent but
 > needs sufficient heteroplasmic sites to resolve Ne precisely.
 
 The point estimate remains a row-summed composite likelihood. For its
@@ -1306,7 +1306,7 @@ The `--per-family-output` TSV has one row per family:
 | `N_CHILDREN`       | Number of distinct children in this family                     |
 | `N_PAIRS`          | Total variant sites (rows) for this family                     |
 | `N_INFORMATIVE`    | Sites with 0 < mother VAF < 1                                  |
-| `NE_MMLE`          | Per-family Ne estimate (continuous MMLE); `NA` if skipped     |
+| `NE_MCMLE`          | Per-family Ne estimate (continuous MCMLE); `NA` if skipped     |
 | `CI_95_LOW`        | 95% CI lower bound; `NA` if skipped                            |
 | `CI_95_HIGH`       | 95% CI upper bound; `NA` if skipped                            |
 | `CI_LOW_CLIPPED`   | `TRUE` if CI lower bound hit the search boundary               |
@@ -1340,14 +1340,14 @@ pipeline end-to-end **without any real sequencing data**.
 bash tests/data/ne_pipeline/run_demo.sh
 
 # Expected output:
-#   Ne ≈ 3–8  (true Ne = 5; MMLE is consistent but stochastic at N=20)
+#   Ne ≈ 3–8  (true Ne = 5; MCMLE is consistent but stochastic at N=20)
 #   Ne_kimura in the same ballpark
 #   Both CI_Low_Clipped and CI_High_Clipped = false
 ```
 
 The synthetic cohort was generated by `tests/data/ne_pipeline/synthesize.py`
 under the continuous Beta-diffusion model with known `true_ne = 5`. The
-MMLE should recover a value within ~50% of the truth on this small
+MCMLE should recover a value within ~50% of the truth on this small
 cohort; larger cohorts (hundreds of pairs) yield tighter estimates.
 
 #### Quick validation (per-family Ne)
@@ -1534,7 +1534,7 @@ the C++ binaries:
 | `tools/create_join_seq.py`      | Build the joined coding-region / non-coding-region reference for re-alignment.           |
 | `tools/detect_NUMT_by_mtCN.py`  | Flag potential NUMT contamination using mtCN ratios per sample.                          |
 | `tools/plot_bottleneck_simulation.py` | Plot per-bin observed drift vs. analytical Kimura prediction `p_m(1−p_m)/Ne` from `ne-estimate --bin-simulation`. |
-| `tools/plot_ne_profile.py`      | Plot the MMLE and Kimura objective curves over Ne from `ne-estimate --ne-profile`.        |
+| `tools/plot_ne_profile.py`      | Plot the MCMLE and Kimura objective curves over Ne from `ne-estimate --ne-profile`.        |
 | `tools/vcf_format_validator.py` | Sanity-check a VCF for downstream compatibility.                                         |
 
 Each script supports `-h / --help`.

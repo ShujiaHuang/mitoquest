@@ -6,7 +6,7 @@ MitoQuest multi-generation bottleneck plot
 Reads the JSON output of ``mitoquest ne-estimate`` (see ``src/ne_estimate.cpp``)
 and renders the multi-generation bottleneck retention parameter ``b`` across
 pair types of varying genealogical distance.  The Continuous Beta-diffusion
-MMLE and the optional Kimura / Wonnapinij cross-check are overlaid with their
+MCMLE and the optional Kimura / Wonnapinij cross-check are overlaid with their
 95 % confidence-interval bands.
 
 Theory (consistent with ``ne_estimate.cpp``)
@@ -139,7 +139,7 @@ def load_ne_json(filepath: str) -> dict:
             sys.exit(1)
 
     print(
-        f"[INFO] Continuous MMLE: Ne = {data['Ne']:.4f}  "
+        f"[INFO] Continuous MCMLE: Ne = {data['Ne']:.4f}  "
         f"(95% CI [{data['CI_95_Low']:.4f}, {data['CI_95_High']:.4f}])"
     )
 
@@ -169,7 +169,7 @@ def load_ne_json(filepath: str) -> dict:
 # ---------------------------------------------------------------------------
 
 def plot_bottleneck(json_data: dict, output_path: str) -> None:
-    """Render the Continuous MMLE / Kimura cross-check overlay."""
+    """Render the Continuous MCMLE / Kimura cross-check overlay."""
     sns.set_theme(style="whitegrid", context="talk", font_scale=0.9)
 
     pair_types = list(PAIR_TRANSMISSIONS.keys())
@@ -191,7 +191,7 @@ def plot_bottleneck(json_data: dict, output_path: str) -> None:
             fontsize=7, color="gray", va="center", alpha=0.75,
         )
 
-    # --- Continuous MMLE: matches the JSON "Ne" field. ----------------------
+    # --- Continuous MCMLE: matches the JSON "Ne" field. ----------------------
     main_ne = float(json_data["Ne"])
     ci_lo = float(json_data["CI_95_Low"])
     ci_hi = float(json_data["CI_95_High"])
@@ -206,7 +206,7 @@ def plot_bottleneck(json_data: dict, output_path: str) -> None:
     ax.plot(
         x_pos, main_y,
         color=color_main, linewidth=2.8, marker="o", markersize=6, zorder=10,
-        label=(f"Continuous MMLE  ($N_e$={main_ne:.2f}, "
+        label=(f"Continuous MCMLE  ($N_e$={main_ne:.2f}, "
                f"95% CI [{ci_lo:.2f}, {ci_hi:.2f}])"),
     )
 
@@ -248,7 +248,7 @@ def plot_bottleneck(json_data: dict, output_path: str) -> None:
     vaf_min = json_data.get("Min_VAF", "?")
     vaf_max = json_data.get("Max_VAF", "?")
     ax.set_title(
-        "Mitochondrial bottleneck: Continuous MMLE vs Kimura cross-check\n"
+        "Mitochondrial bottleneck: Continuous MCMLE vs Kimura cross-check\n"
         f"{pairs_used} pairs | maternal VAF in [{vaf_min}, {vaf_max}] | "
         f"model = {model_name}",
         fontsize=14, fontweight="bold",

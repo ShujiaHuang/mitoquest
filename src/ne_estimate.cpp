@@ -1448,9 +1448,9 @@ NeEstimator::load_pairs(const std::string& tsv_path, double min_vaf, double max_
 // cohorts.  When `n_bootstrap > 0` we also do a pair-level non-parametric
 // bootstrap and return the 2.5/97.5 percentile CI for b and Ne_kimura.
 // The value reported here is *only* a sanity cross-check against the
-// primary continuous MMLE. The two can diverge on real data because:
+// primary continuous MCMLE. The two can diverge on real data because:
 //
-//   * The MMLE uses the full child count likelihood, while the Kimura
+//   * The MCMLE uses the full child count likelihood, while the Kimura
 //     diagnostic uses only sampling-corrected squared frequency shifts.
 //   * The Wonnapinij b is variance-only, so a small number of high-drift
 //     outliers (errors / NUMTs / mixed populations) can pull Ne_kimura
@@ -1712,7 +1712,7 @@ NeEstimator::compute_kimura_check(const std::vector<PairData>& data,
 //
 // For each equal-width maternal-VAF bin in [vaf_low, vaf_high] we report
 // three independent estimates of the per-bin drift, all computed on the
-// same informative pairs that drive the MMLE / Wonnapinij b:
+// same informative pairs that drive the MCMLE / Wonnapinij b:
 //
 //   obs_var      =  mean_i (p_c_i - p_m_i)^2                 (raw)
 //   obs_var_corr =  mean_i (d_i - s_i)                       (sampling-corrected)
@@ -1803,15 +1803,15 @@ NeEstimator::compute_bin_simulation(const std::vector<PairData>& data,
 }
 
 // ---------------------------------------------------------------------
-// Ne-profile scan (compare MMLE vs Kimura preferences across Ne)
+// Ne-profile scan (compare MCMLE vs Kimura preferences across Ne)
 // ---------------------------------------------------------------------
 //
 // For each candidate Ne in [min_ne, max_ne] (step `step`) compute two
 // independent goodness-of-fit metrics on the *same* informative pair set:
 //
-//   mmle_log_lik(Ne) =  global marginal log-likelihood under the configured
+//   mcmle_log_lik(Ne) =  global marginal log-likelihood under the configured
 //                       model (continuous Beta-diffusion or discrete Beta-
-//                       Binomial).  Maximised at the fitted Ne_MMLE.
+//                       Binomial).  Maximised at the fitted Ne_MCMLE.
 //   kimura_ssr(Ne)   =  Sigma_i ( (d_i - s_i) - p_m_i (1 - p_m_i) / Ne )^2
 //                       Per-pair least-squares fit of the one-generation
 //                       Wright-Fisher prediction.  Minimised at the
@@ -1870,11 +1870,11 @@ NeEstimator::compute_ne_profile(const std::vector<PairData>& data,
         row.ne_candidate = ne;
 
         if (continuous) {
-            row.mmle_log_lik = global_ll_continuous_impl(ne, data, lf, threads, opts, &profile_maternal_cache);
+            row.mcmle_log_lik = global_ll_continuous_impl(ne, data, lf, threads, opts, &profile_maternal_cache);
         } else {
-            row.mmle_log_lik = compute_global_ll_parallel(discrete_ne, data, lf, threads, false);
+            row.mcmle_log_lik = compute_global_ll_parallel(discrete_ne, data, lf, threads, false);
         }
-        if (row.mmle_log_lik > max_ll) max_ll = row.mmle_log_lik;
+        if (row.mcmle_log_lik > max_ll) max_ll = row.mcmle_log_lik;
 
         // Kimura SSR: Sigma_i (r_i - w_i / Ne)^2 over informative pairs.
         const double inv_ne = 1.0 / ne;
@@ -1915,7 +1915,7 @@ NeEstimator::compute_ne_profile(const std::vector<PairData>& data,
     // Post-process: normalise both metrics so they are on comparable
     // "distance from best fit" scales for plotting.
     for (auto& row : profile) {
-        row.mmle_delta_2ll  = -2.0 * (row.mmle_log_lik - max_ll);
+        row.mcmle_delta_2ll  = -2.0 * (row.mcmle_log_lik - max_ll);
         row.kimura_norm_ssr = (min_ssr > 0.0) ? row.kimura_ssr / min_ssr : 1.0;
     }
     return profile;
@@ -2024,7 +2024,7 @@ NeEstimator::estimate_family(const FamilyData& fam,
         return fr;
     }
 
-    // Reuse the existing continuous MMLE estimator on this family's pairs.
+    // Reuse the existing continuous MCMLE estimator on this family's pairs.
     Result est = estimate_continuous(fam.pairs, min_ne, max_ne, /*threads=*/1, opts);
     fr.ne             = est.ne;
     fr.ci_low         = est.ci_low;
@@ -2322,7 +2322,7 @@ void NeEstimator::_write_family_tsv(
 {
     // Header.
     out << "FAM_ID\tMOTHER_ID\tN_CHILDREN\tN_PAIRS\tN_INFORMATIVE"
-        << "\tNE_MMLE\tCI_95_LOW\tCI_95_HIGH"
+        << "\tNE_MCMLE\tCI_95_LOW\tCI_95_HIGH"
         << "\tCI_LOW_CLIPPED\tCI_HIGH_CLIPPED"
         << "\tMAX_LOG_LIK"
         << "\tMEAN_MOTHER_DP\tMEAN_CHILD_DP";
@@ -2443,7 +2443,7 @@ void NeEstimator::usage() {
     std::cerr << "Usage: mitoquest ne-estimate [options] -i <pairs.tsv>\n\n"
                  "Description:\n"
                  "  Estimate the mitochondrial DNA bottleneck size (Ne) from mother-child\n"
-                 "  transmission pairs using the Maximum Marginal Likelihood Estimator (MMLE).\n"
+                 "  transmission pairs using the Maximum Composite Marginal Likelihood Estimator (MCMLE).\n"
                  "  The child's latent true allele frequency is analytically integrated out\n"
                  "  (Beta-Binomial conjugacy) and pairs are treated as independent (composite\n"
                  "  likelihood), yielding a per-pair marginal log-likelihood that is maximised\n"
@@ -2469,7 +2469,7 @@ void NeEstimator::usage() {
                  "  This restricts child heteroplasmy to the grid {0, 1/Ne, ..., 1}\n"
                  "  and can suffer from upward bias at high sequencing depth.\n"
                  "\n"
-                 "  Reports the MMLE point estimate of Ne and its 95% profile-likelihood\n"
+                 "  Reports the MCMLE point estimate of Ne and its 95% profile-likelihood\n"
                  "  confidence interval (LL_max - 1.92).\n"
                  "\nRequired options:\n"
                  "  -i, --input     FILE   Input transmission pairs TSV produced by\n"
@@ -2502,7 +2502,7 @@ void NeEstimator::usage() {
                  "      --max-ne    INT    Largest Ne value to consider  [100].\n"
                  "  -t, --threads   INT    Worker threads for the inner sum [1].\n"
                  "      --cross-check NAME   Optional secondary estimator alongside the\n"
-                 "                           MMLE. Supported value: `kimura`, which\n"
+                 "                           MCMLE. Supported value: `kimura`, which\n"
                  "                           computes the Wonnapinij b and the implied\n"
                  "                           Ne (single-generation approximation).\n"
                  "      --kimura-bootstrap  INT  Non-parametric bootstrap iterations for the\n"
@@ -2535,7 +2535,7 @@ void NeEstimator::usage() {
                  "      --bin-simulation-bins INT  Number of equal-width maternal-VAF bins\n"
                  "                                 for --bin-simulation [10].\n"
                  "      --ne-profile     FILE   Emit a TSV that scores every candidate Ne\n"
-                 "                              under both the MMLE marginal log-likelihood\n"
+                 "                              under both the MCMLE marginal log-likelihood\n"
                  "                              and the Kimura per-pair SSR metric.  Useful to\n"
                  "                              visually compare which Ne each estimator\n"
                  "                              prefers (dual-objective Ne scan).\n"
@@ -2610,7 +2610,7 @@ void NeEstimator::usage() {
                  "    1.92 without a sandwich correction and can be too narrow for cohorts\n"
                  "    with many siblings per mother; use --per-family for family-resolved\n"
                  "    inference.\n"
-                 "  * The Kimura cross-check is approximate; the default continuous MMLE uses\n"
+                 "  * The Kimura cross-check is approximate; the default continuous MCMLE uses\n"
                  "    a plug-in maternal VAF and a Beta-Binomial child-count working likelihood\n"
                  "    and is the reported primary estimate. On real data the two can diverge\n"
                  "    when many concordant heteroplasmic pairs co-exist with a few high-\n"
@@ -2916,8 +2916,8 @@ void NeEstimator::_write_json(const Result& r, std::ostream& out) const {
         << "  \"Trio_Founder_Mismatch_Skipped\": " << r.load_stats.trio_founder_mismatch_skipped << ",\n"
         << "  \"Trio_Founder_Hom_Skipped\":      " << r.load_stats.trio_founder_hom_skipped << ",\n"
         << "  \"Min_Depth_Skipped\":             " << r.load_stats.min_depth_skipped << ",\n"
-        << "  \"Estimator\":       \"MMLE (composite marginal likelihood)\",\n"
-        << "  \"Max_Marginal_LogLik\": " << std::setprecision(8) << r.max_log_lik << ",\n"
+        << "  \"Estimator\":       \"MCMLE (composite marginal likelihood)\",\n"
+        << "  \"Max_Composite_Marginal_LogLik\": " << std::setprecision(8) << r.max_log_lik << ",\n"
         << "  \"Model\":           \"" << json_escape(_config.model) << "\",\n"
         << "  \"Min_VAF\":         " << _config.min_vaf << ",\n"
         << "  \"Max_VAF\":         " << _config.max_vaf << ",\n"
@@ -2929,7 +2929,7 @@ void NeEstimator::_write_json(const Result& r, std::ostream& out) const {
         // Depth descriptors, descriptive only -- see Result::mean_mother_dp in
         // ne_estimate.h for why no aggregate of these is a plug-in
         // back-correction handle.  Ambient precision is already 8 (set by
-        // Max_Marginal_LogLik above) and the format is defaultfloat.
+        // Max_Composite_Marginal_LogLik above) and the format is defaultfloat.
         << "  \"Mean_Mother_DP\":     " << std::setprecision(8) << r.mean_mother_dp     << ",\n"
         << "  \"Mean_Child_DP\":      " << r.mean_child_dp      << ",\n"
         << "  \"Harmonic_Mother_DP\": " << r.harmonic_mother_dp << ",\n"
@@ -3051,7 +3051,7 @@ void NeEstimator::_write_json(const Result& r, std::ostream& out) const {
                 << std::defaultfloat
                 << "      \"CI_Low_Clipped\":    " << (fr.ci_low_clipped ? "true" : "false") << ",\n"
                 << "      \"CI_High_Clipped\":   " << (fr.ci_high_clipped ? "true" : "false") << ",\n"
-                << "      \"Max_Marginal_LogLik\": " << std::setprecision(8) << fr.max_log_lik << ",\n"
+                << "      \"Max_Composite_Marginal_LogLik\": " << std::setprecision(8) << fr.max_log_lik << ",\n"
                 // Depth descriptors at 8 significant digits under defaultfloat, matching
                 // the top-level Mean_/Harmonic_ DP contract. This was setprecision(2),
                 // which rendered e.g. 674.75 as 6.7e+02 and silently dropped precision.
@@ -3279,7 +3279,7 @@ NeEstimator::Result NeEstimator::run() {
     // ---------------------------------------------------------------
     // Optional: per-family Ne estimation.
     // Groups pairs by (FAM_ID, MOTHER_ID) and estimates Ne independently
-    // for each family using the continuous MMLE.
+    // for each family using the continuous MCMLE.
     // ---------------------------------------------------------------
     if (_config.per_family) {
         auto families = group_into_families(data);
@@ -3364,7 +3364,7 @@ NeEstimator::Result NeEstimator::run() {
 
     // ---------------------------------------------------------------
     // Optional: per-bin observed-vs-theoretical drift summary TSV.
-    // Computed on the same pair set used by the MMLE; the analytical
+    // Computed on the same pair set used by the MCMLE; the analytical
     // Kimura predictions p_m(1 - p_m) / Ne are derived from the fitted
     // Ne and (when available) its 95% profile-likelihood CI bounds.
     // ---------------------------------------------------------------
@@ -3453,7 +3453,7 @@ NeEstimator::Result NeEstimator::run() {
 
     // ---------------------------------------------------------------
     // Optional: Ne-profile TSV (dual-objective Ne scan).
-    // For each Ne candidate on a fine grid, score it under both the MMLE
+    // For each Ne candidate on a fine grid, score it under both the MCMLE
     // marginal log-likelihood and the Kimura per-pair SSR.  This lets the
     // user see which Ne each of the two estimators in the program
     // prefers, and whether they converge to the same optimum.
@@ -3472,13 +3472,13 @@ NeEstimator::Result NeEstimator::run() {
         // Locate the best Ne under each metric (already encoded in the
         // normalised columns, but we surface them in metadata for the
         // plotting script).
-        double best_ne_mmle    = profile.empty() ? r.ne : profile.front().ne_candidate;
+        double best_ne_mcmle  = profile.empty() ? r.ne : profile.front().ne_candidate;
         double best_ne_kimura = profile.empty() ? std::numeric_limits<double>::quiet_NaN()
                                                  : profile.front().ne_candidate;
         double best_ll        = -std::numeric_limits<double>::infinity();
         double best_ssr       =  std::numeric_limits<double>::infinity();
         for (const auto& row : profile) {
-            if (row.mmle_log_lik > best_ll)  { best_ll  = row.mmle_log_lik; best_ne_mmle   = row.ne_candidate; }
+            if (row.mcmle_log_lik > best_ll)  { best_ll  = row.mcmle_log_lik; best_ne_mcmle   = row.ne_candidate; }
             if (row.kimura_ssr   < best_ssr) { best_ssr = row.kimura_ssr;   best_ne_kimura = row.ne_candidate; }
         }
         const double best_ne_kimura_analytic = kimura_ssr_best_ne(data);
@@ -3499,11 +3499,11 @@ NeEstimator::Result NeEstimator::run() {
                  << "#profile_min_ne="         << _config.min_ne      << "\n"
                  << "#profile_max_ne="         << _config.max_ne      << "\n"
                  << "#profile_step="           << _config.ne_profile_step << "\n"
-                 << "#fitted_ne_mmle="          << std::setprecision(8) << r.ne      << "\n"
-                 << "#fitted_ne_mmle_ci_low="   << std::setprecision(8) << r.ci_low  << "\n"
-                 << "#fitted_ne_mmle_ci_high="  << std::setprecision(8) << r.ci_high << "\n"
+                 << "#fitted_ne_mcmle="          << std::setprecision(8) << r.ne      << "\n"
+                 << "#fitted_ne_mcmle_ci_low="   << std::setprecision(8) << r.ci_low  << "\n"
+                 << "#fitted_ne_mcmle_ci_high="  << std::setprecision(8) << r.ci_high << "\n"
                  << "#max_marginal_log_lik="    << std::setprecision(8) << r.max_log_lik << "\n"
-                 << "#best_ne_mmle_on_grid="    << std::setprecision(8) << best_ne_mmle   << "\n"
+                 << "#best_ne_mcmle_on_grid="    << std::setprecision(8) << best_ne_mcmle   << "\n"
                  << "#best_ne_kimura_on_grid=" << std::setprecision(8) << best_ne_kimura << "\n"
                  << "#best_ne_kimura_analytic="<< std::setprecision(8) << best_ne_kimura_analytic << "\n";
         if (r.kimura.computed) {
@@ -3515,21 +3515,21 @@ NeEstimator::Result NeEstimator::run() {
             }
         }
 
-        prof_out << "ne_candidate\tmmle_log_lik\tmmle_delta_2ll"
+        prof_out << "ne_candidate\tmcmle_log_lik\tmcmle_delta_2ll"
                     "\tkimura_ssr\tkimura_norm_ssr\n";
         prof_out << std::setprecision(8);
         for (const auto& row : profile) {
             prof_out << row.ne_candidate     << "\t"
-                     << row.mmle_log_lik     << "\t"
-                     << row.mmle_delta_2ll   << "\t"
+                     << row.mcmle_log_lik     << "\t"
+                     << row.mcmle_delta_2ll   << "\t"
                      << row.kimura_ssr       << "\t"
                      << row.kimura_norm_ssr  << "\n";
         }
         std::cerr << "[ne-estimate] Wrote Ne-profile TSV ("
                   << profile.size() << " grid points) to "
                   << _config.ne_profile_file << "\n";
-        std::cerr << "[ne-estimate]   Best Ne on grid: MMLE = "
-                  << best_ne_mmle
+        std::cerr << "[ne-estimate]   Best Ne on grid: MCMLE = "
+                  << best_ne_mcmle
                   << ", Kimura SSR = " << best_ne_kimura;
         if (std::isfinite(best_ne_kimura_analytic)) {
             std::cerr << " (analytic = " << best_ne_kimura_analytic << ")";
@@ -3732,8 +3732,8 @@ NeEstimator::Result NeEstimator::run() {
             }
         }
 
-        // Warn when MMLE and Kimura disagree by more than 3x.
-        // When trimmed Kimura is available, compare MMLE against the trimmed
+        // Warn when MCMLE and Kimura disagree by more than 3x.
+        // When trimmed Kimura is available, compare MCMLE against the trimmed
         // value (which is the robust estimator); otherwise compare against
         // the untrimmed value and recommend trimming.
         const double ne_kimura_ref = (r.kimura.trimmed_computed &&
@@ -3746,8 +3746,8 @@ NeEstimator::Result NeEstimator::run() {
             const double ratio = r.ne / ne_kimura_ref;
             if (ratio > 3.0 || ratio < 1.0/3.0) {
                 if (has_trim) {
-                    // Trimmed Kimura still disagrees with MMLE.
-                    std::cerr << "\n*** WARNING *** Ne_MMLE (" << r.ne
+                    // Trimmed Kimura still disagrees with MCMLE.
+                    std::cerr << "\n*** WARNING *** Ne_MCMLE (" << r.ne
                               << ") and Ne_Kimura_trimmed (" << ne_kimura_ref
                               << ") still disagree by >3x even after trimming "
                               << r.kimura.trim_frac * 100.0 << "% of high-drift pairs.\n"
@@ -3757,26 +3757,26 @@ NeEstimator::Result NeEstimator::run() {
                               << "    outliers (--top-drift-k 20) for NUMTs / sequencing errors /\n"
                               << "    mixed populations.\n\n";
                 } else {
-                    std::cerr << "\n*** WARNING *** Ne_MMLE (" << r.ne
+                    std::cerr << "\n*** WARNING *** Ne_MCMLE (" << r.ne
                               << ") and Ne_Kimura (" << r.kimura.ne_kimura
                               << ") disagree by >3x.\n"
                               << "    Possible causes, in order of checks to run:\n"
                               << "      (a) high-drift outlier pairs (NUMTs / sequencing errors / mixed\n"
                               << "          populations) that collapse the variance-of-moments Kimura\n"
-                              << "          estimator but not the MMLE: re-run with --kimura-trim 0.10\n"
+                              << "          estimator but not the MCMLE: re-run with --kimura-trim 0.10\n"
                               << "          --top-drift-k 20 to inspect and compare trimmed Ne_Kimura;\n"
                               << "      (b) model-form mis-specification: --model discrete restricts child\n"
                               << "          heteroplasmy to the grid {0,1/Ne,..,1} and is upward-biased at\n"
                               << "          high depth, so prefer --model continuous for mtDNA;\n"
                               << "      (c) near-fixed sites admitted by a loose --max-vaf (>0.95), which\n"
-                              << "          inflate the MMLE: tighten --max-vaf and re-run.\n"
+                              << "          inflate the MCMLE: tighten --max-vaf and re-run.\n"
                               << "    Distinguish (a) from (b)/(c) with a VAF-window scan and a per-site\n"
                               << "    deviation-shape diagnostic before trimming outliers.\n\n";
                 }
             }
         }
 
-        // When trim was applied and trimmed agrees with MMLE but untrimmed
+        // When trim was applied and trimmed agrees with MCMLE but untrimmed
         // did not, print a reconciliation note.
         if (has_trim && r.kimura.ne_kimura > 0 && std::isfinite(r.kimura.ne_kimura)) {
             const double ratio_untrimmed = r.ne / r.kimura.ne_kimura;
@@ -3786,7 +3786,7 @@ NeEstimator::Result NeEstimator::run() {
                 std::cerr << "[ne-estimate] NOTE: trimming "
                           << r.kimura.trim_frac * 100.0
                           << "% of high-drift pairs reconciled Ne_Kimura_trimmed ("
-                          << ne_kimura_ref << ") with Ne_MMLE (" << r.ne
+                          << ne_kimura_ref << ") with Ne_MCMLE (" << r.ne
                           << ").\n";
             }
         }

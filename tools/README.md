@@ -68,10 +68,10 @@ The figure shows two panels side by side:
 
 * **Left** — observed mean drift `(p_c - p_m)^2` per maternal-VAF bin
   with error bars, overlaid on the analytical Kimura prediction
-  `p_m(1 - p_m) / Ne` at the fitted MMLE Ne (red, with 95% CI ribbon) and
+  `p_m(1 - p_m) / Ne` at the fitted MCMLE Ne (red, with 95% CI ribbon) and
   the Wonnapinij/Kimura cross-check Ne (blue dashed).
 * **Right** — per-bin estimate of `1 - b = F_i = (d_i - s_i) / [p_m(1 - p_m)]`
-  with error bars, overlaid on the horizontal lines `1/Ne_MMLE` (red
+  with error bars, overlaid on the horizontal lines `1/Ne_MCMLE` (red
   with CI band) and `1/Ne_Kimura` (blue dashed).
 
 Marker size scales with the number of pairs in each bin so visual
@@ -106,11 +106,11 @@ Key options: `--dpi` (default 300), `--figsize W,H` (default `13,5.2`),
 
 ##### 4. How to read it
 
-* If the observed bin means **track the red MMLE parabola**, the data
+* If the observed bin means **track the red MCMLE parabola**, the data
   are consistent with the fitted Ne and the single-generation
   Wright-Fisher model is a good fit.
 * If the observed means **fall between the red and blue curves**, the
-  MMLE and Wonnapinij b are picking up different aspects of the same
+  MCMLE and Wonnapinij b are picking up different aspects of the same
   variance (typically the Kimura b is pulled by a few high-drift
   outliers; rerun `mitoquest ne-estimate` with `--kimura-trim 0.10
   --top-drift-k 20` to inspect).
@@ -129,16 +129,16 @@ Visualises the dual-objective Ne scan produced by `mitoquest ne-estimate
 `--ne-profile-step`) the upstream C++ command scores two **independent**
 goodness-of-fit metrics on the *same* informative pair set:
 
-* **MMLE marginal log-likelihood** under the configured model (continuous
+* **MCMLE marginal log-likelihood** under the configured model (continuous
   Beta-diffusion or discrete Beta-Binomial).  Maximised at the fitted
-  `Ne_MMLE`.
+  `Ne_MCMLE`.
 * **Kimura per-pair SSR** = Σᵢ ((dᵢ − sᵢ) − p_mᵢ (1 − p_mᵢ) / Ne)².
   Minimised at the analytic
       `Ne_Kimura_SSR = Σ w² / Σ rw`,
   which is the closed-form least-squares fit of the one-generation
   Wright-Fisher prediction.
 
-The figure has two panels (MMLE on the left, Kimura on the right) so the
+The figure has two panels (MCMLE on the left, Kimura on the right) so the
 user can directly see whether the two estimators agree on the location
 of the best Ne, or whether the data are pulling them in different
 directions (a strong indicator of high-drift outliers).
@@ -156,7 +156,7 @@ The TSV starts with `#key=value` provenance lines (fitted Ne, model,
 VAF window, Wonnapinij b/Ne, Kimura bootstrap CI, …) followed by a
 standard 5-column body:
 ```
-ne_candidate  mmle_log_lik  mmle_delta_2ll  kimura_ssr  kimura_norm_ssr
+ne_candidate  mcmle_log_lik  mcmle_delta_2ll  kimura_ssr  kimura_norm_ssr
 ```
 
 ##### 3. Plot it
@@ -170,7 +170,7 @@ Key options: `--dpi` (default 150), `--figsize W,H` (default `13,5.2`),
 
 ##### 4. How to read it
 * The **left (red) panel** shows the standard `−2(logL − logL_max)`
-  profile-likelihood curve.  The fitted `Ne_MMLE` sits at the global
+  profile-likelihood curve.  The fitted `Ne_MCMLE` sits at the global
   minimum (= 0); the dashed horizontal line at 3.841 is the χ² (1 df,
   0.95) threshold whose intercepts define the 95% CI bracket.
 * The **right (blue) panel** shows the Kimura per-pair SSR normalised
@@ -181,10 +181,10 @@ Key options: `--dpi` (default 150), `--figsize W,H` (default `13,5.2`),
   dotted line at Ne = 3 is the deCODE 2024 reference.
 * **Both panels agree** ⇒ the data are well-described by the
   single-generation Wright-Fisher model and either estimator is fine.
-* **MMLE bowl is far to the left of the Kimura bowl** (e.g. Ne_MMLE ≈
+* **MCMLE bowl is far to the left of the Kimura bowl** (e.g. Ne_MCMLE ≈
   2.6 vs Ne_Kimura ≈ 4.8 in the demo cohort) ⇒ the cohort contains
   high-drift outlier pairs that pull the variance-of-moments Kimura
-  upward but do not hurt the MMLE.  Re-run `mitoquest ne-estimate` with
+  upward but do not hurt the MCMLE.  Re-run `mitoquest ne-estimate` with
   `--kimura-trim 0.10 --top-drift-k 20` to identify and inspect them.
 * The **Ne = 1 grid point is dropped** automatically: under the
   continuous Beta-diffusion model Ne = 1 is a degenerate point

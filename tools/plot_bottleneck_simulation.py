@@ -10,7 +10,7 @@ Generates a two-panel figure from the per-maternal-VAF-bin TSV emitted by
 
   Panel 2 (right): Per-bin F_i = (d_i - s_i) / [p_m(1-p_m)] (an estimate
                    of 1-b = 1/Ne) overlaid with horizontal lines at 1/Ne
-                   for the MMLE fit and (optionally) the Kimura cross-check.
+                   for the MCMLE fit and (optionally) the Kimura cross-check.
 
 The TSV stores, per equal-width maternal-VAF bin:
 
@@ -103,7 +103,7 @@ def plot_drift_panel(ax, df, meta):
     # the lower edge to Ne_high.
     if ne_pt and ne_pt > 0:
         ax.plot(p, p * (1.0 - p) / ne_pt, color='#d62728', lw=2.0,
-                label=f'Simulated  p(1-p)/Ne   [Ne_MMLE = {ne_pt:.2f}]')
+                label=f'Simulated  p(1-p)/Ne   [Ne_MCMLE = {ne_pt:.2f}]')
     if ne_lo and ne_hi and ne_lo > 0 and ne_hi > 0:
         upper = p * (1.0 - p) / ne_lo
         lower = p * (1.0 - p) / ne_hi
@@ -144,7 +144,7 @@ def plot_F_panel(ax, df, meta):
 
     if ne_pt and ne_pt > 0:
         ax.axhline(1.0 / ne_pt, color='#d62728', lw=2.0,
-                   label=f'Simulated  1/Ne   [Ne_MMLE = {ne_pt:.2f}]')
+                   label=f'Simulated  1/Ne   [Ne_MCMLE = {ne_pt:.2f}]')
     if ne_lo and ne_hi and ne_lo > 0 and ne_hi > 0:
         ax.axhspan(1.0 / ne_hi, 1.0 / ne_lo, color='#d62728', alpha=0.15,
                    label=f'95% CI  [{ne_lo:.2f}, {ne_hi:.2f}]')

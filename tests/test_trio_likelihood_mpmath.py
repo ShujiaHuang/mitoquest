@@ -154,7 +154,9 @@ def cli_log_likelihood(mitoquest, case):
             line for line in output_json.read_text().splitlines()
             if not line.startswith("#")
         )
-        return mp.mpf(str(json.loads(payload)["Max_Marginal_LogLik"]))
+        obj = json.loads(payload)
+        key = "Max_Composite_Marginal_LogLik" if "Max_Composite_Marginal_LogLik" in obj else "Max_Marginal_LogLik"
+        return mp.mpf(str(obj[key]))
 
 
 def assert_close(label, actual, expected, tolerance=mp.mpf("5e-10")):
