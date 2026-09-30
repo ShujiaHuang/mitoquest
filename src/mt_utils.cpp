@@ -199,7 +199,7 @@ VCFSampleAnnotation process_sample_variant(const VariantInfo& var_info,
                 sa.sample_alts.push_back(alt);
                 sa.allele_depths.push_back(var_info.depths[j]);
                 
-                // double h = var_info.freqs[j]; // 这里不要用 lrt 计算出来的 allele frequency，因为可能不知为何会有负数（极少情况下）
+                // double h = var_info.freqs[j]; // 这里不要用 lrt 计算出来的 allele frequency，因为会有负数（极少情况下），还不知为何。
                 // calculate the allele frequency by allele_depth/total_depth
                 const double h = double(var_info.depths[j]) / double(var_info.total_depth);
                 sa.allele_freqs.push_back(h);
@@ -213,12 +213,15 @@ VCFSampleAnnotation process_sample_variant(const VariantInfo& var_info,
                 
                 sa.fs_strings.push_back(format_strand_metric(var_info.strand_bias[j].fs, 3));
                 sa.sor_strings.push_back(format_strand_metric(var_info.strand_bias[j].sor, 3));
-                
                 sa.var_types.push_back(var_info.var_types[j]);
 
-                const double aq_pvalue = binomial_survival_probability(
-                    var_info.depths[j], var_info.total_depth, hf_cutoff);
-                const double aq = (aq_pvalue > 0.0) ? -10.0 * std::log10(aq_pvalue) : 10000.0;
+                // 目前计算的 AQ 含义是：在给定的阈值下，该等位基因的观测频率是否显著高于该阈值，而不是该突变基因型是否更好，因为有可能
+                // 更好的突变碱基 VAF 刚好在阈值附近，那么这时 AQ 很低。只能尽可能把阈值设置为背景错误率，比如测序错误 0.001-0.01 之间。
+                // Todo: 所以，我对这个计算方式不太满意，后面需要再想个更好的方法：比如它与第二好的等位基因相比好处多少倍？
+                const double aq_pvalue = binomial_survival_probability(var_info.depths[j], 
+                                                                       var_info.total_depth, 
+                                                                       hf_cutoff);
+                const double aq = (aq_pvalue > 0.0) ? -10.0 * std::log10(aq_pvalue) : 10000.0;  // phred scale
                 sa.aq.push_back(std::isfinite(aq) ? static_cast<int>(aq) : 10000);
             }
         }
@@ -268,7 +271,10 @@ std::string vcf_header_define(const std::string &ref_file_path, const std::vecto
         "##FORMAT=<ID=AF,Number=.,Type=Float,Description=\"Allele fraction for ref- and alt-alleles, in the order listed by GT\">",
         "##FORMAT=<ID=CI,Number=1,Type=String,Description=\"95\% confidence interval around the estimated allele fraction for "
             "the allele in the order listed by GT. format: ci_low,ci_up;ci_low,ci_up;...\">",
-        "##FORMAT=<ID=AQ,Number=.,Type=Integer,Description=\"Allele quality: Phred-scaled exact one-sided Binomial p-value for observing at least AD reads under allele fraction equal to the user cutoff (-j), in the order listed by GT\">",
+        "##FORMAT=<ID=AQ,Number=.,Type=Integer,Description=\"Allele DETECTION quality: Phred-scaled exact one-sided Binomial " // 这个值的计算还是不太满意
+            "p-value testing whether the allele's observed read depth (AD out of total DP) is significantly greater than expected "
+            "under an allele fraction equal to the user cutoff (-j). It measures detection significance above the heteroplasmy "
+            "threshold, NOT the certainty of the allele-fraction estimate (see CI), in the order listed by GT.\">",
         "##FORMAT=<ID=LAF,Number=.,Type=Float,Description=\"Transformed AF: logit(AF) = ln(AF/(1-AF)) for each allele in GT order; missing at AF=0 or AF=1\">",
         "##FORMAT=<ID=SB,Number=1,Type=String,Description=\"Allele-specific forward/reverse read counts for strand bias tests for the alleles, in "
             "the order listed by GT, separated by ';'. Format: fwd,rev;fwd,rev;...\">",

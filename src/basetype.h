@@ -9,17 +9,10 @@
 #ifndef __INCLUDE_BASETYPE_H__
 #define __INCLUDE_BASETYPE_H__
 
-#include <iostream>
 #include <cstdint> // uint32_t
-#include <cmath>   // use exp() function
 #include <string>
 #include <vector>
 #include <map>
-
-#include "algorithm.h"
-#include "io/utils.h"              // join()
-
-#include "external/combinations.h"
 
 static const std::vector<std::string> BASIC_BASES = {"A", "C", "G", "T"}; // 预定义这个值，限定 UNIQ_BASES 数组中至少有这四个碱基
 static const int LRT_THRESHOLD  = 24;             // 24 corresponding to a chi-pvalue of 10^-6

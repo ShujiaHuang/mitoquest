@@ -8,6 +8,12 @@
  */
 #include "basetype.h"
 
+#include <cmath>   // use exp() function
+
+#include "algorithm.h"
+#include "io/utils.h"              // join()
+#include "external/combinations.h"
+
 bool is_supported_caller_allele(const std::string& allele) {
     if (allele.empty()) return false;
 
@@ -186,6 +192,7 @@ void BaseType::lrt(const std::vector<std::string> &specific_bases) {
         lr = var.lr[i_min];
         chi_sqrt_value = lrt_chivalue[i_min]; // 获得该最优组合的卡方值
 
+        // 本质就是：删除一个 allele，只要删除它不会造成显著的 likelihood loss，就删除它；当所有删除方案都造成显著 likelihood loss 时停止。
         // 注意这 H0 假设是“少碱基的组合与多碱基的组合相比无显著差异”，如果是，那么选H0，也就是少碱基的组合，否则取多碱基组合(H1)。
         // 这和我的计算公式是一致的，只是反过来而已
         if (chi_sqrt_value < LRT_THRESHOLD) { 
