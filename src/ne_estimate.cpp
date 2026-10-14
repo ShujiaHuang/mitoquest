@@ -24,6 +24,7 @@
 
 #include "ne_estimate.h"
 #include "external/thread_pool.h"
+#include "io/iobgzf.h"          // ngslib::BGZFile (transparent plain/gzip/BGZF reads)
 #include "io/utils.h"           // ngslib::is_readable
 #include "version.h"
 
@@ -162,14 +163,170 @@ double log_sum_exp_values(const std::vector<double>& values) {
                        : -std::numeric_limits<double>::infinity();
 }
 
+// Diagonalize a real symmetric tridiagonal matrix with implicit QL steps.
+// We only need the first component of every normalized eigenvector: its
+// square is the normalized Gauss quadrature weight (Golub-Welsch theorem).
+void tridiagonal_eigenpairs_first_components(
+    std::vector<double>& diagonal,
+    const std::vector<double>& off_diagonal,
+    std::vector<double>& first_components) {
+    const int n = static_cast<int>(diagonal.size());
+    if (n < 1 || static_cast<int>(off_diagonal.size()) != n - 1) {
+        throw std::runtime_error("[ne-estimate] Invalid Jacobi quadrature matrix.");
+    }
+
+    std::vector<double> e(static_cast<size_t>(n), 0.0);
+    for (int i = 0; i < n - 1; ++i) e[static_cast<size_t>(i)] = off_diagonal[static_cast<size_t>(i)];
+
+    first_components.assign(static_cast<size_t>(n), 0.0);
+    first_components[0] = 1.0;
+    const double epsilon = std::numeric_limits<double>::epsilon();
+
+    for (int left = 0; left < n; ++left) {
+        int iterations = 0;
+        while (true) {
+            int right = left;
+            for (; right < n - 1; ++right) {
+                const double scale = std::abs(diagonal[static_cast<size_t>(right)])
+                                   + std::abs(diagonal[static_cast<size_t>(right + 1)]);
+                if (std::abs(e[static_cast<size_t>(right)]) <= epsilon * scale) break;
+            }
+            if (right == left) break;
+            if (++iterations > kTrioMaxEigenIterations) {
+                throw std::runtime_error("[ne-estimate] Gauss-Jacobi eigensolver did not converge.");
+            }
+
+            double shift = (diagonal[static_cast<size_t>(left + 1)]
+                         - diagonal[static_cast<size_t>(left)]) / (2.0 * e[static_cast<size_t>(left)]);
+            const double hypotenuse = std::hypot(shift, 1.0);
+            shift = diagonal[static_cast<size_t>(right)] - diagonal[static_cast<size_t>(left)]
+                  + e[static_cast<size_t>(left)] / (shift + std::copysign(hypotenuse, shift));
+
+            double sine = 1.0;
+            double cosine = 1.0;
+            double correction = 0.0;
+            double rotation_norm = 0.0;
+            int index = right - 1;
+            for (; index >= left; --index) {
+                const double f = sine * e[static_cast<size_t>(index)];
+                const double b = cosine * e[static_cast<size_t>(index)];
+                rotation_norm = std::hypot(f, shift);
+                e[static_cast<size_t>(index + 1)] = rotation_norm;
+                if (rotation_norm == 0.0) {
+                    diagonal[static_cast<size_t>(index + 1)] -= correction;
+                    e[static_cast<size_t>(right)] = 0.0;
+                    break;
+                }
+
+                sine = f / rotation_norm;
+                cosine = shift / rotation_norm;
+                shift = diagonal[static_cast<size_t>(index + 1)] - correction;
+                rotation_norm = (diagonal[static_cast<size_t>(index)] - shift) * sine + 2.0 * cosine * b;
+                correction = sine * rotation_norm;
+                diagonal[static_cast<size_t>(index + 1)] = shift + correction;
+                shift = cosine * rotation_norm - b;
+
+                const double next_component = first_components[static_cast<size_t>(index + 1)];
+                first_components[static_cast<size_t>(index + 1)] =
+                    sine * first_components[static_cast<size_t>(index)] + cosine * next_component;
+                first_components[static_cast<size_t>(index)] =
+                    cosine * first_components[static_cast<size_t>(index)] - sine * next_component;
+            }
+            if (rotation_norm == 0.0 && index >= left) continue;
+
+            diagonal[static_cast<size_t>(left)] -= correction;
+            e[static_cast<size_t>(left)] = shift;
+            e[static_cast<size_t>(right)] = 0.0;
+        }
+    }
+}
+
 struct BetaGaussJacobiRule {
     std::vector<double> nodes;
     std::vector<double> log_weights;
 };
 
 // Defined below, after the tridiagonal eigensolver.
-BetaGaussJacobiRule make_beta_gauss_jacobi_rule(double alpha, double beta,
-                                                 int n_nodes);
+/**
+ * Constructs a Gauss-Jacobi quadrature rule for the Beta distribution with parameters alpha and beta.
+ *
+ * @param alpha The alpha parameter of the Beta distribution (must be > 0).
+ * @param beta The beta parameter of the Beta distribution (must be > 0).
+ * @param n_nodes The number of quadrature nodes (must be >= 1).
+ * @return A BetaGaussJacobiRule containing the nodes and log-weights.
+ * @throws std::runtime_error if the parameters are invalid or if the recurrence coefficients are invalid.
+ */
+BetaGaussJacobiRule make_beta_gauss_jacobi_rule(double alpha, double beta, int n_nodes) {
+    if (!(alpha > 0.0) || !(beta > 0.0) || n_nodes < 1) {
+        throw std::runtime_error("[ne-estimate] Invalid Beta parameters for Gauss-Jacobi quadrature.");
+    }
+    if (n_nodes == 1) {
+        return {{alpha / (alpha + beta)}, {0.0}};
+    }
+
+    const double total = alpha + beta;
+    std::vector<double> diagonal(static_cast<size_t>(n_nodes), 0.0);
+    std::vector<double> off_diagonal(static_cast<size_t>(n_nodes - 1), 0.0);
+    diagonal[0] = alpha / total;
+
+    for (int degree = 1; degree < n_nodes; ++degree) {
+        const double n = static_cast<double>(degree);
+        const double center = 2.0 * n + total - 2.0;
+        diagonal[static_cast<size_t>(degree)] = 0.5 * (1.0
+            + (alpha - beta) * (total - 2.0) / (center * (center + 2.0)));
+
+        double off_diagonal_squared;
+        if (degree == 1) {
+            off_diagonal_squared = alpha * beta / (total * total * (total + 1.0));
+        } else {
+            off_diagonal_squared = n * (n + alpha - 1.0) * (n + beta - 1.0)
+                * (n + total - 2.0) / (center * center * (center - 1.0) * (center + 1.0));
+        }
+        if (!(off_diagonal_squared > 0.0) || !std::isfinite(off_diagonal_squared)) {
+            throw std::runtime_error("[ne-estimate] Invalid Gauss-Jacobi recurrence coefficient.");
+        }
+        off_diagonal[static_cast<size_t>(degree - 1)] = std::sqrt(off_diagonal_squared);
+    }
+
+    std::vector<double> first_components;
+    tridiagonal_eigenpairs_first_components(diagonal, off_diagonal, first_components);
+
+    std::vector<size_t> order(static_cast<size_t>(n_nodes));
+    std::iota(order.begin(), order.end(), 0);
+    std::sort(order.begin(), order.end(), [&](size_t left, size_t right) {
+        return diagonal[left] < diagonal[right];
+    });
+
+    BetaGaussJacobiRule rule;
+    rule.nodes.reserve(static_cast<size_t>(n_nodes));
+    rule.log_weights.reserve(static_cast<size_t>(n_nodes));
+    std::vector<long double> raw_weights;
+    raw_weights.reserve(static_cast<size_t>(n_nodes));
+    long double weight_sum = 0.0L;
+    for (size_t index : order) {
+        double node = diagonal[index];
+        if (!std::isfinite(node)) {
+            throw std::runtime_error("[ne-estimate] Non-finite Gauss-Jacobi node.");
+        }
+        if (node <= 0.0) node = std::nextafter(0.0, 1.0);
+        if (node >= 1.0) node = std::nextafter(1.0, 0.0);
+        rule.nodes.push_back(node);
+
+        const long double component = static_cast<long double>(first_components[index]);
+        const long double weight = component * component;
+        raw_weights.push_back(weight);
+        weight_sum += weight;
+    }
+    if (!(weight_sum > 0.0L) || !std::isfinite(static_cast<double>(weight_sum))) {
+        throw std::runtime_error("[ne-estimate] Invalid Gauss-Jacobi quadrature weights.");
+    }
+    for (long double weight : raw_weights) {
+        rule.log_weights.push_back((weight > 0.0L)
+            ? static_cast<double>(std::log(weight) - std::log(weight_sum))
+            : -std::numeric_limits<double>::infinity());
+    }
+    return rule;
+}
 
 // Gauss-Jacobi rule cache.
 //
@@ -266,154 +423,53 @@ struct TrioQuadratureCache {
 // keeping pathological inputs bounded.
 constexpr size_t kMaternalScanCacheNodeBudget = 4u << 20;
 
-// Diagonalize a real symmetric tridiagonal matrix with implicit QL steps.
-// We only need the first component of every normalized eigenvector: its
-// square is the normalized Gauss quadrature weight (Golub-Welsch theorem).
-void tridiagonal_eigenpairs_first_components(
-    std::vector<double>& diagonal,
-    const std::vector<double>& off_diagonal,
-    std::vector<double>& first_components) {
-    const int n = static_cast<int>(diagonal.size());
-    if (n < 1 || static_cast<int>(off_diagonal.size()) != n - 1) {
-        throw std::runtime_error("[ne-estimate] Invalid Jacobi quadrature matrix.");
+
+// Per-row numerical health of the adaptive Gauss-Jacobi marginalisation, filled
+// only by the post-fit audit pass (never in the Ne-scan hot path, which passes a
+// null pointer).  Aggregated into NeEstimator::Result::QuadratureAudit.
+struct QuadratureDiagnostics {
+    bool   converged_by_stability = true;  // false => fell through to the exact-order cap
+    bool   rule_moment_ok         = true;  // false => rule failed the Beta mean/variance check
+    int    final_order            = 0;     // Gauss-Jacobi order actually returned
+    double rule_mean_abs_err      = 0.0;   // |sum w_i p_i - alpha/(alpha+beta)|
+    double rule_var_rel_err       = 0.0;   // relative error of the rule's variance
+};
+
+// A rule is trusted only if it reproduces the Beta posterior's own low-order
+// moments to well within the eigensolve's healthy floor (~1e-13).  These
+// thresholds sit far above that floor and far below the O(1) drift a broken
+// high-order rule exhibits, so they neither false-positive on legitimate deep
+// rules nor miss a genuine breakdown.
+constexpr double kQuadRuleMeanAbsErrTol = 1e-7;
+constexpr double kQuadRuleVarRelErrTol  = 1e-5;
+
+// Self-check for a normalised Gauss-Jacobi rule over Beta(alpha, beta): with
+// weights summing to 1 it must reproduce the mean alpha/(alpha+beta) and the
+// variance alpha*beta/((alpha+beta)^2*(alpha+beta+1)), both low-degree
+// polynomial moments that any order >= 2 rule integrates exactly in real
+// arithmetic.  The Golub-Welsch tridiagonal eigensolve loses double-precision
+// fidelity at high order when alpha+beta is large (the deep-coverage breakdown
+// documented in the class notes), and when it does these moments drift -- so a
+// rule failing this check cannot be trusted to integrate the child likelihood
+// either.  Cost is O(order), negligible against the rule construction itself.
+void beta_gauss_jacobi_rule_moment_check(double alpha, double beta,
+                                         const BetaGaussJacobiRule& rule,
+                                         double* mean_abs_err,
+                                         double* var_rel_err) {
+    const double total     = alpha + beta;
+    const double true_mean = alpha / total;
+    const double true_var  = alpha * beta / (total * total * (total + 1.0));
+    double m1 = 0.0, m2 = 0.0;
+    for (size_t i = 0; i < rule.nodes.size(); ++i) {
+        const double w = std::exp(rule.log_weights[i]);   // normalised: sum w == 1
+        const double p = rule.nodes[i];
+        m1 += w * p;
+        m2 += w * p * p;
     }
-
-    std::vector<double> e(static_cast<size_t>(n), 0.0);
-    for (int i = 0; i < n - 1; ++i) e[static_cast<size_t>(i)] = off_diagonal[static_cast<size_t>(i)];
-
-    first_components.assign(static_cast<size_t>(n), 0.0);
-    first_components[0] = 1.0;
-    const double epsilon = std::numeric_limits<double>::epsilon();
-
-    for (int left = 0; left < n; ++left) {
-        int iterations = 0;
-        while (true) {
-            int right = left;
-            for (; right < n - 1; ++right) {
-                const double scale = std::abs(diagonal[static_cast<size_t>(right)])
-                                   + std::abs(diagonal[static_cast<size_t>(right + 1)]);
-                if (std::abs(e[static_cast<size_t>(right)]) <= epsilon * scale) break;
-            }
-            if (right == left) break;
-            if (++iterations > kTrioMaxEigenIterations) {
-                throw std::runtime_error("[ne-estimate] Gauss-Jacobi eigensolver did not converge.");
-            }
-
-            double shift = (diagonal[static_cast<size_t>(left + 1)]
-                         - diagonal[static_cast<size_t>(left)]) / (2.0 * e[static_cast<size_t>(left)]);
-            const double hypotenuse = std::hypot(shift, 1.0);
-            shift = diagonal[static_cast<size_t>(right)] - diagonal[static_cast<size_t>(left)]
-                  + e[static_cast<size_t>(left)] / (shift + std::copysign(hypotenuse, shift));
-
-            double sine = 1.0;
-            double cosine = 1.0;
-            double correction = 0.0;
-            double rotation_norm = 0.0;
-            int index = right - 1;
-            for (; index >= left; --index) {
-                const double f = sine * e[static_cast<size_t>(index)];
-                const double b = cosine * e[static_cast<size_t>(index)];
-                rotation_norm = std::hypot(f, shift);
-                e[static_cast<size_t>(index + 1)] = rotation_norm;
-                if (rotation_norm == 0.0) {
-                    diagonal[static_cast<size_t>(index + 1)] -= correction;
-                    e[static_cast<size_t>(right)] = 0.0;
-                    break;
-                }
-
-                sine = f / rotation_norm;
-                cosine = shift / rotation_norm;
-                shift = diagonal[static_cast<size_t>(index + 1)] - correction;
-                rotation_norm = (diagonal[static_cast<size_t>(index)] - shift) * sine + 2.0 * cosine * b;
-                correction = sine * rotation_norm;
-                diagonal[static_cast<size_t>(index + 1)] = shift + correction;
-                shift = cosine * rotation_norm - b;
-
-                const double next_component = first_components[static_cast<size_t>(index + 1)];
-                first_components[static_cast<size_t>(index + 1)] =
-                    sine * first_components[static_cast<size_t>(index)] + cosine * next_component;
-                first_components[static_cast<size_t>(index)] =
-                    cosine * first_components[static_cast<size_t>(index)] - sine * next_component;
-            }
-            if (rotation_norm == 0.0 && index >= left) continue;
-
-            diagonal[static_cast<size_t>(left)] -= correction;
-            e[static_cast<size_t>(left)] = shift;
-            e[static_cast<size_t>(right)] = 0.0;
-        }
-    }
-}
-
-BetaGaussJacobiRule make_beta_gauss_jacobi_rule(double alpha, double beta, int n_nodes) {
-    if (!(alpha > 0.0) || !(beta > 0.0) || n_nodes < 1) {
-        throw std::runtime_error("[ne-estimate] Invalid Beta parameters for Gauss-Jacobi quadrature.");
-    }
-    if (n_nodes == 1) {
-        return {{alpha / (alpha + beta)}, {0.0}};
-    }
-
-    const double total = alpha + beta;
-    std::vector<double> diagonal(static_cast<size_t>(n_nodes), 0.0);
-    std::vector<double> off_diagonal(static_cast<size_t>(n_nodes - 1), 0.0);
-    diagonal[0] = alpha / total;
-
-    for (int degree = 1; degree < n_nodes; ++degree) {
-        const double n = static_cast<double>(degree);
-        const double center = 2.0 * n + total - 2.0;
-        diagonal[static_cast<size_t>(degree)] = 0.5 * (1.0
-            + (alpha - beta) * (total - 2.0) / (center * (center + 2.0)));
-
-        double off_diagonal_squared;
-        if (degree == 1) {
-            off_diagonal_squared = alpha * beta / (total * total * (total + 1.0));
-        } else {
-            off_diagonal_squared = n * (n + alpha - 1.0) * (n + beta - 1.0)
-                * (n + total - 2.0) / (center * center * (center - 1.0) * (center + 1.0));
-        }
-        if (!(off_diagonal_squared > 0.0) || !std::isfinite(off_diagonal_squared)) {
-            throw std::runtime_error("[ne-estimate] Invalid Gauss-Jacobi recurrence coefficient.");
-        }
-        off_diagonal[static_cast<size_t>(degree - 1)] = std::sqrt(off_diagonal_squared);
-    }
-
-    std::vector<double> first_components;
-    tridiagonal_eigenpairs_first_components(diagonal, off_diagonal, first_components);
-
-    std::vector<size_t> order(static_cast<size_t>(n_nodes));
-    std::iota(order.begin(), order.end(), 0);
-    std::sort(order.begin(), order.end(), [&](size_t left, size_t right) {
-        return diagonal[left] < diagonal[right];
-    });
-
-    BetaGaussJacobiRule rule;
-    rule.nodes.reserve(static_cast<size_t>(n_nodes));
-    rule.log_weights.reserve(static_cast<size_t>(n_nodes));
-    std::vector<long double> raw_weights;
-    raw_weights.reserve(static_cast<size_t>(n_nodes));
-    long double weight_sum = 0.0L;
-    for (size_t index : order) {
-        double node = diagonal[index];
-        if (!std::isfinite(node)) {
-            throw std::runtime_error("[ne-estimate] Non-finite Gauss-Jacobi node.");
-        }
-        if (node <= 0.0) node = std::nextafter(0.0, 1.0);
-        if (node >= 1.0) node = std::nextafter(1.0, 0.0);
-        rule.nodes.push_back(node);
-
-        const long double component = static_cast<long double>(first_components[index]);
-        const long double weight = component * component;
-        raw_weights.push_back(weight);
-        weight_sum += weight;
-    }
-    if (!(weight_sum > 0.0L) || !std::isfinite(static_cast<double>(weight_sum))) {
-        throw std::runtime_error("[ne-estimate] Invalid Gauss-Jacobi quadrature weights.");
-    }
-    for (long double weight : raw_weights) {
-        rule.log_weights.push_back((weight > 0.0L)
-            ? static_cast<double>(std::log(weight) - std::log(weight_sum))
-            : -std::numeric_limits<double>::infinity());
-    }
-    return rule;
+    const double var = m2 - m1 * m1;
+    *mean_abs_err = std::abs(m1 - true_mean);
+    *var_rel_err  = (true_var > 0.0) ? std::abs(var - true_var) / true_var
+                                     : std::abs(var - true_var);
 }
 
 double compute_ll_trio_gauss_jacobi_at_order(const NeEstimator::PairData& pd,
@@ -476,10 +532,16 @@ double compute_ll_trio_gauss_jacobi_at_order(const NeEstimator::PairData& pd,
 // coverage the cap *is* the exact order and is small (16 nodes at d_C=30, 51 at
 // d_C=100), where it agrees with a 256-node rule to ~2e-13.
 template <typename FnLlAtOrder>
-double adaptive_gauss_jacobi_ll(int exact_order, FnLlAtOrder ll_at_order) {
+double adaptive_gauss_jacobi_ll(int exact_order, FnLlAtOrder ll_at_order,
+                                QuadratureDiagnostics* diag = nullptr) {
     int order = std::min(kTrioInitialQuadratureOrder, exact_order);
     double previous = ll_at_order(order);
-    if (order == exact_order) return previous;
+    if (order == exact_order) {
+        // Shallow-exact case: the initial order already is the exact order, so
+        // there is nothing to stabilise against.  Benign, not a cap hit.
+        if (diag != nullptr) { diag->final_order = order; diag->converged_by_stability = true; }
+        return previous;
+    }
 
     int stable_refinements = 0;
     while (order < exact_order) {
@@ -493,10 +555,22 @@ double adaptive_gauss_jacobi_ll(int exact_order, FnLlAtOrder ll_at_order) {
         }
         if (next_order == exact_order
             || stable_refinements >= kTrioRequiredStableRefinements) {
+            if (diag != nullptr) {
+                diag->final_order = next_order;
+                // Converged iff we stopped because the sequence stabilised, not
+                // because we ran out of orders (hit the exact-order cap first).
+                diag->converged_by_stability =
+                    (stable_refinements >= kTrioRequiredStableRefinements);
+            }
             return current;
         }
         previous = current;
         order = next_order;
+    }
+    if (diag != nullptr) {
+        diag->final_order = order;
+        diag->converged_by_stability =
+            (stable_refinements >= kTrioRequiredStableRefinements);
     }
     return previous;
 }
@@ -607,7 +681,8 @@ double compute_ll_single_marginalized_at_order(const NeEstimator::PairData& pd,
 double compute_ll_single_marginalized_cached(const NeEstimator::PairData& pd,
                                              double ne,
                                              const NeEstimator::LogFactorial& lf,
-                                             TrioQuadratureCache* cache) {
+                                             TrioQuadratureCache* cache,
+                                             QuadratureDiagnostics* diag = nullptr) {
 
     if (!std::isfinite(ne) || ne < 1.0 || pd.m_dp <= 0 || pd.c_dp <= 0
         || pd.m_ad_alt < 0 || pd.m_ad_alt > pd.m_dp
@@ -630,7 +705,39 @@ double compute_ll_single_marginalized_cached(const NeEstimator::PairData& pd,
     const int exact_order = (pd.c_dp + 2) / 2;
     return adaptive_gauss_jacobi_ll(exact_order, [&](int n_nodes) {
         return compute_ll_single_marginalized_at_order(pd, ne, lf, n_nodes, cache);
-    });
+    }, diag);
+}
+
+// Post-fit numerical audit of one two-generation marginalised row at the fitted
+// Ne.  Runs OUTSIDE the Ne-scan hot path and NEVER alters a returned likelihood;
+// it re-derives the same adaptive rule to record (a) whether the order sequence
+// stabilised or fell through to the exact-order cap, and (b) whether the final
+// rule still reproduces its Beta posterior's mean/variance -- the fingerprint of
+// the high-order Golub-Welsch eigensolve breakdown documented in ne_estimate.h.
+// Skips rows the marginalised path does not actually quadrature (invalid counts
+// or the Ne == 1 degenerate limit).
+QuadratureDiagnostics audit_single_marginalized_quadrature(
+        const NeEstimator::PairData& pd, double ne,
+        const NeEstimator::LogFactorial& lf) 
+{
+    QuadratureDiagnostics diag;
+    const bool quadrature_runs =
+        std::isfinite(ne) && ne > 1.0 && pd.m_dp > 0 && pd.c_dp > 0
+        && pd.m_ad_alt >= 0 && pd.m_ad_alt <= pd.m_dp
+        && pd.c_ad_alt >= 0 && pd.c_ad_alt <= pd.c_dp;
+    if (!quadrature_runs) return diag;  // nothing was integrated; leave defaults (OK)
+
+    // Populate final_order + converged_by_stability via the same code path the
+    // fit used, then rebuild the rule at that order for the moment self-check.
+    (void) compute_ll_single_marginalized_cached(pd, ne, lf, /*cache=*/nullptr, &diag);
+
+    const double alpha = static_cast<double>(pd.m_ad_alt) + 1.0;
+    const double beta  = static_cast<double>(pd.m_dp - pd.m_ad_alt) + 1.0;
+    const BetaGaussJacobiRule rule = make_beta_gauss_jacobi_rule(alpha, beta, diag.final_order);
+    beta_gauss_jacobi_rule_moment_check(alpha, beta, rule, &diag.rule_mean_abs_err, &diag.rule_var_rel_err);
+    diag.rule_moment_ok = (diag.rule_mean_abs_err <= kQuadRuleMeanAbsErrTol)
+                       && (diag.rule_var_rel_err  <= kQuadRuleVarRelErrTol);
+    return diag;
 }
 
 // Single place that decides which per-row likelihood a continuous-model
@@ -1051,7 +1158,7 @@ double NeEstimator::find_optimal_ne_continuous(
 
 NeEstimator::Result NeEstimator::estimate_continuous(
     const std::vector<PairData>& data, 
-    int min_ne, int max_ne, int threads, ModelOptions opts) 
+    int min_ne, int max_ne, int threads, ModelOptions opts, bool audit_quadrature) 
 {
     Result r;
     r.n_pairs = data.size();
@@ -1141,6 +1248,34 @@ NeEstimator::Result NeEstimator::estimate_continuous(
 
     r.ci_low  = walk_ci_side(r.ne, -1.0, static_cast<double>(min_ne), &r.ci_low_clipped);
     r.ci_high = walk_ci_side(r.ne, +1.0, static_cast<double>(max_ne), &r.ci_high_clipped);
+
+    // Post-fit numerical health audit of the maternal-marginalisation quadrature.
+    // Runs once, at the fitted Ne, over the two-generation marginalised rows only
+    // (the plug-in and discrete paths use no such rule; trio rows use a different
+    // grandmother-informed rule and are out of scope for this check).  Purely
+    // diagnostic: it re-derives each row's rule to confirm the adaptive order
+    // sequence converged and the rule still reproduces its Beta posterior's
+    // analytic moments, and NEVER feeds back into r.ne / r.max_log_lik / the CI.
+    if (audit_quadrature && opts.marginalize_maternal) {
+        r.quad_audit.performed = true;
+        for (const auto& pd : data) {
+            if (pd.has_g == 1) continue;
+            const QuadratureDiagnostics diag =
+                audit_single_marginalized_quadrature(pd, r.ne, lf);
+            // Rows the marginalised path did not quadrature (invalid counts or
+            // the Ne == 1 degenerate limit) report final_order == 0; skip them.
+            if (diag.final_order <= 0) continue;
+            ++r.quad_audit.n_rows_audited;
+            if (!diag.converged_by_stability) ++r.quad_audit.n_cap_hit_no_stability;
+            if (!diag.rule_moment_ok)         ++r.quad_audit.n_moment_check_failed;
+            if (diag.final_order > r.quad_audit.max_final_order)
+                r.quad_audit.max_final_order = diag.final_order;
+            if (diag.rule_mean_abs_err > r.quad_audit.max_rule_mean_abs_err)
+                r.quad_audit.max_rule_mean_abs_err = diag.rule_mean_abs_err;
+            if (diag.rule_var_rel_err > r.quad_audit.max_rule_var_rel_err)
+                r.quad_audit.max_rule_var_rel_err = diag.rule_var_rel_err;
+        }
+    }
 
     return r;
 }
@@ -1258,7 +1393,12 @@ NeEstimator::load_pairs(const std::string& tsv_path, double min_vaf, double max_
     if (min_depth < 0) {
         throw std::invalid_argument("[ne-estimate] --min-depth must be >= 0 (0 disables the filter).");
     }
-    std::ifstream in_file(tsv_path);
+    if (!ngslib::is_readable(tsv_path)) {
+        throw std::runtime_error("[ne-estimate] Failed to open input TSV: " + tsv_path);
+    }
+    // BGZFile reads plain-text, gzip (.gz) and BGZF (.bgz) transparently, so
+    // `trans-prep` output can be fed in compressed without decompressing first.
+    ngslib::BGZFile in_file(tsv_path, "r");
     if (!in_file.is_open()) {
         throw std::runtime_error("[ne-estimate] Failed to open input TSV: " + tsv_path);
     }
@@ -1266,7 +1406,7 @@ NeEstimator::load_pairs(const std::string& tsv_path, double min_vaf, double max_
     std::string line;
     // Skip leading provenance comment lines beginning with '#'.
     std::vector<std::string> header_cols;
-    while (std::getline(in_file, line)) {
+    while (in_file.readline(line)) {
         if (!line.empty() && line.back() == '\r') line.pop_back();
         if (line.empty()) continue;
         if (line[0] == '#') continue;        // comment line written by `trans-prep`
@@ -1322,7 +1462,7 @@ NeEstimator::load_pairs(const std::string& tsv_path, double min_vaf, double max_
     });
 
     std::vector<PairData> data;
-    while (std::getline(in_file, line)) {
+    while (in_file.readline(line)) {
         if (!line.empty() && line.back() == '\r') line.pop_back();
         if (line.empty()) continue;
         if (line[0] == '#') continue;
@@ -2025,7 +2165,8 @@ NeEstimator::estimate_family(const FamilyData& fam,
     }
 
     // Reuse the existing continuous MCMLE estimator on this family's pairs.
-    Result est = estimate_continuous(fam.pairs, min_ne, max_ne, /*threads=*/1, opts);
+    Result est = estimate_continuous(fam.pairs, min_ne, max_ne, /*threads=*/1, opts,
+                                     /*audit_quadrature=*/false);
     fr.ne             = est.ne;
     fr.ci_low         = est.ci_low;
     fr.ci_high        = est.ci_high;
@@ -2415,6 +2556,7 @@ NeEstimator::NeEstimator(Config config) : _config(std::move(config)) {
         !std::isfinite(_config.ne_profile_step)) {
         throw std::invalid_argument("[ne-estimate] Floating-point options must be finite.");
     }
+
     if (_config.min_ne < 1)                                      _config.min_ne = 1;
     if (_config.max_ne < _config.min_ne)                         _config.max_ne = _config.min_ne;
     if (_config.threads < 1)                                     _config.threads = 1;
@@ -2424,6 +2566,7 @@ NeEstimator::NeEstimator(Config config) : _config(std::move(config)) {
     if (_config.bin_simulation_n_bins < 1)                       _config.bin_simulation_n_bins = 1;
     if (_config.ne_profile_step <= 0.0)                          _config.ne_profile_step = 0.1;
     if (_config.model.empty())                                   _config.model = "continuous";
+    
     if (_config.model != "continuous" && _config.model != "discrete") {
         throw std::invalid_argument("[ne-estimate] model must be continuous or discrete.");
     }
@@ -2473,7 +2616,8 @@ void NeEstimator::usage() {
                  "  confidence interval (LL_max - 1.92).\n"
                  "\nRequired options:\n"
                  "  -i, --input     FILE   Input transmission pairs TSV produced by\n"
-                 "                         `mitoquest trans-prep`.\n"
+                 "                         `mitoquest trans-prep`. Plain text, gzip\n"
+                 "                         (.gz) and BGZF (.bgz) are all accepted.\n"
                  "\nOptional options:\n"
                  "  -o, --output    FILE   JSON output file (default: stdout).\n"
                  "      --model     NAME   Marginal-likelihood model: `continuous` (default,\n"
@@ -2935,6 +3079,21 @@ void NeEstimator::_write_json(const Result& r, std::ostream& out) const {
         << "  \"Harmonic_Mother_DP\": " << r.harmonic_mother_dp << ",\n"
         << "  \"Harmonic_Child_DP\":  " << r.harmonic_child_dp;
 
+    if (r.quad_audit.performed) {
+        const bool ok = (r.quad_audit.n_cap_hit_no_stability == 0)
+                     && (r.quad_audit.n_moment_check_failed  == 0);
+        out << ",\n"
+            << "  \"Quadrature_Audit\": {\n"
+            << "    \"Status\":                   \"" << (ok ? "ok" : "warning") << "\",\n"
+            << "    \"N_Rows_Audited\":           " << r.quad_audit.n_rows_audited         << ",\n"
+            << "    \"N_Cap_Hit_No_Stability\":   " << r.quad_audit.n_cap_hit_no_stability << ",\n"
+            << "    \"N_Moment_Check_Failed\":    " << r.quad_audit.n_moment_check_failed  << ",\n"
+            << "    \"Max_Final_Order\":          " << r.quad_audit.max_final_order        << ",\n"
+            << "    \"Max_Rule_Mean_Abs_Err\":    " << std::setprecision(8) << r.quad_audit.max_rule_mean_abs_err << ",\n"
+            << "    \"Max_Rule_Var_Rel_Err\":     " << std::setprecision(8) << r.quad_audit.max_rule_var_rel_err  << "\n"
+            << "  }";
+    }
+
     if (r.kimura.computed) {
         out << ",\n"
             << "  \"Kimura_Cross_Check\": {\n"
@@ -2957,10 +3116,10 @@ void NeEstimator::_write_json(const Result& r, std::ostream& out) const {
         // ---- Trimmed Kimura diagnostic ----
         if (r.kimura.trimmed_computed) {
             out << "    \"Trimmed_Kimura\": {\n"
-                << "      \"Trim_Frac\":        " << std::setprecision(4) << r.kimura.trim_frac   << ",\n"
-                << "      \"N_After_Trim\":     " << r.kimura.n_after_trim  << ",\n"
-                << "      \"b_Trimmed\":        "; emit_json_number(out, r.kimura.b_trimmed);                  out << ",\n"
-                << "      \"Ne_Kimura_Trimmed\": "; emit_json_number(out, r.kimura.ne_kimura_trimmed);          out << "\n"
+                << "      \"Trim_Frac\":         " << std::setprecision(4)   << r.kimura.trim_frac << ",\n"
+                << "      \"N_After_Trim\":      " << r.kimura.n_after_trim  << ",\n"
+                << "      \"b_Trimmed\":         "; emit_json_number(out, r.kimura.b_trimmed);         out << ",\n"
+                << "      \"Ne_Kimura_Trimmed\": "; emit_json_number(out, r.kimura.ne_kimura_trimmed); out << "\n"
                 << "    },\n";
         }
 
@@ -3252,6 +3411,30 @@ NeEstimator::Result NeEstimator::run() {
         r.mean_child_dp      = sum_c / n;
         r.harmonic_mother_dp = (sum_inv_m > 0.0) ? n / sum_inv_m : 0.0;
         r.harmonic_child_dp  = (sum_inv_c > 0.0) ? n / sum_inv_c : 0.0;
+    }
+
+    // Loud warning when the maternal-marginalisation quadrature shows signs of
+    // the high-order Golub-Welsch eigensolve breakdown (see ne_estimate.h and
+    // Quadrature_Audit).  The fit is NOT altered -- the point of the audit is to
+    // convert a silent wrong Ne into a visible caveat, matching the reference
+    // implementation's self-check philosophy.  A cap-hit-without-stability alone
+    // is only meaningful once the order is high enough for the stability test to
+    // have been reachable (kTrioMinimumAdaptiveOrder); shallow exact-order rows
+    // legitimately "cap hit" at their exact polynomial order and are benign, but
+    // audit_single_marginalized_quadrature already reports those as converged.
+    if (r.quad_audit.performed
+        && (r.quad_audit.n_moment_check_failed > 0
+            || r.quad_audit.n_cap_hit_no_stability > 0)) {
+        std::cerr << "[ne-estimate] WARNING: numerical health audit flagged "
+                  << r.quad_audit.n_moment_check_failed << "/" << r.quad_audit.n_rows_audited
+                  << " marginalised rows failing the Beta-moment self-check and "
+                  << r.quad_audit.n_cap_hit_no_stability << "/" << r.quad_audit.n_rows_audited
+                  << " hitting the exact-order cap without stabilising"
+                  << " (max rule mean abs err " << std::setprecision(3)
+                  << r.quad_audit.max_rule_mean_abs_err
+                  << ", max var rel err " << r.quad_audit.max_rule_var_rel_err
+                  << "). The reported Ne may be numerically unreliable on deep-coverage"
+                  << " rows; see the Quadrature_Audit block in the JSON output.\n";
     }
 
     if (_config.kimura_check) {

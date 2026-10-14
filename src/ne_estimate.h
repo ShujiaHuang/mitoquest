@@ -412,6 +412,30 @@ public:
 
         // Loading diagnostics (trio founder-homoplasmy filters etc.).
         LoadStats load_stats;
+
+        // Numerical health audit of the maternal-marginalisation quadrature,
+        // run once at the fitted Ne over the two-generation rows (see the
+        // estimate_continuous() audit pass).  The adaptive Gauss-Jacobi rule
+        // can lose double-precision fidelity when the maternal Beta shape sum
+        // is very large (deep coverage), which would otherwise SILENTLY corrupt
+        // a row's marginalised likelihood and hence the reported Ne.  Each
+        // row's rule is therefore checked for (a) whether the adaptive order
+        // sequence converged by its stability criterion or merely fell through
+        // to the polynomial-exact cap, and (b) whether the rule still reproduces
+        // the maternal Beta posterior's analytic mean and variance.  Failures
+        // are counted here so run() can turn a silent breakdown into a loud
+        // warning.  Never populated on the plug-in (--no-maternal-marginalization)
+        // or discrete paths, which use no such quadrature.
+        struct QuadratureAudit {
+            bool   performed             = false;
+            size_t n_rows_audited        = 0;  // two-generation marginalised rows checked
+            size_t n_cap_hit_no_stability = 0; // reached exact-order cap without converging
+            size_t n_moment_check_failed  = 0; // rule failed the Beta mean/variance check
+            int    max_final_order       = 0;  // largest Gauss-Jacobi order used
+            double max_rule_mean_abs_err = 0.0;
+            double max_rule_var_rel_err  = 0.0;
+        };
+        QuadratureAudit quad_audit;
     };
 
     // CLI configuration parsed from argv.
@@ -687,11 +711,16 @@ public:
 
     // Full estimate with real-valued Ne for the continuous model.  Owns the
     // scan-lifetime maternal rule cache shared by the coarse sweep, the
-    // refinement and both CI walks.
+    // refinement and both CI walks.  When `audit_quadrature` is true (default),
+    // a single post-fit pass re-runs each two-generation row's marginalisation
+    // quadrature at the fitted Ne with instrumentation and records the numerical
+    // health summary in Result::quad_audit; per-family fits pass false because
+    // they neither surface nor can afford a per-family audit.
     static Result estimate_continuous(const std::vector<PairData>& data,
                                       int min_ne = 1, int max_ne = 200,
                                       int threads = 1,
-                                      ModelOptions opts = {});
+                                      ModelOptions opts = {},
+                                      bool audit_quadrature = true);
 
     // Full estimate (point + 95% CI by profile likelihood, threshold = -1.92).
     // For discrete model only (integer Ne scan); `opts` is forwarded to
