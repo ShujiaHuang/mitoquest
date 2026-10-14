@@ -25,6 +25,7 @@
 
 #include "log_factorial.h"
 #include "ne_estimate.h"
+#include "io/iobgzf.h"   // ngslib::BGZFile — write a compressed fixture
 
 // =====================================================================
 // LogFactorial closed-form spot checks
@@ -322,6 +323,73 @@ TEST(NeEstEstimate, ContinuousModelRejectsRangeWithoutFiniteLikelihood) {
 
 TEST(NeEstEstimate, ThrowsOnEmptyInput) {
     EXPECT_THROW(NeEstimator::estimate({}, 1, 50, 1), std::runtime_error);
+}
+
+// The post-fit quadrature audit must run by default on the marginalised
+// continuous path, cover every two-generation row, and report the deep-coverage
+// Gauss-Jacobi rule as numerically healthy (moments reproduced, order sequence
+// converged rather than pinned to the exact-order cap).  This is the runtime
+// guard that turns a silent eigensolve breakdown into a loud warning.
+TEST(NeEstQuadratureAudit, RunsAndIsHealthyOnDeepCoverage) {
+    auto data = simulate_pairs(/*true_ne=*/10,
+                               /*n_pairs=*/40,
+                               /*m_dp=*/   2000,
+                               /*c_dp=*/   2000,
+                               /*vaf_low=*/0.20,
+                               /*vaf_high=*/0.80,
+                               /*seed=*/   11u);
+
+    const NeEstimator::Result r = NeEstimator::estimate_continuous(
+        data, /*min_ne=*/1, /*max_ne=*/100, /*threads=*/1);
+
+    EXPECT_TRUE(r.quad_audit.performed);
+    EXPECT_EQ(r.quad_audit.n_rows_audited, data.size());
+    EXPECT_EQ(r.quad_audit.n_moment_check_failed, 0u);
+    EXPECT_EQ(r.quad_audit.n_cap_hit_no_stability, 0u);
+    EXPECT_GT(r.quad_audit.max_final_order, 0);
+    // The rule reproduces its Beta posterior's mean/variance far inside the
+    // audit tolerances (kQuadRuleMeanAbsErrTol=1e-7, kQuadRuleVarRelErrTol=1e-5)
+    // whenever the eigensolve is healthy.
+    EXPECT_LT(r.quad_audit.max_rule_mean_abs_err, 1e-9);
+    EXPECT_LT(r.quad_audit.max_rule_var_rel_err,  1e-7);
+}
+
+// Per-family fits (and any caller passing audit_quadrature=false) must leave
+// the audit untouched, so the extra post-fit pass never runs where it is not
+// surfaced.
+TEST(NeEstQuadratureAudit, DisabledLeavesUnperformed) {
+    auto data = simulate_pairs(/*true_ne=*/10,
+                               /*n_pairs=*/20,
+                               /*m_dp=*/   500,
+                               /*c_dp=*/   500,
+                               /*vaf_low=*/0.20,
+                               /*vaf_high=*/0.80,
+                               /*seed=*/   13u);
+
+    const NeEstimator::Result r = NeEstimator::estimate_continuous(
+        data, /*min_ne=*/1, /*max_ne=*/100, /*threads=*/1,
+        NeEstimator::ModelOptions{}, /*audit_quadrature=*/false);
+
+    EXPECT_FALSE(r.quad_audit.performed);
+    EXPECT_EQ(r.quad_audit.n_rows_audited, 0u);
+}
+
+// The plug-in path performs no maternal-marginalisation quadrature, so the
+// audit must not claim to have checked anything.
+TEST(NeEstQuadratureAudit, NotPerformedOnPlugInPath) {
+    auto data = simulate_pairs(/*true_ne=*/10,
+                               /*n_pairs=*/20,
+                               /*m_dp=*/   500,
+                               /*c_dp=*/   500,
+                               /*vaf_low=*/0.20,
+                               /*vaf_high=*/0.80,
+                               /*seed=*/   17u);
+
+    const NeEstimator::Result r = NeEstimator::estimate_continuous(
+        data, /*min_ne=*/1, /*max_ne=*/100, /*threads=*/1,
+        NeEstimator::ModelOptions(/*marginalize_maternal=*/false));
+
+    EXPECT_FALSE(r.quad_audit.performed);
 }
 
 TEST(NeEstEstimate, DiscreteModelRejectsTrioRows) {
@@ -1274,6 +1342,62 @@ TEST(NeEstTrio, LoadPairsReadsTrioColumns) {
     EXPECT_EQ(data[1].g_ad_alt, 0);
     // Clean up.
     std::remove(tsv.c_str());
+}
+
+// load_pairs must read a compressed (gzip/BGZF) transmission TSV identically
+// to the plain-text version: `trans-prep` output is commonly kept gzipped, so
+// ne-estimate accepts it without a separate decompression step.
+TEST(NeEstTrio, LoadPairsReadsCompressedTsv) {
+    const std::string plain = "/tmp/mitoquest_gz_load_plain.tsv";
+    const std::string compressed = "/tmp/mitoquest_gz_load_test.tsv.gz";
+    const std::string body =
+        "CHROM\tPOS\tREF\tALT\tFAM_ID\t"
+        "GRANDMOTHER_ID\tMOTHER_ID\tCHILD_ID\t"
+        "GRANDMOTHER_DP\tGRANDMOTHER_AD_REF\tGRANDMOTHER_AD_ALT\t"
+        "GRANDMOTHER_VAF\tHAS_G\t"
+        "MOTHER_DP\tMOTHER_AD_REF\tMOTHER_AD_ALT\tMOTHER_VAF\t"
+        "CHILD_DP\tCHILD_AD_REF\tCHILD_AD_ALT\tCHILD_VAF\tQC\n"
+        "#mitoquest_trans_prep_command=trans-prep -v x.vcf.gz -f x.fam\n"
+        "chrM\t100\tA\tT\tF1\tNA\tMOM\tCHILD\t"
+        "0\t0\t0\t0.000\t0\t"
+        "50\t35\t15\t0.300\t80\t60\t20\t0.250\tPASS\n"
+        "chrM\t200\tC\tG\tF2\tNA\tMOM2\tCHILD2\t"
+        "0\t0\t0\t0.000\t0\t"
+        "10\t8\t2\t0.200\t12\t9\t3\t0.250\tLOW_DEPTH\n"
+        "chrM\t300\tG\tA\tF3\tNA\tMOM3\tCHILD3\t"
+        "0\t0\t0\t0.000\t0\t"
+        "90\t60\t30\t0.333\t120\t80\t40\t0.333\tPASS\n";
+
+    {   // plain fixture
+        std::ofstream out(plain);
+        ASSERT_TRUE(out.is_open());
+        out << body;
+    }
+    {   // compressed fixture (BGZF is a gzip subtype read by the same path)
+        ngslib::BGZFile out(compressed, "w");
+        ASSERT_TRUE(out.is_open());
+        out.write(body);
+        out.close();
+    }
+
+    const auto plain_data = NeEstimator::load_pairs(plain, 0.0, 1.0);
+    const auto gz_data    = NeEstimator::load_pairs(compressed, 0.0, 1.0);
+
+    // LOW_DEPTH row is dropped on both paths; the two PASS rows survive.
+    ASSERT_EQ(plain_data.size(), 2u);
+    ASSERT_EQ(gz_data.size(), plain_data.size());
+    for (size_t i = 0; i < plain_data.size(); ++i) {
+        EXPECT_EQ(gz_data[i].m_dp,     plain_data[i].m_dp);
+        EXPECT_EQ(gz_data[i].m_ad_alt, plain_data[i].m_ad_alt);
+        EXPECT_EQ(gz_data[i].c_dp,     plain_data[i].c_dp);
+        EXPECT_EQ(gz_data[i].c_ad_alt, plain_data[i].c_ad_alt);
+        EXPECT_EQ(gz_data[i].has_g,    plain_data[i].has_g);
+    }
+    EXPECT_EQ(gz_data[0].m_dp, 50);
+    EXPECT_EQ(gz_data[1].c_ad_alt, 40);
+
+    std::remove(plain.c_str());
+    std::remove(compressed.c_str());
 }
 
 TEST(NeEstTrio, LoadPairsSkipsTruncatedOptionalColumns) {

@@ -18,6 +18,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "io/iobgzf.h"   // ngslib::BGZFile — reads plain + .gz/.bgz transparently
 #include "io/vcf.h"
 #include "io/vcf_header.h"
 #include "trans_prep.h"
@@ -134,11 +135,11 @@ std::vector<std::string> split_tabs(const std::string& s) {
 }
 
 std::vector<TsvRow> read_pairs_tsv(const std::string& path) {
-    std::ifstream f(path);
+    ngslib::BGZFile f(path, "r");   // transparent for plain-text and .gz/.bgz
     std::string line;
     std::unordered_map<std::string, int> idx;
     std::vector<TsvRow> rows;
-    while (std::getline(f, line)) {
+    while (f.readline(line)) {
         if (line.empty()) continue;
         if (line[0] == '#') continue;          // provenance
         std::vector<std::string> tk = split_tabs(line);
@@ -220,6 +221,50 @@ TEST(TransPrepRun, EndToEndPassFiltering) {
     std::remove(vcf_path.c_str());
     std::remove(fam_path.c_str());
     std::remove(out_path.c_str());
+}
+
+TEST(TransPrepRun, GzSuffixWritesCompressedOutput) {
+    const std::string vcf_path = "tp_gz.vcf";
+    const std::string fam_path = "tp_gz.fam";
+    const std::string gz_path  = "tp_gz.tsv.gz";   // .gz suffix => BGZF output
+    write_tmp(vcf_path, TEST_VCF);
+    write_tmp(fam_path, TEST_FAM);
+
+    TransmissionPrep::Config cfg;
+    cfg.vcf_path     = vcf_path;
+    cfg.fam_path     = fam_path;
+    cfg.output_file  = gz_path;
+    cfg.min_depth    = 500;
+    cfg.require_pass = true;
+    cfg.snv_only     = true;
+
+    TransmissionPrep tp(cfg);
+    long long pass_rows = tp.run();
+
+    // Same fixture as EndToEndPassFiltering => 1 PASS + 1 LOW_DEPTH row.
+    EXPECT_EQ(pass_rows, 1);
+    auto rows = read_pairs_tsv(gz_path);   // BGZFile reads the .gz back
+    ASSERT_EQ(rows.size(), 2u);
+
+    const TsvRow* r100 = nullptr;
+    for (const auto& r : rows) if (r.pos == 100) r100 = &r;
+    ASSERT_NE(r100, nullptr);
+    EXPECT_EQ(r100->qc,       "PASS");
+    EXPECT_EQ(r100->m_dp,     1000);
+    EXPECT_EQ(r100->c_ad_alt, 600);
+
+    // The compressed stream must carry the BGZF/gzip magic bytes.
+    {
+        std::ifstream raw(gz_path, std::ios::binary);
+        unsigned char b[2] = {0, 0};
+        raw.read(reinterpret_cast<char*>(b), 2);
+        EXPECT_EQ(b[0], 0x1f);
+        EXPECT_EQ(b[1], 0x8b);
+    }
+
+    std::remove(vcf_path.c_str());
+    std::remove(fam_path.c_str());
+    std::remove(gz_path.c_str());
 }
 
 TEST(TransPrepRun, NoRequirePassKeepsFiltered) {

@@ -16,12 +16,14 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <memory>     // std::unique_ptr
 #include <sstream>
 #include <stdexcept>
 #include <unordered_map>
 #include <utility>   // std::move, std::pair, std::make_pair
 
-#include "io/utils.h"           // ngslib::is_readable
+#include "io/iobgzf.h"          // ngslib::BGZFile (BGZF/gzip output)
+#include "io/utils.h"           // ngslib::is_readable, ngslib::suffix_name
 #include "io/vcf.h"
 #include "io/vcf_record.h"
 #include "version.h"
@@ -274,7 +276,9 @@ void TransmissionPrep::usage() {
                  "                         columns.  When absent, every row has\n"
                  "                         HAS_G = 0 and the GRANDMOTHER_* columns\n"
                  "                         are filled with NA / 0.\n"
-                 "  -o, --output    FILE   Output TSV file (default: stdout).\n"
+                 "  -o, --output    FILE   Output TSV file (default: stdout).  A .gz or\n"
+                 "                         .bgz suffix writes BGZF (gzip-compatible);\n"
+                 "                         any other suffix writes plain text.\n"
                  "  -d, --min-depth INT    Minimum read depth (DP) required for BOTH the\n"
                  "                         mother and the child at a site.  Sites failing\n"
                  "                         this threshold are emitted with QC=LOW_DEPTH and\n"
@@ -521,21 +525,46 @@ long long TransmissionPrep::run() {
         throw std::runtime_error("[trans-prep] No valid mother-child pairs found.");
     }
 
-    // Open output (file or stdout).
-    std::ofstream out_stream;
-    std::ostream* out = &std::cout;
-    if (!_config.output_file.empty()) {
-        out_stream.open(_config.output_file);
-        if (!out_stream.is_open()) {
-            throw std::runtime_error("[trans-prep] Failed to open output: "
-                                     + _config.output_file);
+    // Open output. The format follows the --output suffix: ".gz"/".bgz" are
+    // written as BGZF (a gzip-compatible stream, readable by `ne-estimate`
+    // and `zcat`); any other suffix is plain text. An empty --output goes to
+    // stdout as plain text.
+    const bool to_stdout = _config.output_file.empty();
+    const std::string suffix = to_stdout ? std::string() : ngslib::suffix_name(_config.output_file);
+    const bool compressed = (suffix == ".gz" || suffix == ".bgz");
+
+    std::ofstream out_stream;                    // plain-text file sink
+    std::unique_ptr<ngslib::BGZFile> out_bgzf;   // BGZF file sink
+    if (!to_stdout) {
+        if (compressed) {
+            // BGZFile's constructor throws if the file cannot be opened.
+            out_bgzf = std::make_unique<ngslib::BGZFile>(_config.output_file, "w");
+        } else {
+            out_stream.open(_config.output_file);
+            if (!out_stream.is_open()) {
+                throw std::runtime_error("[trans-prep] Failed to open output: "
+                                         + _config.output_file);
+            }
         }
-        out = &out_stream;
     }
 
+    // 定义一个用于输出每一行的 lambda 函数。
+    // Single funnel for every emitted line (provenance, header, data rows).
+    auto write_line = [&](const std::string& s) {
+        if (to_stdout) {
+            std::cout << s << "\n";
+        } else if (compressed) { 
+            out_bgzf->write(s); out_bgzf->write("\n"); 
+        } else {
+            out_stream << s << "\n";
+        }
+    };
+
     // Header and provenance.
-    if (!_cmdline_string.empty()) (*out) << _cmdline_string << "\n";
-    (*out) << tsv_header() << "\n";
+    if (!_cmdline_string.empty()) {
+        write_line(_cmdline_string);
+    }
+    write_line(tsv_header());
 
     long long total_records   = 0;
     long long total_emitted   = 0;
@@ -739,7 +768,7 @@ long long TransmissionPrep::run() {
                 row.qc = low_depth ? "LOW_DEPTH" : "PASS";
                 if (low_depth) ++total_low_depth;
 
-                (*out) << format_row(row) << "\n";
+                write_line(format_row(row));
                 if (!low_depth) ++total_emitted;
             }
         }
