@@ -13,6 +13,7 @@
 #include <string>
 #include <vector>
 #include <map>
+#include <stdexcept> // std::out_of_range, std::runtime_error
 
 static const std::vector<std::string> BASIC_BASES = {"A", "C", "G", "T"}; // 预定义这个值，限定 UNIQ_BASES 数组中至少有这四个碱基
 static const int LRT_THRESHOLD  = 24;             // 24 corresponding to a chi-pvalue of 10^-6

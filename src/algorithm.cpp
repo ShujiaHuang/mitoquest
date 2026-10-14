@@ -1,5 +1,15 @@
 #include "algorithm.h"
 
+#include <algorithm>  // std::sort, std::max, std::min
+#include <cmath>      // std::log, std::sqrt, std::isfinite, std::abs, std::copysign
+#include <cstddef>    // size_t
+#include <numeric>    // std::iota
+#include <stdexcept>  // std::invalid_argument
+#include <utility>    // std::pair, std::make_pair
+#include <vector>
+
+#include <htslib/kfunc.h>  // kf_gammaq, kf_erfc, kt_fisher_exact
+
 namespace {
 
 double validate_mixture_weights(const std::vector<double>& frequencies) {
@@ -47,13 +57,13 @@ double _erfinv(double x) {
     const double d2 = 0.189269;
     const double d3 = 0.001308;
     
-    double y = 0.5 * log(1 - x * x);
-    double z = copysign(sqrt(-y), x);
+    double y = 0.5 * std::log(1 - x * x);
+    double z = std::copysign(std::sqrt(-y), x);
     
     double numerator = c0 + c1 * z + c2 * z * z;
     double denominator = 1 + d1 * z + d2 * z * z + d3 * z * z * z;
     
-    return copysign(z - numerator / denominator, x);
+    return std::copysign(z - numerator / denominator, x);
 }
 
 std::pair<double, double> calculate_confidence_interval(int x, int n, double confidence_level) {
@@ -84,7 +94,7 @@ std::pair<double, double> calculate_confidence_interval(int x, int n, double con
         // For other confidence levels, use this approximation
         // Note: This is an approximation for simplicity
         // A more accurate approach would use a statistical library
-        z = sqrt(2.0) * _erfinv(confidence_level);
+        z = std::sqrt(2.0) * _erfinv(confidence_level);
     }
     
     double p = static_cast<double>(x) / n;  // Sample proportion
@@ -95,7 +105,7 @@ std::pair<double, double> calculate_confidence_interval(int x, int n, double con
         // Agresti-Coull interval calculation
         double n_tilde = n + z * z;
         double p_tilde = (x + z * z / 2.0) / n_tilde;
-        double interval_half_width = z * sqrt((p_tilde * (1.0 - p_tilde)) / n_tilde);
+        double interval_half_width = z * std::sqrt((p_tilde * (1.0 - p_tilde)) / n_tilde);
         
         lower = std::max(0.0, p_tilde - interval_half_width);
         upper = std::min(1.0, p_tilde + interval_half_width);
@@ -103,7 +113,7 @@ std::pair<double, double> calculate_confidence_interval(int x, int n, double con
         // Wilson score interval calculation
         double denominator = 1.0 + (z * z / n);
         double center = (p + (z * z) / (2 * n)) / denominator;
-        double interval_half_width = z * sqrt((p * (1.0 - p) / n) + (z * z / (4 * n * n))) / denominator;
+        double interval_half_width = z * std::sqrt((p * (1.0 - p) / n) + (z * z / (4 * n * n))) / denominator;
 
         lower = std::max(0.0, center - interval_half_width);
         upper = std::min(1.0, center + interval_half_width);

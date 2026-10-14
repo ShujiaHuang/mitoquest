@@ -20,6 +20,7 @@
 #include <condition_variable>
 #include <future>
 #include <memory>
+#include <stdexcept>
 
 class ThreadPool {
 public:

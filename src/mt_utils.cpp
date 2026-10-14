@@ -4,6 +4,8 @@
 #include "io/iobgzf.h"
 #include "algorithm.h"
 
+#include <htslib/kfunc.h>  // kf_betai
+
 std::string format_double(double value, int precision) {
     std::stringstream ss;
     ss << std::fixed << std::setprecision(precision) << value;

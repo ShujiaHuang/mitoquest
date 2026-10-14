@@ -10,14 +10,15 @@
 #ifndef __INCLUDE_MTCALLER_ALIGORITHM_H__
 #define __INCLUDE_MTCALLER_ALIGORITHM_H__
 
-#include <algorithm>
-#include <iostream>
+#include <algorithm>  // std::min_element, std::max_element, std::sort
+#include <cstddef>    // size_t
+#include <cmath>      // std::sqrt
+#include <iterator>   // std::distance
+#include <numeric>    // std::accumulate
+#include <stdexcept>  // std::invalid_argument
+#include <type_traits> // std::enable_if, std::is_arithmetic
+#include <utility>    // std::pair
 #include <vector>
-#include <string>
-#include <cmath>  // use 'log' functon
-#include <numeric>
-
-#include <htslib/kfunc.h>
 
 template<typename ForwardIterator>
 inline size_t argmin(ForwardIterator first, ForwardIterator last) {
