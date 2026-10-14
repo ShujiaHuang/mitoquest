@@ -5,19 +5,26 @@
  * @author Shujia Huang (hshujia@qq.com)
  * @date 2026-05-28
  */
-#include <algorithm>
+#include "trans_prep.h"
+
+#include <getopt.h>
+
+#include <algorithm>  // std::find_if
+#include <cctype>     // std::isspace
 #include <cstdint>
-#include <cstdio>
-#include <cstring>
+#include <cstdlib>    // std::exit
 #include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <sstream>
 #include <stdexcept>
 #include <unordered_map>
+#include <utility>   // std::move, std::pair, std::make_pair
 
-#include "trans_prep.h"
 #include "io/utils.h"           // ngslib::is_readable
+#include "io/vcf.h"
+#include "io/vcf_record.h"
+#include "version.h"
 
 namespace {
 

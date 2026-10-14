@@ -16,15 +16,12 @@
 #ifndef _MT_TRANS_PREP_H_
 #define _MT_TRANS_PREP_H_
 
-#include <getopt.h>
-#include <iostream>
+#include <cstdint>   // int32_t
+#include <iosfwd>    // std::ostream
 #include <string>
 #include <vector>
 
-#include "version.h"
-#include "io/vcf.h"
 #include "io/vcf_header.h"
-#include "io/vcf_record.h"
 
 class TransmissionPrep {
 public:
