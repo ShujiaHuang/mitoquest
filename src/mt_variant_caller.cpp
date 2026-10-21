@@ -39,6 +39,11 @@ void MtVariantCaller::usage(const Config &config) const {
               << "  -P, --proper-pairs-only    Only use properly paired reads.\n"
               << "  --filename-has-samplename  Setting this argument could save time by preventing the sample ID from being obtained \n"
               << "                             from the BAM file if the name of BAM/CRAM is something like 'SampleID.xxxx.bam'.\n"
+              << "  --output-ref-sites         Besides variant sites, also output the REF-only (non-variant) sites. Such records have\n"
+              << "                             ALT='.', QUAL='.' and FILTER='REF_ONLY'. NOTE: only sites covered by at least one read\n"
+              << "                             (passing -Q/-q) in at least one sample are output, NOT every position of the mtDNA; \n"
+              << "                             uncovered positions are still absent from the VCF, so a missing position does NOT\n"
+              << "                             mean REF. (default: only variant sites)\n"
               << "  -j, --het-threshold FLOAT  Heteroplasmy threshold (default: " << config.heteroplasmy_threshold << ")\n"
               << "  -c, --chunk INT            Chunk size for parallel processing (default: " << config.chunk_size << ")\n"
               << "  -t, --threads INT          Number of threads (default: all available threads [hardware_concurrency])\n"
@@ -56,6 +61,7 @@ MtVariantCaller::MtVariantCaller(int argc, char* argv[]) {
     config.pairs_map_only          = false;
     config.proper_pairs_only       = false;
     config.filename_has_samplename = false;
+    config.output_ref_sites        = false;
     config.chunk_size              = 1000;
     config.thread_count            = std::thread::hardware_concurrency(); // Use all available threads
 
@@ -72,6 +78,7 @@ MtVariantCaller::MtVariantCaller(int argc, char* argv[]) {
         {"pairs-map-only",           no_argument, 0, 'p'}, // 小写 p
         {"proper-pairs-only",        no_argument, 0, 'P'},
         {"filename-has-samplename",  no_argument, 0, '1'},
+        {"output-ref-sites",         no_argument, 0, '2'},
         {"help",                     no_argument, 0, 'h'},
 
         // must set this value, to get the correct value from getopt_long
@@ -106,6 +113,7 @@ MtVariantCaller::MtVariantCaller(int argc, char* argv[]) {
             case 'p': config.pairs_map_only          = true; break;
             case 'P': config.proper_pairs_only       = true; break;
             case '1': config.filename_has_samplename = true; break;
+            case '2': config.output_ref_sites        = true; break;
             case 'h': 
                 usage(config); 
                 exit(EXIT_SUCCESS);
@@ -170,7 +178,8 @@ MtVariantCaller::MtVariantCaller(int argc, char* argv[]) {
         " -r " + config.calling_regions)        << (config.filename_has_samplename ? ""
         " --filename-has-samplename" : "")      << (config.pairs_map_only ?          ""
         " --pairs-map-only"          : "")      << (config.proper_pairs_only ?       ""
-        " --proper-pairs-only"       : "")      << ""
+        " --proper-pairs-only"       : "")      << (config.output_ref_sites ?        ""
+        " --output-ref-sites"        : "")      << ""
         " -o " + config.output_file + " "       << config.bam_files[0] + " [ ... " 
         << config.bam_files.size() << " bamfiles in total]. \n" << std::endl;
 
@@ -706,7 +715,7 @@ bool MtVariantCaller::_variant_joint(const std::vector<PosVariantMap> &samples_v
     for (auto && p: results) { // Run and make sure all processes are finished
         if (p.valid()) {
             VCFRecord vcf_record = p.get();
-            if (vcf_record.is_valid()) {
+            if (vcf_record.is_valid(this->_config.output_ref_sites)) {
                 if (is_empty) {
                     is_empty = false;
                 }
@@ -726,8 +735,9 @@ VCFRecord MtVariantCaller::_joint_variant_in_pos(std::vector<VariantInfo> vvi) {
 
     // First pass: collect and normalized all alleles by using the longest REF
     AlleleInfo ai = collect_allele_info(vvi);  // ``vvi.alt_bases`` will be replaced by the normalized alleles in ``collect_allele_info``
-    if (ai.alts.empty()) {
-        return VCFRecord(); // Return empty record if no variants
+    const bool is_ref_only = ai.alts.empty();
+    if (ai.ref.empty() || (is_ref_only && !this->_config.output_ref_sites)) {
+        return VCFRecord(); // Return empty record if no variants (or REF-only sites are not requested)
     }
     
     // Set basic VCF fields
@@ -736,7 +746,7 @@ VCFRecord MtVariantCaller::_joint_variant_in_pos(std::vector<VariantInfo> vvi) {
     vcf_record.pos   = vvi[0].ref_pos; // variant's reference position 
     vcf_record.ref   = ai.ref;         // the final REF (upper case) to be used in VCF
     vcf_record.alt   = ai.alts;        // have been uniqued and sorted by length and then by ASCII
-    vcf_record.filter = ".";
+    vcf_record.filter = is_ref_only ? "REF_ONLY" : ".";
 
     std::vector<std::string> ref_alt_order = {ai.ref}; // First element must be REF allele
     ref_alt_order.insert(ref_alt_order.end(), ai.alts.begin(), ai.alts.end());
@@ -796,6 +806,7 @@ VCFRecord MtVariantCaller::_joint_variant_in_pos(std::vector<VariantInfo> vvi) {
     }
 
     if (all_available_dp.empty()) {
+        if (is_ref_only) return VCFRecord();  // REF-only site without any non-missing genotype, skip it
         throw std::runtime_error("[ERROR] No available individuals in this position: " +
                                  vcf_record.chrom + ":" + std::to_string(vcf_record.pos));
     }
@@ -845,8 +856,8 @@ VCFRecord MtVariantCaller::_joint_variant_in_pos(std::vector<VariantInfo> vvi) {
                       "HOM_N=" + std::to_string(hom_ind_count) + ";"
                       "DP_MEAN=" + format_double(mean(all_available_dp), 0) + ";"      // Interger
                       "DP_MEDIAN=" + format_double(median(all_available_dp), 0) + ";"  // Interger
-                      "VAF_MEAN=" + ngslib::join(vaf_means, ",") + ";"
-                      "VAF_MEAN_HET=" + ngslib::join(vaf_means_het, ",") + ";"
+                      "VAF_MEAN=" + (vaf_means.empty() ? "." : ngslib::join(vaf_means, ",")) + ";"
+                      "VAF_MEAN_HET=" + (vaf_means_het.empty() ? "." : ngslib::join(vaf_means_het, ",")) + ";"
                       "PT=" + pt;
 
     return vcf_record;

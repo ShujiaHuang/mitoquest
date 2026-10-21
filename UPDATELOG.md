@@ -1,5 +1,13 @@
 # MitoQuest Changelog
 
+## [1.12.3] - 2026-10-21
+
+- `mitoquest caller` 新增开关参数 `--output-ref-sites`：开启后除变异位点外，还会输出被判定为 REF-only（非变异）的位点；默认关闭，输出与此前完全一致
+- REF-only 记录：`ALT=.`、`QUAL=.`、`FILTER=REF_ONLY`，`INFO` 中 `VAF_MEAN` / `VAF_MEAN_HET` 为 `.`，`PT=Ref`；可用 `bcftools view -f REF_ONLY` / `-f .,PASS` 筛选或排除
+- 注意：只输出“至少一个样本有 reads 覆盖（通过 `-Q/-q`）”的位点，并非 mtDNA 的全部位置；未被覆盖的位置仍不会出现在 VCF 中，因此 VCF 中缺失的位点不代表是 REF
+- VCF 头新增 `##FILTER=<ID=REF_ONLY,...>` 定义；`VCFRecord::is_valid()` 新增 `allow_ref_only` 参数（默认 `false`，行为不变）
+- 新增单元测试 `MtVariantCaller.OutputRefSitesEmitsCoveredRefOnlySitesWithRefOnlyFilter`
+
 ## [1.11.2] - 2026-06-01
 
 - **修复（严重）：`mitoquest variant-qc` 的 Bayesian filter 分母错误**：此前贝叶斯假设检验误将 `sum(AD)`（GT 中活跃等位基因深度之和）当作分母 `D`，而 caller 输出的 `sum(AD)` 对杂合样本远小于真实测序深度 `DP`。这会同时高估观测 VAF（`AD/sum(AD)`）并使 H1 参数拟合空间（`AD/DP`）与似然评估点不一致，导致杂合样本的后验概率严重失真

@@ -133,9 +133,10 @@ struct VCFRecord {
                   format("") {}; 
     
     // Helper method to validate VCF record
-    bool is_valid() const {
+    // A REF-only record (empty ALT) is valid only if ``allow_ref_only`` is true.
+    bool is_valid(bool allow_ref_only = false) const {
         // Basic validation
-        if (chrom.empty() || pos == 0 || ref.empty() || alt.empty()) {
+        if (chrom.empty() || pos == 0 || ref.empty() || (alt.empty() && !allow_ref_only)) {
             return false;
         }
 

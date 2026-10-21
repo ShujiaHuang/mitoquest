@@ -257,6 +257,7 @@ std::string format_sample_string(const VCFSampleAnnotation& sa, const VariantInf
 std::string vcf_header_define(const std::string &ref_file_path, const std::vector<std::string> &samples, const std::string other_comment) {
     std::vector<std::string> header = {
         "##fileformat=VCFv4.2",
+        "##FILTER=<ID=REF_ONLY,Description=\"Covered site with no variant allele detected in any sample (only emitted with --output-ref-sites)\">",
         "##FORMAT=<ID=GT,Number=1,Type=String,Description=\"Genotype\">",
         "##FORMAT=<ID=GQ,Number=1,Type=Integer,Description=\"Genotype Quality\">",
         "##FORMAT=<ID=DP,Number=1,Type=Integer,Description=\"Total read depth on the REF position\">",

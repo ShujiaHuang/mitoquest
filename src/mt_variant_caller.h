@@ -36,6 +36,7 @@ public:
         bool pairs_map_only;          // only use the paired reads which mapped to the same chromosome
         bool proper_pairs_only;       // only use properly paired reads
         bool filename_has_samplename; // use filename as sample name
+        bool output_ref_sites;        // also output covered REF-only (non-variant) sites, FILTER=REF_ONLY
     };
 
     explicit MtVariantCaller(int argc, char* argv[]);

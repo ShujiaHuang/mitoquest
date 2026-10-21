@@ -143,6 +143,15 @@ Optional options:
   --filename-has-samplename  When BAM/CRAM filenames are 'SampleID.xxxx.bam',
                              skip reading sample names from the BAM header.
                              Saves significant time on large cohorts.
+  --output-ref-sites         Besides variant sites, also output the REF-only
+                             (non-variant) sites. Such records have ALT='.',
+                             QUAL='.' and FILTER='REF_ONLY'.
+                             NOTE: only sites covered by at least one read
+                             (passing -Q/-q) in at least one sample are
+                             output, NOT every position of the mtDNA. Uncovered
+                             positions are still absent from the VCF, so a
+                             missing position does NOT mean REF.
+                             (default: only variant sites)
   -j, --het-threshold FLOAT  Heteroplasmy fraction threshold below which an
                              allele is treated as reference (default: 0.01).
   -c, --chunk INT            Chunk size (bp) for parallel region processing

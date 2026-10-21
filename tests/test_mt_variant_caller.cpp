@@ -175,3 +175,103 @@ TEST(MtVariantCaller, EmitsIndelAnchoredAtInternalChunkBoundary) {
     std::remove(vcf_path.c_str());
     std::remove((vcf_path + ".tbi").c_str());
 }
+TEST(MtVariantCaller, OutputRefSitesEmitsCoveredRefOnlySitesWithRefOnlyFilter) {
+    const std::string prefix = "/tmp/mitoquest-caller-ref-sites";
+    const std::string fasta_path = prefix + ".fa";
+    const std::string sam_path = prefix + ".sam";
+    const std::string bam_path = prefix + ".bam";
+
+    {
+        std::ofstream fasta(fasta_path);
+        ASSERT_TRUE(fasta.is_open());
+        fasta << ">chrM\n" << std::string(100, 'A') << "\n";
+    }
+    ASSERT_EQ(fai_build(fasta_path.c_str()), 0);
+
+    {
+        // positions 1-10 are covered and match the reference; positions 21-30 are all 'C' (variant);
+        // everything else is uncovered.
+        std::ofstream sam(sam_path);
+        ASSERT_TRUE(sam.is_open());
+        sam << "@HD\tVN:1.6\tSO:coordinate\n"
+            << "@SQ\tSN:chrM\tLN:100\n"
+            << "@RG\tID:rg1\tSM:S1\n";
+        for (int index = 0; index < 11; ++index) {
+            sam << "ref" << index << "\t0\tchrM\t1\t60\t10M\t*\t0\t0\t"
+                << "AAAAAAAAAA\tIIIIIIIIII\tRG:Z:rg1\n";
+        }
+        for (int index = 0; index < 11; ++index) {
+            sam << "alt" << index << "\t0\tchrM\t21\t60\t10M\t*\t0\t0\t"
+                << "CCCCCCCCCC\tIIIIIIIIII\tRG:Z:rg1\n";
+        }
+    }
+    write_indexed_bam(sam_path, bam_path);
+
+    struct Output {
+        std::vector<std::vector<std::string>> records;
+        bool has_ref_only_header = false;
+    };
+    auto run_caller = [&](bool output_ref_sites, const std::string& vcf_path) {
+        std::vector<std::string> arguments = {
+            "caller", "-f", fasta_path, "-o", vcf_path, "-Q", "0", "-q", "0",
+            "-c", "100", "-t", "1",
+        };
+        if (output_ref_sites) arguments.push_back("--output-ref-sites");
+        arguments.push_back(bam_path);
+
+        std::vector<char*> argv;
+        for (std::string& argument : arguments) argv.push_back(argument.data());
+        optind = 1;
+        MtVariantCaller caller(static_cast<int>(argv.size()), argv.data());
+        caller.run();
+
+        Output out;
+        ngslib::BGZFile reader(vcf_path, "r");
+        std::string line;
+        while (reader.readline(line)) {
+            if (line.empty()) continue;
+            if (line.front() == '#') {
+                if (line.rfind("##FILTER=<ID=REF_ONLY", 0) == 0) out.has_ref_only_header = true;
+                continue;
+            }
+            out.records.push_back(split_fields(line, '\t'));
+        }
+        std::remove(vcf_path.c_str());
+        std::remove((vcf_path + ".tbi").c_str());
+        return out;
+    };
+
+    const Output variants_only = run_caller(false, prefix + ".default.vcf.gz");
+    ASSERT_EQ(variants_only.records.size(), 10u);  // only positions 21-30
+    for (const auto& fields : variants_only.records) {
+        EXPECT_EQ(fields[4], "C");
+        EXPECT_EQ(fields[6], ".");
+    }
+
+    const Output with_ref = run_caller(true, prefix + ".refsites.vcf.gz");
+    EXPECT_TRUE(with_ref.has_ref_only_header);
+    ASSERT_EQ(with_ref.records.size(), 20u);  // positions 1-10 (REF-only) and 21-30 (variants); uncovered sites absent
+    for (const auto& fields : with_ref.records) {
+        ASSERT_GE(fields.size(), 10u);
+        const int pos = std::stoi(fields[1]);
+        if (pos <= 10) {
+            EXPECT_EQ(fields[3], "A");
+            EXPECT_EQ(fields[4], ".");
+            EXPECT_EQ(fields[5], ".");
+            EXPECT_EQ(fields[6], "REF_ONLY");
+            EXPECT_NE(fields[7].find("PT=Ref"), std::string::npos);
+            EXPECT_EQ(split_fields(fields[9], ':')[0], "0");
+        } else {
+            EXPECT_GE(pos, 21);
+            EXPECT_LE(pos, 30);
+            EXPECT_EQ(fields[4], "C");
+            EXPECT_EQ(fields[6], ".");
+        }
+    }
+
+    std::remove(fasta_path.c_str());
+    std::remove((fasta_path + ".fai").c_str());
+    std::remove(sam_path.c_str());
+    std::remove(bam_path.c_str());
+    std::remove((bam_path + ".bai").c_str());
+}
