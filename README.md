@@ -577,6 +577,27 @@ handling end-to-end with one command:
 bash tests/data/ne_pipeline/run_demo.sh
 ```
 
+### REF-only sites
+
+When the input VCF was produced with `mitoquest caller --output-ref-sites`,
+it also contains REF-only (non-variant) records (`ALT=.`, `FILTER=REF_ONLY`).
+`mitoquest trans-prep` does **not** discard them: every such site produces
+one row per mother-child pair with `ALT=.`, `MOTHER_AD_ALT = CHILD_AD_ALT = 0`
+and `VAF = 0` (`AD_REF` and `DP` are the real REF depth), so the
+transmission result is reported faithfully for non-variant sites too.
+
+* With `--require-pass`, a REF-only record is kept when its `FILTER` is
+  `REF_ONLY` (raw `caller` output) or `PASS` (after `variant-qc`, which
+  rewrites FILTER); other filters (e.g. `LOW_QUALITY`) are dropped, exactly
+  as for variant sites.
+* The usual `GT='.'` / `DP`/`--min-depth` rules apply unchanged.
+* `--snv-only` does not remove REF-only rows (they have a single-base REF).
+* Only covered sites exist in the VCF, so REF-only rows are only emitted for
+  covered positions (see `caller --output-ref-sites`).
+* `mitoquest ne-estimate` ignores these rows under its default
+  `--min-vaf 0.10` window (the maternal VAF is 0). They only enter the fit if
+  you lower `--min-vaf` to 0; filter on `ALT=.` if you do not want that.
+
 ### FORMAT/AD layout (GT-aligned, per sample)
 
 `mitoquest caller` emits `FORMAT/AD` with a **GT-aligned per-sample

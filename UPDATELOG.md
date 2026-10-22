@@ -1,5 +1,13 @@
 # MitoQuest Changelog
 
+## [1.12.4] - 2026-10-22
+
+- `mitoquest trans-prep` 现在能如实处理 REF-only 记录（`ALT=.`，来自 `caller --output-ref-sites`）：不再丢弃，每个位点、每对母-子输出一行，`ALT=.`、`AD_ALT=0`、`VAF=0`（`AD_REF`/`DP` 为真实 REF 深度）；`--require-pass` 下 `FILTER` 为 `REF_ONLY` 或 `PASS` 的 REF-only 记录会被保留，统计日志新增 “REF-only records” 计数
+- `ne-estimate` 默认 `--min-vaf 0.10` 会过滤掉这些行（母本 VAF=0）；仅在把 `--min-vaf` 设为 0 时才会进入拟合
+- `mitoquest variant-qc` 输出按文件后缀决定压缩：`-o`/`-t` 以 `.gz`/`.bgz` 结尾时写入 BGZF（gzip 兼容，不生成索引），其它后缀写入纯文本；`.gz` 输出可用 `tabix` 建索引后随机读取；`-i` 亦支持读取纯文本或压缩输入
+- `mitoquest caller` 写入 VCF 头的命令行注释带上版本号：`##mitoquest(<VERSION>)_caller_command=...`，便于溯源生成该 VCF 的工具版本
+- 新增单元测试 `TransPrepRun.ReportsRefOnlySitesFaithfully` / `TransPrepRun.RefOnlySitesKeptWithoutPassGateOnlyWhenNotFiltered`，以及参数化 `Formats/VariantQCOutput.*`（覆盖 `''`/`.gz`/`.bgz`/`.txt` 四种后缀的压缩与内容一致性）
+
 ## [1.12.3] - 2026-10-21
 
 - `mitoquest caller` 新增开关参数 `--output-ref-sites`：开启后除变异位点外，还会输出被判定为 REF-only（非变异）的位点；默认关闭，输出与此前完全一致

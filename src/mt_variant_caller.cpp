@@ -86,7 +86,7 @@ MtVariantCaller::MtVariantCaller(int argc, char* argv[]) {
     };
 
     // Save the complete command line options in VCF header
-    _cmdline_string = "##mitoquest_caller_command=";
+    _cmdline_string = "##mitoquest(" + std::string(MITOQUEST_VERSION) + ")_caller_command=";
     for (size_t i = 0; i < argc; ++i) {
         _cmdline_string += (i > 0) ? " " + std::string(argv[i]) : std::string(argv[i]);
     }

@@ -119,7 +119,7 @@ namespace {
 struct TsvRow {
     std::string chrom, alt, qc;
     std::string grandmother_id, mother_id, child_id;
-    int pos, g_dp, g_ad_alt, m_dp, c_dp, m_ad_alt, c_ad_alt, has_g;
+    int pos, g_dp, g_ad_alt, m_dp, c_dp, m_ad_ref, m_ad_alt, c_ad_ref, c_ad_alt, has_g;
 };
 
 // Build a header index: column name -> 0-based index.
@@ -158,8 +158,10 @@ std::vector<TsvRow> read_pairs_tsv(const std::string& path) {
         r.g_ad_alt       = std::stoi(tk[idx.at("GRANDMOTHER_AD_ALT")]);
         r.has_g          = std::stoi(tk[idx.at("HAS_G")]);
         r.m_dp           = std::stoi(tk[idx.at("MOTHER_DP")]);
+        r.m_ad_ref       = std::stoi(tk[idx.at("MOTHER_AD_REF")]);
         r.m_ad_alt       = std::stoi(tk[idx.at("MOTHER_AD_ALT")]);
         r.c_dp           = std::stoi(tk[idx.at("CHILD_DP")]);
+        r.c_ad_ref       = std::stoi(tk[idx.at("CHILD_AD_REF")]);
         r.c_ad_alt       = std::stoi(tk[idx.at("CHILD_AD_ALT")]);
         r.qc             = tk[idx.at("QC")];
         rows.push_back(r);
@@ -832,3 +834,89 @@ TEST(TransPrepThreeGen, GmMotherNotInVcfFallsBackToHasGZero) {
     std::remove(out_path.c_str());
 }
 
+
+// REF-only records (ALT='.', FILTER=REF_ONLY) from `mitoquest caller --output-ref-sites`
+// must be reported as transmission rows, not silently dropped.
+const char* TEST_VCF_REF_ONLY = R"(##fileformat=VCFv4.2
+##FILTER=<ID=PASS,Description="All filters passed">
+##FILTER=<ID=REF_ONLY,Description="Covered site with no variant allele">
+##FILTER=<ID=LOW_QUALITY,Description="Low quality">
+##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
+##FORMAT=<ID=DP,Number=1,Type=Integer,Description="Total depth">
+##FORMAT=<ID=AD,Number=.,Type=Integer,Description="Allele depths in GT order">
+##contig=<ID=chrM,length=16569>
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	mom_a	child_a	unrelated
+chrM	100	.	A	.	.	REF_ONLY	.	GT:DP:AD	0:1000:1000	0:900:900	0:1100:1100
+chrM	150	.	A	G	30	PASS	.	GT:DP:AD	0/1:1000:200,800	0:900:900	0:1100:1100
+chrM	200	.	C	.	.	REF_ONLY	.	GT:DP:AD	0:1000:1000	.:900	0:1100:1100
+chrM	300	.	G	.	.	LOW_QUALITY	.	GT:DP:AD	0:1000:1000	0:900:900	0:1100:1100
+)";
+
+TEST(TransPrepRun, ReportsRefOnlySitesFaithfully) {
+    const std::string vcf_path = "tp_ref_only.vcf";
+    const std::string fam_path = "tp_ref_only.fam";
+    const std::string out_path = "tp_ref_only.tsv";
+    write_tmp(vcf_path, TEST_VCF_REF_ONLY);
+    write_tmp(fam_path, TEST_FAM);
+
+    TransmissionPrep::Config cfg;
+    cfg.vcf_path     = vcf_path;
+    cfg.fam_path     = fam_path;
+    cfg.output_file  = out_path;
+    cfg.min_depth    = 0;
+    cfg.require_pass = true;
+    cfg.snv_only     = true;
+
+    TransmissionPrep tp(cfg);
+    EXPECT_EQ(tp.run(), 2);
+
+    auto rows = read_pairs_tsv(out_path);
+    // pos 100 (REF-only) and pos 150 (variant). pos 200 has a missing child GT
+    // (dropped and counted); pos 300 is FILTER=LOW_QUALITY (dropped by --require-pass).
+    ASSERT_EQ(rows.size(), 2u);
+    EXPECT_EQ(rows[0].pos,      100);
+    EXPECT_EQ(rows[0].alt,      ".");
+    EXPECT_EQ(rows[0].qc,       "PASS");
+    EXPECT_EQ(rows[0].m_dp,     1000);
+    EXPECT_EQ(rows[0].m_ad_ref, 1000);
+    EXPECT_EQ(rows[0].m_ad_alt, 0);
+    EXPECT_EQ(rows[0].c_dp,     900);
+    EXPECT_EQ(rows[0].c_ad_ref, 900);
+    EXPECT_EQ(rows[0].c_ad_alt, 0);
+    EXPECT_EQ(rows[1].pos,      150);
+    EXPECT_EQ(rows[1].alt,      "G");
+    EXPECT_EQ(rows[1].m_ad_alt, 800);
+    EXPECT_EQ(tp.matching_stats().pair_site_dropped_gt_missing, 1);
+
+    std::remove(vcf_path.c_str());
+    std::remove(fam_path.c_str());
+    std::remove(out_path.c_str());
+}
+
+TEST(TransPrepRun, RefOnlySitesKeptWithoutPassGateOnlyWhenNotFiltered) {
+    const std::string vcf_path = "tp_ref_only_nopass.vcf";
+    const std::string fam_path = "tp_ref_only_nopass.fam";
+    const std::string out_path = "tp_ref_only_nopass.tsv";
+    write_tmp(vcf_path, TEST_VCF_REF_ONLY);
+    write_tmp(fam_path, TEST_FAM);
+
+    TransmissionPrep::Config cfg;
+    cfg.vcf_path     = vcf_path;
+    cfg.fam_path     = fam_path;
+    cfg.output_file  = out_path;
+    cfg.min_depth    = 0;
+    cfg.require_pass = false;
+    cfg.snv_only     = true;
+
+    TransmissionPrep tp(cfg);
+    tp.run();
+
+    auto rows = read_pairs_tsv(out_path);
+    ASSERT_EQ(rows.size(), 3u);  // pos 100, 150 and 300
+    EXPECT_EQ(rows[2].pos, 300);
+    EXPECT_EQ(rows[2].alt, ".");
+
+    std::remove(vcf_path.c_str());
+    std::remove(fam_path.c_str());
+    std::remove(out_path.c_str());
+}

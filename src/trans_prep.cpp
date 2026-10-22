@@ -288,6 +288,7 @@ void TransmissionPrep::usage() {
                  "      --snv-only         Restrict to single-nucleotide variants [on].\n"
                  "      --no-snv-only      Disable the SNV-only restriction.\n"
                  "  -h, --help             Print this help message.\n\n"
+
                  "AD interpretation:\n"
                  "  FORMAT/AD is decoded *per sample* using FORMAT/GT.  AD[i] is\n"
                  "  the read depth of the allele at GT position i; alleles\n"
@@ -296,10 +297,21 @@ void TransmissionPrep::usage() {
                  "  caller` and also handles standard Number=R AD correctly.\n"
                  "  Pairs where mother *or* child has GT='.' at a site are\n"
                  "  dropped from that site (counted on STDERR).\n\n"
+
+                 "REF-only sites:\n"
+                 "  Records without an ALT allele (ALT='.', e.g. FILTER=REF_ONLY records\n"
+                 "  written by `mitoquest caller --output-ref-sites`) are NOT discarded.\n"
+                 "  Each such site yields one row per pair with ALT='.', AD_ALT=0 and\n"
+                 "  VAF=0 (AD_REF/DP are the real REF depth), so non-variant sites are\n"
+                 "  reported faithfully. With --require-pass, REF-only records are kept\n"
+                 "  when their FILTER is REF_ONLY or PASS. Note that `ne-estimate` drops\n"
+                 "  them by its default --min-vaf 0.10 window.\n\n"
+
                  "[WARNING] Garbage In, Garbage Out:\n"
                  "  Sample IDs are matched between FAM and VCF case-sensitively.  Trios\n"
                  "  with mismatched IDs are silently dropped.  Always inspect the\n"
                  "  matching report on stderr.\n\n"
+                 
               << "Version: " << MITOQUEST_VERSION << "\n"
               << std::endl;
 }
@@ -531,7 +543,7 @@ long long TransmissionPrep::run() {
     // stdout as plain text.
     const bool to_stdout = _config.output_file.empty();
     const std::string suffix = to_stdout ? std::string() : ngslib::suffix_name(_config.output_file);
-    const bool compressed = (suffix == ".gz" || suffix == ".bgz");
+    const bool compressed = (suffix == ".gz" || suffix == ".GZ" || suffix == ".BGZ" || suffix == ".bgz");
 
     std::ofstream out_stream;                    // plain-text file sink
     std::unique_ptr<ngslib::BGZFile> out_bgzf;   // BGZF file sink
@@ -567,6 +579,7 @@ long long TransmissionPrep::run() {
     write_line(tsv_header());
 
     long long total_records   = 0;
+    long long total_ref_only_records = 0;
     long long total_emitted   = 0;
     long long total_low_depth = 0;
 
@@ -586,17 +599,27 @@ long long TransmissionPrep::run() {
     ngslib::VCFRecord rec;
     while (reader.read(rec) >= 0) {
         rec.unpack(ngslib::VCFRecord::UNPACK_ALL);
-        if (_config.require_pass && !rec.passed_filters(hdr)) continue;
-        if (rec.n_alt() == 0) continue;
+        // REF-only record (ALT='.'), emitted by `mitoquest caller --output-ref-sites`
+        // with FILTER=REF_ONLY. It is kept and reported as a single row per pair
+        // with ALT='.' and AD_ALT=0, so that non-variant sites are reported faithfully.
+        const bool ref_only = (rec.n_alt() == 0);
+        if (_config.require_pass) {
+            if (ref_only) {
+                const std::vector<std::string> names = rec.filter_names(hdr);
+                if (names.size() != 1 || (names[0] != "REF_ONLY" && names[0] != "PASS")) continue;
+            } else if (!rec.passed_filters(hdr)) {
+                continue;
+            }
+        }
 
         // SNV-only filter.  We only require that the site contains *at least*
         // one SNV ALT — mixed multi-allelic sites such as A>G,GT are kept and
         // the per-ALT loop below skips the indel ALT(s) individually.
         if (_config.snv_only) {
-            if (!rec.has_snv()) continue;
+            if (!ref_only && !rec.has_snv()) continue;
             if (rec.ref().size() != 1) continue;
         }
-        total_records++;
+        if (ref_only) total_ref_only_records++; else total_records++;
 
         // Hoisted DP / AD / GT extraction (exactly once per record).
         // Note: ngslib::VCFRecord::get_format_int returns the per-sample
@@ -695,10 +718,14 @@ long long TransmissionPrep::run() {
         const std::string ref   = rec.ref();
         const std::vector<std::string> alts = rec.alt();
 
-        for (int alt_idx = 1; alt_idx < n_alleles; ++alt_idx) {
-            const std::string& alt = alts[alt_idx - 1];
+        // A REF-only record has no ALT allele: one pseudo-ALT ('.', alt_idx = -1)
+        // is reported whose ALT depth is 0 by definition.
+        const int first_alt_idx = ref_only ? -1 : 1;
+        const int end_alt_idx   = ref_only ? 0  : n_alleles;
+        for (int alt_idx = first_alt_idx; alt_idx < end_alt_idx; ++alt_idx) {
+            const std::string alt = ref_only ? std::string(".") : alts[alt_idx - 1];
             // SNV alt-length check (in case multi-allelic site mixes SNV/indel).
-            if (_config.snv_only && alt.size() != 1) continue;
+            if (_config.snv_only && !ref_only && alt.size() != 1) continue;
 
             for (const Trio& t : trios) {
                 const int m_idx = t.mother_idx;
@@ -713,9 +740,9 @@ long long TransmissionPrep::run() {
                 // GT-aligned AD lookup.  Any GT='.' or AD/GT mismatch in
                 // either sample drops the pair at this site (counted).
                 const int32_t m_ref = sample_allele_depth(m_idx, 0);
-                const int32_t m_alt = sample_allele_depth(m_idx, alt_idx);
+                const int32_t m_alt = ref_only ? 0 : sample_allele_depth(m_idx, alt_idx);
                 const int32_t c_ref = sample_allele_depth(c_idx, 0);
-                const int32_t c_alt = sample_allele_depth(c_idx, alt_idx);
+                const int32_t c_alt = ref_only ? 0 : sample_allele_depth(c_idx, alt_idx);
                 if (m_ref == ngslib::VCFRecord::INT32_MISSING || 
                     m_alt == ngslib::VCFRecord::INT32_MISSING ||
                     c_ref == ngslib::VCFRecord::INT32_MISSING || 
@@ -749,7 +776,7 @@ long long TransmissionPrep::run() {
                 if (g_idx >= 0) {
                     const int32_t g_dp  = dp_all[g_idx];
                     const int32_t g_ref = sample_allele_depth(g_idx, 0);
-                    const int32_t g_alt = sample_allele_depth(g_idx, alt_idx);
+                    const int32_t g_alt = ref_only ? 0 : sample_allele_depth(g_idx, alt_idx);
                     if (g_dp  != ngslib::VCFRecord::INT32_MISSING && g_dp > 0 &&
                         g_ref != ngslib::VCFRecord::INT32_MISSING &&
                         g_alt != ngslib::VCFRecord::INT32_MISSING)
@@ -776,7 +803,8 @@ long long TransmissionPrep::run() {
 
     if (out_stream.is_open()) out_stream.close();
 
-    std::cerr << "[trans-prep] Processed "  << total_records  << " variant records.\n"
+    std::cerr << "[trans-prep] Processed "  << total_records  << " variant records and "
+              << total_ref_only_records << " REF-only records.\n"
               << "[trans-prep] Wrote "      << (total_emitted + total_low_depth)
               << " rows ("                  << total_emitted  << " PASS, "
               << total_low_depth            << " LOW_DEPTH).\n"

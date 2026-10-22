@@ -22,9 +22,12 @@
 #include <string>
 #include <vector>
 #include <numeric>
+#include <utility>
 
 #include "variant_qc.h"
 #include "log_factorial.h"
+#include "io/iobgzf.h"
+#include "io/vcf.h"
 
 namespace {
 
@@ -510,4 +513,109 @@ chrM	100	.	A	G	60	PASS	.	GT:DP:AD:AF:AQ	0:500:500:1:30	1:500:200:0.4:30
     std::remove(output_tsv.c_str());
 }
 
+class VariantQCOutput : public ::testing::TestWithParam<std::string> {};
+
+TEST_P(VariantQCOutput, SuffixControlsCompressionAndPreservesContent) {
+    const std::string suffix = GetParam();
+    const bool compressed = suffix == ".gz" || suffix == ".bgz";
+    const std::string prefix = "/tmp/mitoquest_variant_qc_output" + suffix;
+    const std::string input = prefix + "_input.vcf" + suffix;
+    const std::string plain_vcf = prefix + "_plain.vcf";
+    const std::string plain_tsv = prefix + "_plain.tsv";
+    const std::string output_vcf = prefix + "_out.vcf" + suffix;
+    const std::string output_tsv = prefix + "_out.tsv" + suffix;
+    {
+        ngslib::BGZFile file(input, compressed ? "w" : "wu");
+        file.write(R"(##fileformat=VCFv4.2
+##contig=<ID=chrM,length=16569>
+##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
+##FORMAT=<ID=DP,Number=1,Type=Integer,Description="Depth">
+##FORMAT=<ID=AD,Number=.,Type=Integer,Description="Depths">
+##FORMAT=<ID=AF,Number=.,Type=Float,Description="Frequencies">
+##FORMAT=<ID=AQ,Number=.,Type=Integer,Description="Allele quality">
+##FORMAT=<ID=FS,Number=.,Type=Float,Description="Fisher strand">
+##FORMAT=<ID=SOR,Number=.,Type=Float,Description="Strand odds ratio">
+##FORMAT=<ID=SB,Number=1,Type=String,Description="Strand counts">
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	ref_sample	alt_sample
+chrM	100	.	A	G	60	PASS	.	GT:DP:AD:AF:AQ:FS:SOR:SB	0:500:500:1:30:0:0:250,250	1:500:200:0.4:30:0:0:100,100
+chrM	316	.	T	C	60	PASS	.	GT:DP:AD:AF:AQ:FS:SOR:SB	0:500:500:1:30:0:0:250,250	1:500:200:0.4:30:0:0:100,100
+)");
+    }
+
+    VariantQC(make_variant_qc_config(input, plain_vcf, plain_tsv)).run();
+    VariantQC(make_variant_qc_config(input, output_vcf, output_tsv)).run();
+
+    EXPECT_NE(read_text_file(plain_vcf).find(":PP:GOOD_CALL"), std::string::npos);
+    EXPECT_NE(read_text_file(plain_vcf).find("\tBLACKLISTED_SITE\t"), std::string::npos);
+    EXPECT_NE(read_text_file(plain_tsv).find("alt_sample\tchrM\t100\tA\tG\t"),
+              std::string::npos);
+
+    for (const auto& paths : {std::make_pair(output_vcf, plain_vcf),
+                              std::make_pair(output_tsv, plain_tsv)}) {
+        ngslib::BGZFile reader(paths.first, "r");
+        EXPECT_EQ(bgzf_compression(reader.bgzf_handle()), compressed ? 2 : 0);
+        if (compressed) EXPECT_EQ(bgzf_check_EOF(reader.bgzf_handle()), 1);
+        std::string content, line;
+        while (reader.readline(line)) content += line + "\n";
+        EXPECT_EQ(content, read_text_file(paths.second));
+    }
+
+    if (compressed) {
+        const int status = tbx_index_build(output_vcf.c_str(), 0, &tbx_conf_vcf);
+        EXPECT_EQ(status, 0);
+        if (status == 0) {
+            ngslib::VCFFile reader(output_vcf, "r");
+            reader.index_load();
+            EXPECT_TRUE(reader.fetch("chrM:100-100"));
+            ngslib::VCFRecord record;
+            EXPECT_GE(reader.read(record), 0);
+            EXPECT_EQ(record.pos(), 99);
+            EXPECT_EQ(reader.read(record), -1);
+        }
+        std::remove((output_vcf + ".tbi").c_str());
+    }
+
+    for (const auto& path : {input, plain_vcf, plain_tsv, output_vcf, output_tsv}) {
+        std::remove(path.c_str());
+    }
+}
+
+TEST_P(VariantQCOutput, EmptyInputProducesValidHeaderOnlyOutputs) {
+    const std::string suffix = GetParam();
+    const bool compressed = suffix == ".gz" || suffix == ".bgz";
+    const std::string prefix = "/tmp/mitoquest_variant_qc_empty" + suffix;
+    const std::string input = prefix + "_input.vcf";
+    const std::string output_vcf = prefix + "_out.vcf" + suffix;
+    const std::string output_tsv = prefix + "_out.tsv" + suffix;
+    write_text_file(input, "##fileformat=VCFv4.2\n"
+                           "##contig=<ID=chrM,length=16569>\n"
+                           "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n");
+    VariantQC(make_variant_qc_config(input, output_vcf, output_tsv)).run();
+
+    {
+        ngslib::VCFFile reader(output_vcf, "r");
+        ngslib::VCFRecord record;
+        EXPECT_EQ(reader.read(record), -1);
+        EXPECT_EQ(reader.header().n_samples(), 0);
+    }
+    for (const auto& path : {output_vcf, output_tsv}) {
+        ngslib::BGZFile reader(path, "r");
+        EXPECT_EQ(bgzf_compression(reader.bgzf_handle()), compressed ? 2 : 0);
+        if (compressed) EXPECT_EQ(bgzf_check_EOF(reader.bgzf_handle()), 1);
+    }
+    {
+        ngslib::BGZFile reader(output_tsv, "r");
+        std::string line;
+        EXPECT_TRUE(reader.readline(line));
+        EXPECT_EQ(line, "sample\tchrom\tpos\tref\talt\tploidy\tHQ\tSRF\t"
+                        "q_alpha\tq_beta\tp_error\tposterior\tis_mutation");
+        EXPECT_FALSE(reader.readline(line));
+    }
+    for (const auto& path : {input, output_vcf, output_tsv}) {
+        std::remove(path.c_str());
+    }
+}
+
+INSTANTIATE_TEST_SUITE_P(Formats, VariantQCOutput,
+                        ::testing::Values("", ".gz", ".bgz", ".txt"));
 

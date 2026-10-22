@@ -9,13 +9,13 @@
 #include "io/vcf.h"
 #include "mt_utils.h"
 #include "io/utils.h"
+#include "io/iobgzf.h"
 
 #include <getopt.h>
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstring>
-#include <fstream>
 #include <iostream>
 #include <limits>
 #include <stdexcept>
@@ -100,9 +100,11 @@ void VariantQC::usage() {
         << "Usage: mitoquest variant-qc [options]\n\n"
         << "  Bayesian quality control for mtDNA variants from VCF files.\n\n"
         << "Required:\n"
-        << "  -i, --input-vcf FILE       Input indexed VCF/BCF file\n"
+        << "  -i, --input-vcf FILE       Input VCF/BCF (plain or compressed)\n"
         << "  -o, --output-vcf FILE      Output filtered VCF file\n"
         << "  -t, --output-tsv FILE      Output tabular report (TSV)\n\n"
+        << "  Output .gz/.bgz suffixes write BGZF (gzip-compatible);\n"
+        << "  other suffixes write plain text. No index is created.\n\n"
         << "Optional:\n"
         << "  --max-alt-alleles INT      Max ALT alleles per site [2]\n"
         << "  --dp-threshold INT         Min DP for pre-filter [100]\n"
@@ -1154,7 +1156,9 @@ void VariantQC::_write_vcf(
     out_hdr.add_header_line("##FILTER=<ID=LOW_QUALITY,Description=\"Low quality site based on KL divergence\">");
     out_hdr.add_header_line("##variant_qc_command=" + _cmdline_string);
 
-    ngslib::VCFFile vcf_out(_config.output_vcf, out_hdr, "w");
+    const std::string suffix = ngslib::suffix_name(_config.output_vcf);
+    const bool compressed = (suffix == ".gz" || suffix == ".GZ" || suffix == ".BGZ" || suffix == ".bgz");
+    ngslib::VCFFile vcf_out(_config.output_vcf, out_hdr, compressed ? "wz" : "w");
 
     static const char* TRUE_STR  = "True";
     static const char* FALSE_STR = "False";
@@ -1235,10 +1239,9 @@ void VariantQC::_write_vcf(
 void VariantQC::_write_tsv(const std::vector<ResultRecord>& results) {
     if (_config.output_tsv.empty()) return;
 
-    std::ofstream ofs(_config.output_tsv);
-    if (!ofs.is_open()) {
-        throw std::runtime_error("Cannot open output TSV: " + _config.output_tsv);
-    }
+    const std::string suffix = ngslib::suffix_name(_config.output_tsv);
+    const bool compressed = (suffix == ".gz" || suffix == ".bgz");
+    ngslib::BGZFile ofs(_config.output_tsv, compressed ? "w" : "wu");
 
     ofs << "sample\tchrom\tpos\tref\talt\tploidy\tHQ\tSRF\t"
         << "q_alpha\tq_beta\tp_error\tposterior\tis_mutation\n";
