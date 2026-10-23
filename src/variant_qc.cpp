@@ -16,8 +16,11 @@
 #include <cmath>
 #include <cstddef>
 #include <cstring>
+#include <filesystem>
+#include <iomanip>
 #include <iostream>
 #include <limits>
+#include <sstream>
 #include <stdexcept>
 #include <tuple>
 
@@ -90,6 +93,17 @@ void validate_config(const VariantQC::Config& config) {
         config.convergence_eps > 1.0) {
         throw std::invalid_argument("[variant-qc] convergence_eps must be finite and in (0, 1].");
     }
+    if (!config.training_trace.empty()) {
+        const auto trace_path = std::filesystem::weakly_canonical(config.training_trace);
+        for (const auto& path : {config.input_vcf, config.output_vcf, config.output_tsv}) {
+            if (path.empty()) continue;
+            std::error_code error;
+            if (trace_path == std::filesystem::weakly_canonical(path) ||
+                std::filesystem::equivalent(config.training_trace, path, error)) {
+                throw std::invalid_argument("[variant-qc] training trace must differ from input and QC output files.");
+            }
+        }
+    }
 }
 
 // =====================================================================
@@ -112,8 +126,9 @@ void VariantQC::usage() {
         << "  --bins INT                 Histogram bins for KL div [100]\n"
         << "  --pi FLOAT                 Prior prob of mutation [5e-8*16569]\n"
         << "  --threshold FLOAT          Posterior threshold [0.9]\n"
-        << "  --max-iter INT             Max EM iterations [20]\n"
-        << "  --convergence-eps FLOAT    Convergence threshold [0.001]\n"
+        << "  --max-iter INT             Max H1 fits, including initial fit [20]\n"
+        << "  --convergence-eps FLOAT    ALT call/PP/log-parameter tolerance [0.001]\n"
+        << "  --training-trace FILE      Optional per-fit H1 trace TSV (.gz/.bgz supported)\n"
         << "  -h, --help                 Show this help\n";
 }
 
@@ -133,6 +148,7 @@ void VariantQC::_parse_args(int argc, char* argv[]) {
         {"threshold",        required_argument, nullptr, 1006},
         {"max-iter",         required_argument, nullptr, 1007},
         {"convergence-eps",  required_argument, nullptr, 1008},
+        {"training-trace",   required_argument, nullptr, 1009},
         {"help",             no_argument,       nullptr, 'h'},
         {nullptr, 0, nullptr, 0}
     };
@@ -161,6 +177,7 @@ void VariantQC::_parse_args(int argc, char* argv[]) {
             case 1006: _config.threshold       = std::atof(optarg); break;
             case 1007: _config.max_iter        = std::atoi(optarg); break;
             case 1008: _config.convergence_eps = std::atof(optarg); break;
+            case 1009: _config.training_trace  = optarg; break;
             case 'h': usage(); std::exit(0);
             default:  usage(); throw std::runtime_error("Unknown option.");
         }
@@ -837,15 +854,38 @@ void VariantQC::_collect_mutation_vafs(
 }
 
 // =====================================================================
-// Iterative Beta fit and Bayesian calling
+// H1 training and final Bayesian calling
 // =====================================================================
-void VariantQC::_iterative_fit_and_call(
-    std::vector<ResultRecord>& results,
+VariantQC::BetaParams VariantQC::_fit_h1(
+    const std::vector<ResultRecord>& results,
     const std::vector<double>& vafs,
     const std::vector<int>& k_obs,
     const std::vector<int>& n_obs,
     const LogFactorial& lf)
 {
+    ngslib::BGZFile trace;
+    if (!_config.training_trace.empty()) {
+        const std::string suffix = ngslib::suffix_name(_config.training_trace);
+        trace = ngslib::BGZFile(_config.training_trace,
+                               suffix == ".gz" || suffix == ".bgz" ? "w" : "wu");
+        std::ostringstream metadata;
+        metadata << std::setprecision(17)
+                 << "#schema=mitoquest.variant_qc.training.v1\n"
+                 << "#max_iter=" << _config.max_iter << "\n"
+                 << "#convergence_eps=" << _config.convergence_eps << "\n"
+                 << "#threshold=" << _config.threshold << "\n"
+                 << "#pi=" << _config.pi << "\n"
+                 << "#dp_threshold=" << _config.dp_threshold << "\n"
+                 << "#hq_threshold=" << _config.hq_threshold << "\n"
+                 << "#max_alt_alleles=" << _config.max_alt_alleles << "\n"
+                 << "#bins=" << _config.bins << "\n"
+                 << "iteration\tstage\talpha\tbeta\ttraining_count\tevaluable_alt_count\t"
+                 << "selected_alt_count\tchanged_alt_count\tcall_change_fraction\t"
+                 << "max_pp_change\tmax_log_parameter_change\n";
+        trace.write(metadata.str());
+        trace.flush();
+    }
+
     // Balance high-VAF and low-VAF observations for fitting
     std::vector<size_t> high_idx, low_idx;
     for (size_t i = 0; i < vafs.size(); ++i) {
@@ -900,88 +940,145 @@ void VariantQC::_iterative_fit_and_call(
               << "Initial Beta: alpha=" << h1_params.alpha
               << " beta=" << h1_params.beta << "\n";
 
-    // EM-style iteration: fit -> call -> refit -> ...
-    for (int iter = 0; iter < _config.max_iter; ++iter) {
-        size_t n_changed = 0;
-        for (auto& r : results) {
-            if (r.pre_filtered) continue;
-
-            int n_alleles = std::min({
-                static_cast<int>(r.allele_depths.size()),
-                static_cast<int>(r.allele_srf.size()),
-                static_cast<int>(r.allele_aq.size())
-            });
-
-            std::vector<double> pps;
-            for (int j = 0; j < n_alleles; ++j) {
-                double hq_val = (r.allele_aq[j] >= 0)
-                    ? static_cast<double>(r.allele_aq[j]) : static_cast<double>(_config.hq_threshold);
-                double srf_val = (j < static_cast<int>(r.allele_srf.size())) ? r.allele_srf[j] : 0.5;
-                double pp = bayesian_filter(r.allele_depths[j], r.dp,
-                                            srf_val, hq_val, _config.hq_threshold,
-                                            r.q_alpha, r.q_beta,
-                                            h1_params.alpha, h1_params.beta,
-                                            _config.pi);
-                pps.push_back(pp);
-            }
-
-            double new_posterior = pps.empty() ? 0.0 : *std::max_element(pps.begin(), pps.end());
-            bool new_is_mut = new_posterior > _config.threshold;
-            if (new_is_mut != r.is_mutation) n_changed++;
-
-            r.posterior = new_posterior;
-            r.is_mutation = new_is_mut;
-
-            // Update GT: zero out alleles with low posterior. Matches the
-            // Python reference, which drops any allele (REF included) whose
-            // posterior falls below the call threshold.
-            for (int j = 0; j < static_cast<int>(r.gt.size()) &&
-                            j < static_cast<int>(pps.size()); ++j) {
-                if (pps[j] <= _config.threshold && r.gt[j] >= 0) {
-                    r.gt[j] = -1; // mark as filtered
-                }
+    struct Observation {
+        const ResultRecord* result;
+        size_t allele;
+    };
+    std::vector<Observation> observations;
+    for (const auto& r : results) {
+        if (r.pre_filtered || r.dp <= 0) continue;
+        const size_t n_alleles = std::min({r.original_gt.size(), r.allele_depths.size(),
+                                         r.allele_srf.size(), r.allele_aq.size()});
+        for (size_t j = 0; j < n_alleles; ++j) {
+            if (r.original_gt[j] > 0 && r.allele_depths[j] > 0 && r.allele_depths[j] < r.dp) {
+                observations.push_back({&r, j});
             }
         }
-
-        double change_frac = results.empty() ? 0.0 :
-            static_cast<double>(n_changed) / static_cast<double>(results.size());
-        std::cerr << "  Iteration " << iter + 1 << ": "
-                  << n_changed << " calls changed (" << change_frac << ")\n";
-
-        if (change_frac < _config.convergence_eps) {
-            std::cerr << "  Converged after " << iter + 1 << " iterations.\n";
-            break;
-        }
-
-        // Re-collect VAFs from is_mutation=True records for re-fitting
-        // Use original_gt (not modified gt) to match Python behavior: all non-ref alleles are included
-        std::vector<double> new_vafs;
-        std::vector<int> new_k, new_n;
-        for (const auto& r : results) {
-            if (!r.is_mutation || r.pre_filtered) continue;
-            if (r.dp <= 0) continue;
-            for (size_t j = 0; j < r.original_gt.size() && j < r.allele_depths.size(); ++j) {
-                if (r.original_gt[j] > 0 && r.allele_depths[j] > 0) {
-                    double vaf = static_cast<double>(r.allele_depths[j]) / r.dp;
-                    if (vaf > 0.0 && vaf < 1.0) {
-                        new_vafs.push_back(vaf);
-                        new_k.push_back(r.allele_depths[j]);
-                        new_n.push_back(r.dp);
-                    }
-                }
-            }
-        }
-
-        if (new_vafs.size() < 3) {
-            std::cerr << "  Too few mutations for re-fitting. Stopping.\n";
-            break;
-        }
-
-        h1_params = fit_betabinom_mle(new_vafs, new_k, new_n, lf);
     }
 
-    std::cerr << "Final Beta: alpha=" << h1_params.alpha
-              << " beta=" << h1_params.beta << "\n";
+    auto score_observations = [&](const BetaParams& params) {
+        std::vector<double> posteriors;
+        posteriors.reserve(observations.size());
+        for (const auto& observation : observations) {
+            posteriors.push_back(_allele_posterior(*observation.result, observation.allele, params));
+        }
+        return posteriors;
+    };
+    std::vector<double> posteriors = score_observations(h1_params);
+    const char* stop_reason = observations.empty()
+        ? "no evaluable ALT observations" : "maximum fitting rounds reached";
+    std::cerr << "H1 evaluable ALT observations: " << observations.size() << "\n";
+
+    auto write_trace_row = [&](int iteration, size_t training_count, size_t changed_count,
+                               double change_fraction, double pp_change, double parameter_change) {
+        if (!trace.is_open()) return;
+        const size_t selected_count = std::count_if(posteriors.begin(), posteriors.end(),
+            [&](double pp) { return pp > _config.threshold; });
+        std::ostringstream row;
+        row << std::setprecision(17) << iteration << "\t"
+            << (iteration == 1 ? "initial" : "refit") << "\t"
+            << h1_params.alpha << "\t" << h1_params.beta << "\t"
+            << training_count << "\t" << observations.size() << "\t" << selected_count;
+        if (iteration == 1) {
+            row << "\t.\t.\t.\t.\n";
+        } else {
+            row << "\t" << changed_count << "\t" << change_fraction << "\t"
+                << pp_change << "\t" << parameter_change << "\n";
+        }
+        trace.write(row.str());
+        trace.flush();
+    };
+    write_trace_row(1, vafs_sampled.size(), 0, 0.0, 0.0, 0.0);
+
+    for (int iter = 1; !observations.empty() && iter < _config.max_iter; ++iter) {
+        std::vector<double> new_vafs;
+        std::vector<int> new_k, new_n;
+        for (size_t i = 0; i < observations.size(); ++i) {
+            if (posteriors[i] <= _config.threshold) continue;
+            const auto& observation = observations[i];
+            const auto& r = *observation.result;
+            const int depth = r.allele_depths[observation.allele];
+            new_vafs.push_back(static_cast<double>(depth) / r.dp);
+            new_k.push_back(depth);
+            new_n.push_back(r.dp);
+        }
+        if (new_vafs.size() < 3) {
+            stop_reason = "fewer than 3 selected ALT observations";
+            break;
+        }
+
+        const BetaParams next_params = fit_betabinom_mle(new_vafs, new_k, new_n, lf);
+        std::vector<double> next_posteriors = score_observations(next_params);
+        size_t n_changed = 0;
+        double max_pp_change = 0.0;
+        for (size_t i = 0; i < observations.size(); ++i) {
+            if ((next_posteriors[i] > _config.threshold) != (posteriors[i] > _config.threshold)) {
+                ++n_changed;
+            }
+            max_pp_change = std::max(max_pp_change, std::abs(next_posteriors[i] - posteriors[i]));
+        }
+        const double change_frac = static_cast<double>(n_changed) / observations.size();
+        const double max_log_parameter_change = std::max(
+            std::abs(std::log(next_params.alpha) - std::log(h1_params.alpha)),
+            std::abs(std::log(next_params.beta) - std::log(h1_params.beta)));
+        h1_params = next_params;
+        posteriors = std::move(next_posteriors);
+
+        std::cerr << "H1 iteration " << iter + 1 << ": selected=" << new_vafs.size()
+                  << " changed=" << n_changed << "/" << observations.size()
+                  << " (" << change_frac << ") max_pp_change=" << max_pp_change
+                  << " max_log_parameter_change=" << max_log_parameter_change << "\n";
+        write_trace_row(iter + 1, new_vafs.size(), n_changed, change_frac,
+                        max_pp_change, max_log_parameter_change);
+        if (change_frac < _config.convergence_eps &&
+            max_pp_change < _config.convergence_eps &&
+            max_log_parameter_change < _config.convergence_eps) {
+            stop_reason = "converged";
+            break;
+        }
+    }
+
+    std::ostringstream summary;
+    summary << "H1 stop: " << stop_reason << "\n"
+            << std::setprecision(17) << "Final Beta: alpha=" << h1_params.alpha
+            << " beta=" << h1_params.beta << "\n";
+    std::cerr << summary.str();
+    if (trace.is_open()) {
+        trace << "#stop_reason=" << stop_reason << "\n";
+        trace.flush();
+        trace.close();
+    }
+    return h1_params;
+}
+
+double VariantQC::_allele_posterior(const ResultRecord& result, std::size_t allele,
+                                   const BetaParams& h1_params) const {
+    const double hq = result.allele_aq[allele] >= 0
+        ? result.allele_aq[allele] : _config.hq_threshold;
+    return bayesian_filter(result.allele_depths[allele], result.dp,
+                           result.allele_srf[allele], hq, _config.hq_threshold,
+                           result.q_alpha, result.q_beta,
+                           h1_params.alpha, h1_params.beta, _config.pi);
+}
+
+void VariantQC::_apply_model(std::vector<ResultRecord>& results, const BetaParams& h1_params) {
+    for (auto& r : results) {
+        r.gt = r.original_gt;
+        r.posterior = 0.0;
+        r.is_mutation = false;
+        if (r.pre_filtered) continue;
+
+        const size_t n_alleles = std::min({r.allele_depths.size(), r.allele_srf.size(),
+                                         r.allele_aq.size()});
+        for (size_t j = 0; j < n_alleles; ++j) {
+            const double pp = _allele_posterior(r, j, h1_params);
+            r.posterior = std::max(r.posterior, pp);
+            if (j < r.gt.size() && r.gt[j] >= 0 && pp <= _config.threshold) {
+                r.gt[j] = -1;
+            }
+        }
+        r.is_mutation = r.posterior > _config.threshold;
+    }
 }
 
 // =====================================================================
@@ -1052,8 +1149,7 @@ void VariantQC::_process() {
         }
 
         // Collect mutation VAFs for global fitting
-        _collect_mutation_vafs(samples_info, p_error, lf,
-                               global_vafs, global_k, global_n);
+        _collect_mutation_vafs(samples_info, p_error, lf, global_vafs, global_k, global_n);
 
         // Build result records for each sample
         std::vector<double> site_vafs;
@@ -1108,8 +1204,8 @@ void VariantQC::_process() {
     std::cerr << "[variant-qc] Total records: " << all_results.size()
               << ", Global VAFs collected: " << global_vafs.size() << "\n";
 
-    // Iterative fitting and calling
-    _iterative_fit_and_call(all_results, global_vafs, global_k, global_n, lf);
+    const BetaParams h1_params = _fit_h1(all_results, global_vafs, global_k, global_n, lf);
+    _apply_model(all_results, h1_params);
 
     // Write outputs
     _write_vcf(all_results, pos_kl_div);

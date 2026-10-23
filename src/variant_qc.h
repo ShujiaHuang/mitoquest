@@ -21,6 +21,7 @@
 #ifndef _VARIANT_QC_H_
 #define _VARIANT_QC_H_
 
+#include <cstddef>
 #include <cstdint>
 #include <map>
 #include <string>
@@ -55,8 +56,9 @@ public:
         int    bins;                   // histogram bins for KL divergence (default 100)
         double pi;                     // prior probability of mutation (default 5e-8 * 16569)
         double threshold;              // posterior threshold for calling mutations (default 0.9)
-        int    max_iter;               // max iterations for EM-style refinement (default 20)
-        double convergence_eps;        // convergence threshold for call-change fraction (default 0.001)
+        int    max_iter;               // max H1 fits, including the initial fit (default 20)
+        double convergence_eps;        // tolerance for ALT calls, PP and log-parameters (default 0.001)
+        std::string training_trace;
     };
 
     // =================================================================
@@ -64,16 +66,16 @@ public:
     // =================================================================
     struct SampleInfo {
         std::string sample_name;
-        int    ploidy;                 // determined from GT length
+        int ploidy;                    // determined from GT length
         std::vector<int>    gt;        // genotype allele indices
         std::vector<double> af;        // allele frequencies (AF)
         std::vector<int>    ad;        // allele depths (AD)
         std::vector<int>    aq;        // allele quality scores (AQ)
-        int    dp;                     // total depth
+        int dp;                        // total depth
         std::vector<double> fs;        // Fisher strand values
         std::vector<double> sor;       // strand odds ratio values
         std::vector<double> srf;       // strand ratio factor per allele (computed from SB)
-        bool   pre_filtered;           // true if this sample fails pre-filtering
+        bool pre_filtered;             // true if this sample fails pre-filtering
     };
 
     // =================================================================
@@ -91,8 +93,8 @@ public:
         int    dp;                     // total depth (DP field), used as denominator D in Bayesian filter
         double q_alpha;                // background noise Beta alpha at this site
         double q_beta;                 // background noise Beta beta at this site
-        double p_error;                // mean background error rate at this site
-        double posterior;              // max posterior across ALT alleles
+        double p_error;                // mean background error rate overall
+        double posterior;              // max posterior across all scored alleles, including REF
         bool   is_mutation;            // posterior > threshold
         bool   pre_filtered;           // carried from SampleInfo
         // Per-allele data (kept for Bayesian filter re-computation)
@@ -194,12 +196,18 @@ private:
         std::vector<int>& k_obs,
         std::vector<int>& n_obs);
 
-    void _iterative_fit_and_call(
-        std::vector<ResultRecord>& results,
+    BetaParams _fit_h1(
+        const std::vector<ResultRecord>& results,
         const std::vector<double>& vafs,
         const std::vector<int>& k_obs,
         const std::vector<int>& n_obs,
         const LogFactorial& lf);
+
+    double _allele_posterior(const ResultRecord& result, std::size_t allele,
+                             const BetaParams& h1_params) const;
+
+    void _apply_model(std::vector<ResultRecord>& results,
+                      const BetaParams& h1_params);
 
     void _write_vcf(const std::vector<ResultRecord>& results,
                     const std::map<std::pair<std::string, uint32_t>, double>& pos_kl_div);
