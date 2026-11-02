@@ -1482,12 +1482,68 @@ The module implements **Bayesian hypothesis testing** with
 - The posterior probability `P(H1 | data)` is computed via Bayes' theorem
   with a prior `pi` and quality penalties (strand-bias SRF and allele
   quality HQ sigmoid).
-- An EM-style iterative refinement loop (fit → call → refit) repeats
-  until mutation calls converge.
+- H1 refinement uses only evaluable ALT observations with `0 < AD < DP`.
+  Each ALT must pass its own posterior threshold to enter the next fit;
+  a high reference-allele posterior cannot admit a failing ALT.
+- Convergence requires all three changes between successive H1 fits to be
+  below `--convergence-eps`: the fraction of changed ALT calls, the maximum
+  absolute ALT posterior change, and the maximum absolute change in
+  `log(alpha_h1)` or `log(beta_h1)`. Reference-only observations are excluded
+  from this convergence denominator.
+- Training also stops when fewer than three ALT observations qualify for
+  a refit, no ALT observations are evaluable, or the fit limit is reached.
+  The log distinguishes these exits from convergence.
+- After training, the frozen H1 model is applied once to all processable
+  records, including `REF_ONLY` sites from `caller --output-ref-sites`.
+  GT filtering uses these final posteriors, not intermediate training calls.
+  Initial ALT screening, initial high/low-frequency balancing, and per-site
+  H0 estimation are unchanged; refinement is not frequency-balanced.
+
+`--max-iter` counts H1 fits **including the initial fit**; `--max-iter 1`
+therefore performs initial fitting followed by final calling, without refinement.
+Adding reference-only sites does not change the H1 training or shared variant
+results, but the revised convergence and ALT selection rules can change results
+relative to older versions even when reference-only sites are absent.
 
 The output VCF gains `FORMAT/PP` (posterior probability) and
 `FORMAT/GOOD_CALL` (True/False) per sample, plus site-level `FILTER`
 flags (`PASS`, `LOW_QUALITY`, `BLACKLISTED_SITE`).
+
+### QUAL and INFO/KL
+
+`QUAL` is the Phred-scaled posterior error of the **strongest original ALT
+observation** across samples and ALT alleles, using the frozen final H1 model:
+
+$$
+p_* = \max_{\text{evaluable original ALT}} P(H_1\mid\text{data}),
+\qquad \mathrm{QUAL}=-10\log_{10}(1-p_*).
+$$
+
+It is calculated directly from the log-posterior odds $z$, not rounded
+`FORMAT/PP`, using the stable expression
+$\frac{10}{\ln 10}[\max(z,0)+\ln(1+e^{-|z|})]$.
+Thus, PP rounding to 1 does not force an infinite or arbitrarily capped QUAL.
+
+- Only original non-reference GT entries with a declared ALT and aligned
+  AD/SRF/AQ data contribute; pre-filtered samples and invalid counts are excluded.
+  Valid counts include `AD=0` and `AD=DP`, unlike H1 refitting.
+- QUAL is computed **before** applying the posterior calling threshold. A rejected
+  ALT still has a score; high REF posterior cannot inflate it. Sample `FORMAT/PP`
+  continues to take the maximum over REF **and** ALT and must not substitute for $p_*$.
+- Reference-only records, skipped records and records without any scoreable ALT
+  have missing QUAL (`.`). Non-finite log odds cannot supply a QUAL score.
+- This maximum is an **approximate strongest-ALT evidence score**, not a calibrated
+  joint site-error probability. It does not multiply dependent observations;
+  a larger cohort still provides more opportunities for a strong observation.
+- `INFO/KL` retains the previous histogram KL calculation, without integer rounding,
+  as a diagnostic in natural-log units. Skipped records have `KL=.`; a processable
+  reference-only record can have `KL=0`. Existing `INFO/KL` definitions and values
+  are replaced. `--bins` affects KL only, not QUAL or posterior calls.
+
+H1 fitting, GT, PP, GOOD_CALL, FILTER and the TSV report are unchanged by this
+QUAL revision. FILTER is not a QUAL/KL threshold, so a record can be `PASS` from
+strong REF evidence while having low or missing QUAL. Old KL-based QUAL cutoffs
+are **not transferable** to this score. The VCF header records the new semantics.
 
 ### Full parameter reference of `variant-qc`
 
@@ -1506,8 +1562,9 @@ Optional:
   --bins INT                 Histogram bins for KL div [100]
   --pi FLOAT                 Prior prob of mutation [5e-8*16569]
   --threshold FLOAT          Posterior threshold [0.9]
-  --max-iter INT             Max EM iterations [20]
-  --convergence-eps FLOAT    Convergence threshold [0.001]
+  --max-iter INT             Max H1 fits, including initial fit [20]
+  --convergence-eps FLOAT    ALT call/PP/log-parameter tolerance [0.001]
+  --training-trace FILE      Optional per-fit H1 trace TSV (.gz/.bgz supported)
   -h, --help                 Show this help
 ```
 
@@ -1565,9 +1622,68 @@ the C++ binaries:
 | `tools/detect_NUMT_by_mtCN.py`  | Flag potential NUMT contamination using mtCN ratios per sample.                          |
 | `tools/plot_bottleneck_simulation.py` | Plot per-bin observed drift vs. analytical Kimura prediction `p_m(1−p_m)/Ne` from `ne-estimate --bin-simulation`. |
 | `tools/plot_ne_profile.py`      | Plot the MCMLE and Kimura objective curves over Ne from `ne-estimate --ne-profile`.        |
+| `tools/plot_variant_qc_training.py` | Plot H1 parameters, convergence, observation counts and Beta densities from a QC training trace. |
 | `tools/vcf_format_validator.py` | Sanity-check a VCF for downstream compatibility.                                         |
 
 Each script supports `-h / --help`.
+
+### Plot `variant-qc` H1 training
+
+Training diagnostics are optional and do not change QC results. Export a trace
+with `--training-trace FILE`, then plot it independently (requires NumPy, SciPy
+and Matplotlib; no graphical desktop is needed):
+
+```bash
+mitoquest variant-qc \
+    -i cohort.raw.vcf.gz -o cohort.qc.vcf.gz -t cohort.qc.tsv.gz \
+    --training-trace cohort.training.tsv.gz
+
+python tools/plot_variant_qc_training.py \
+    --input cohort.training.tsv.gz --output cohort.training.png \
+    --title "Cohort H1 training" --dpi 180
+```
+
+The plotter also accepts PDF and SVG output. It reads plain text or gzip/BGZF
+by file content. The C++ writer uses BGZF for `.gz`/`.bgz` suffixes and plain
+text otherwise; the trace must not alias the input VCF or either QC output.
+Without `--training-trace`, no extra file is written.
+
+To customize appearance, edit `PLOT_THEME` (Matplotlib fonts, figure size, grids,
+line widths and legends) and `PLOT_COLORS` (series, status/warning colors and
+`density_cmap`) near the top of `tools/plot_variant_qc_training.py`. The theme
+is scoped to figure creation without changing the caller's global Matplotlib
+settings. No Seaborn dependency is needed; data curves and CLI options are unchanged.
+
+The trace is a TSV with `#key=value` metadata, schema
+`mitoquest.variant_qc.training.v1`, and one row per completed **H1 fit**, not
+per step of the inner numerical optimizer:
+
+| Column | Meaning |
+| --- | --- |
+| `iteration`, `stage` | Fit number starting at 1; `initial` or `refit`. |
+| `alpha`, `beta` | H1 parameters after this fit, written with 17 significant digits. |
+| `training_count` | Observations passed to this fit; the initial count is after frequency balancing. |
+| `evaluable_alt_count` | Fixed number of ALT observations used for refinement and convergence checks. |
+| `selected_alt_count` | Evaluable ALTs passing their own PP threshold under this row's model; candidates for the next fit. |
+| `changed_alt_count`, `call_change_fraction` | ALT decisions changed since the preceding fit, and their fraction of evaluable ALTs. |
+| `max_pp_change` | Maximum absolute ALT posterior change since the preceding fit. |
+| `max_log_parameter_change` | Maximum absolute change in `log(alpha)` or `log(beta)` since the preceding fit. |
+
+Initial-row changes are `.` (not measured), not zero. For every refit,
+`training_count` equals the previous row's `selected_alt_count`; initial
+screening and balancing make the two counts different in general. The metadata
+records the actual QC thresholds, fit limit and convergence tolerance. A final
+`#stop_reason=...` distinguishes convergence, the fit limit, insufficient selected
+ALTs and no evaluable ALTs. Rows are flushed as fits finish; a missing stop marker
+is displayed as **incomplete**, never as convergence.
+
+The four panels show alpha/beta trajectories, all three convergence metrics
+with the tolerance line, training/selected counts, and the H1 Beta density over
+latent allele frequency. Density curves are **not** empirical VAF histograms
+or depth-specific Beta-Binomial PMFs. A zero-observation initial fit uses fallback
+parameters and is marked accordingly; a single-fit run has no convergence
+measurements. These diagnostics show numerical training behavior, not accuracy
+or calibration against biological truth.
 
 ### A typical end-to-end workflow
 

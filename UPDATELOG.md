@@ -1,5 +1,22 @@
 # MitoQuest Changelog
 
+## [1.13.0] - 2026-11-02
+
+- **行为变更（不兼容）：`mitoquest variant-qc` 输出 VCF 的 `QUAL` 含义改变**。此前 `QUAL` 为位点 KL 散度取整；现在为“最强原始 ALT 观测”的 Phred 后验错误 `-10·log10(1-p*)`，由冻结的最终 H1 模型的 log-posterior odds 直接稳定计算（不依赖四舍五入后的 `FORMAT/PP`），在应用 PP 阈值之前计算。无可评估 ALT 的记录（REF_ONLY、被跳过的记录）`QUAL=.`。**基于旧 KL 版 `QUAL` 的过滤阈值不可沿用**
+- `variant-qc` 新增 `INFO/KL`：保留原有直方图 KL 散度（自然对数，不再取整），仅作诊断；`--bins` 只影响 KL。VCF 头新增 `##INFO=<ID=KL>` 与 `##variant_qc_qual`，并更新 `FILTER=LOW_QUALITY` 的描述（实际判定逻辑不变：没有样本后验超过阈值）
+- `variant-qc` 位点指标改为按记录序号存储（替代 `(chrom,pos)` 映射），同一位置存在多条记录时 `QUAL`/`KL` 不再相互覆盖
+- **行为变更：H1 参数拟合流程重构**（`_fit_h1` / `_apply_model` 分离）：
+  - 精修只使用可评估的 ALT 观测（`0 < AD < DP`），每个 ALT 须自身通过后验阈值才进入下一次拟合；REF 的高后验不再能放行不合格的 ALT
+  - 收敛条件需同时满足：ALT 调用变化比例、ALT 后验最大绝对变化、`log(alpha_h1)`/`log(beta_h1)` 最大绝对变化均小于 `--convergence-eps`
+  - 可用于精修的 ALT 观测少于 3 个、无可评估 ALT、或达到拟合上限时也会停止，日志区分这些退出原因与收敛
+  - 训练结束后冻结的 H1 模型一次性应用于所有可处理记录（含 `caller --output-ref-sites` 产生的 REF_ONLY 位点）；GT 过滤使用最终后验
+  - `--max-iter` 现在计入初始拟合在内的 H1 拟合次数（`--max-iter 1` = 初始拟合 + 最终调用，无精修）
+  - 因收敛与 ALT 选择规则变化，即使输入不含 REF-only 位点，结果也可能与旧版略有不同
+- `variant-qc` 新增 `--training-trace FILE`：输出每次 H1 拟合的轨迹 TSV（支持 `.gz`/`.bgz`），路径不得与任何输入/输出文件相同
+- 新增 `tools/plot_variant_qc_training.py`：根据训练轨迹绘制 H1 参数、收敛、观测数与 Beta 密度；对应测试 `tests/test_plot_variant_qc_training.py`
+- GT、`FORMAT/PP`、`GOOD_CALL`、`FILTER` 的判定规则与 TSV 报告格式不变（数值可能因上述 H1 拟合变化而不同）
+- 新增/扩充 `tests/test_variant_qc.cpp` 单元测试，覆盖 QUAL/KL 语义、REF_ONLY 记录、收敛与停止原因、训练轨迹等
+
 ## [1.12.4] - 2026-10-22
 
 - `mitoquest trans-prep` 现在能如实处理 REF-only 记录（`ALT=.`，来自 `caller --output-ref-sites`）：不再丢弃，每个位点、每对母-子输出一行，`ALT=.`、`AD_ALT=0`、`VAF=0`（`AD_REF`/`DP` 为真实 REF 深度）；`--require-pass` 下 `FILTER` 为 `REF_ONLY` 或 `PASS` 的 REF-only 记录会被保留，统计日志新增 “REF-only records” 计数

@@ -23,7 +23,6 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <map>
 #include <string>
 #include <unordered_set>
 #include <vector>
@@ -82,6 +81,7 @@ public:
     // One result row per sample per site
     // =================================================================
     struct ResultRecord {
+        std::size_t record_index;
         std::string sample_name;
         std::string chrom;
         uint32_t    pos;
@@ -155,6 +155,15 @@ public:
         double alpha_h1, double beta_h1,
         double pi);
 
+    static double bayesian_log_odds(
+        int A, int D,
+        double srf, double hq, int hq_threshold,
+        double q_alpha, double q_beta,
+        double alpha_h1, double beta_h1,
+        double pi);
+
+    static double phred_from_log_odds(double log_odds);
+
     /// Multi-sample KL divergence: D_KL(P_empirical || Beta(q_alpha, q_beta)).
     /// Uses a histogram approximation with the given bin edges.
     static double kl_divergence(const std::vector<double>& vafs,
@@ -203,14 +212,20 @@ private:
         const std::vector<int>& n_obs,
         const LogFactorial& lf);
 
-    double _allele_posterior(const ResultRecord& result, std::size_t allele,
-                             const BetaParams& h1_params) const;
+    struct SiteMetrics {
+        double qual;
+        double kl;
+    };
+
+    double _allele_log_odds(const ResultRecord& result, std::size_t allele,
+                            const BetaParams& h1_params) const;
 
     void _apply_model(std::vector<ResultRecord>& results,
-                      const BetaParams& h1_params);
+                      const BetaParams& h1_params,
+                      std::vector<SiteMetrics>& site_metrics);
 
     void _write_vcf(const std::vector<ResultRecord>& results,
-                    const std::map<std::pair<std::string, uint32_t>, double>& pos_kl_div);
+                    const std::vector<SiteMetrics>& site_metrics);
 
     void _write_tsv(const std::vector<ResultRecord>& results);
 

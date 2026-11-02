@@ -20,6 +20,7 @@
 #include <iomanip>
 #include <iostream>
 #include <limits>
+#include <map>
 #include <sstream>
 #include <stdexcept>
 #include <tuple>
@@ -483,14 +484,14 @@ VariantQC::BetaParams VariantQC::fit_betabinom_mle(
 // Bayesian filter
 // =====================================================================
 
-double VariantQC::bayesian_filter(
+double VariantQC::bayesian_log_odds(
     int A, int D,
     double srf, double hq, int hq_threshold,
     double q_alpha, double q_beta,
     double alpha_h1, double beta_h1,
     double pi)
 {
-    if (D <= 0 || A < 0 || A > D) return 0.0;
+    if (D <= 0 || A < 0 || A > D) return std::numeric_limits<double>::quiet_NaN();
 
     constexpr double hq_k = 10.0;
 
@@ -518,9 +519,11 @@ double VariantQC::bayesian_filter(
     pi = std::max(1e-12, std::min(pi, 1.0 - 1e-12));
     double log_prior_odds = std::log(pi) - std::log1p(-pi);
 
-    // Log-posterior odds -> sigmoid
-    double log_posterior_odds = log_prior_odds + log_L1 - log_L0;
+    return log_prior_odds + log_L1 - log_L0;
+}
 
+namespace {
+double posterior_from_log_odds(double log_posterior_odds) {
     double posterior;
     if (std::isfinite(log_posterior_odds)) {
         posterior = 1.0 / (1.0 + std::exp(-log_posterior_odds));
@@ -528,6 +531,24 @@ double VariantQC::bayesian_filter(
         posterior = (log_posterior_odds > 0) ? 1.0 : 0.0;
     }
     return std::max(0.0, std::min(posterior, 1.0));
+}
+}
+
+double VariantQC::bayesian_filter(
+    int A, int D,
+    double srf, double hq, int hq_threshold,
+    double q_alpha, double q_beta,
+    double alpha_h1, double beta_h1,
+    double pi)
+{
+    return posterior_from_log_odds(bayesian_log_odds(
+        A, D, srf, hq, hq_threshold, q_alpha, q_beta, alpha_h1, beta_h1, pi));
+}
+
+double VariantQC::phred_from_log_odds(double log_odds) {
+    if (!std::isfinite(log_odds)) return std::numeric_limits<double>::quiet_NaN();
+    return (10.0 / std::log(10.0)) *
+        (std::max(log_odds, 0.0) + std::log1p(std::exp(-std::abs(log_odds))));
 }
 
 // =====================================================================
@@ -960,7 +981,8 @@ VariantQC::BetaParams VariantQC::_fit_h1(
         std::vector<double> posteriors;
         posteriors.reserve(observations.size());
         for (const auto& observation : observations) {
-            posteriors.push_back(_allele_posterior(*observation.result, observation.allele, params));
+            posteriors.push_back(posterior_from_log_odds(
+                _allele_log_odds(*observation.result, observation.allele, params)));
         }
         return posteriors;
     };
@@ -1051,17 +1073,18 @@ VariantQC::BetaParams VariantQC::_fit_h1(
     return h1_params;
 }
 
-double VariantQC::_allele_posterior(const ResultRecord& result, std::size_t allele,
-                                   const BetaParams& h1_params) const {
+double VariantQC::_allele_log_odds(const ResultRecord& result, std::size_t allele,
+                                  const BetaParams& h1_params) const {
     const double hq = result.allele_aq[allele] >= 0
         ? result.allele_aq[allele] : _config.hq_threshold;
-    return bayesian_filter(result.allele_depths[allele], result.dp,
-                           result.allele_srf[allele], hq, _config.hq_threshold,
-                           result.q_alpha, result.q_beta,
-                           h1_params.alpha, h1_params.beta, _config.pi);
+    return bayesian_log_odds(result.allele_depths[allele], result.dp,
+                             result.allele_srf[allele], hq, _config.hq_threshold,
+                             result.q_alpha, result.q_beta,
+                             h1_params.alpha, h1_params.beta, _config.pi);
 }
 
-void VariantQC::_apply_model(std::vector<ResultRecord>& results, const BetaParams& h1_params) {
+void VariantQC::_apply_model(std::vector<ResultRecord>& results, const BetaParams& h1_params,
+                             std::vector<SiteMetrics>& site_metrics) {
     for (auto& r : results) {
         r.gt = r.original_gt;
         r.posterior = 0.0;
@@ -1071,8 +1094,16 @@ void VariantQC::_apply_model(std::vector<ResultRecord>& results, const BetaParam
         const size_t n_alleles = std::min({r.allele_depths.size(), r.allele_srf.size(),
                                          r.allele_aq.size()});
         for (size_t j = 0; j < n_alleles; ++j) {
-            const double pp = _allele_posterior(r, j, h1_params);
+            const double log_odds = _allele_log_odds(r, j, h1_params);
+            const double pp = posterior_from_log_odds(log_odds);
             r.posterior = std::max(r.posterior, pp);
+            if (j < r.original_gt.size() && r.original_gt[j] > 0 && r.alt[j] != ".") {
+                const double qual = phred_from_log_odds(log_odds);
+                double& site_qual = site_metrics[r.record_index].qual;
+                if (std::isfinite(qual) && (!std::isfinite(site_qual) || qual > site_qual)) {
+                    site_qual = qual;
+                }
+            }
             if (j < r.gt.size() && r.gt[j] >= 0 && pp <= _config.threshold) {
                 r.gt[j] = -1;
             }
@@ -1104,10 +1135,13 @@ void VariantQC::_process() {
     std::vector<ResultRecord> all_results;
     std::vector<double> global_vafs;
     std::vector<int> global_k, global_n;
-    std::map<std::pair<std::string, uint32_t>, double> pos_kl_div;
+    std::vector<SiteMetrics> site_metrics;
 
     ngslib::VCFRecord rec;
     while (vcf_in.read(rec) >= 0) {
+        const std::size_t record_index = site_metrics.size();
+        const double missing = std::numeric_limits<double>::quiet_NaN();
+        site_metrics.push_back({missing, missing});
         rec.unpack(ngslib::VCFRecord::UNPACK_ALL);
         std::string chrom = rec.chrom(hdr);
         uint32_t pos = static_cast<uint32_t>(rec.pos() + 1); // 0->1 based
@@ -1155,6 +1189,7 @@ void VariantQC::_process() {
         std::vector<double> site_vafs;
         for (const auto& si : samples_info) {
             ResultRecord rr;
+            rr.record_index = record_index;
             rr.sample_name = si.sample_name;
             rr.chrom = chrom;
             rr.pos = pos;
@@ -1197,7 +1232,7 @@ void VariantQC::_process() {
 
         // KL divergence for this site
         double kl = kl_divergence(site_vafs, bg_params.alpha, bg_params.beta, bin_edges);
-        pos_kl_div[{chrom, pos}] = std::isfinite(kl) ? kl : 1000.0;
+        site_metrics[record_index].kl = std::isfinite(kl) ? kl : 1000.0;
     }
     vcf_in.close();
 
@@ -1205,10 +1240,10 @@ void VariantQC::_process() {
               << ", Global VAFs collected: " << global_vafs.size() << "\n";
 
     const BetaParams h1_params = _fit_h1(all_results, global_vafs, global_k, global_n, lf);
-    _apply_model(all_results, h1_params);
+    _apply_model(all_results, h1_params, site_metrics);
 
     // Write outputs
-    _write_vcf(all_results, pos_kl_div);
+    _write_vcf(all_results, site_metrics);
     _write_tsv(all_results);
 
     std::cerr << "[variant-qc] Done. Output VCF: " << _config.output_vcf
@@ -1220,7 +1255,7 @@ void VariantQC::_process() {
 // =====================================================================
 void VariantQC::_write_vcf(
     const std::vector<ResultRecord>& results,
-    const std::map<std::pair<std::string, uint32_t>, double>& pos_kl_div)
+    const std::vector<SiteMetrics>& site_metrics)
 {
     // Build lookup: (chrom, pos, sample) -> (gt, posterior, is_mutation)
     struct LookupEntry {
@@ -1249,7 +1284,12 @@ void VariantQC::_write_vcf(
     out_hdr.add_header_line("##FORMAT=<ID=GOOD_CALL,Number=1,Type=String,Description=\"Good call (True/False)\">");
     out_hdr.add_header_line("##FILTER=<ID=PASS,Description=\"Passed mtDNA QC filter\">");
     out_hdr.add_header_line("##FILTER=<ID=BLACKLISTED_SITE,Description=\"Site is in the blacklisted regions\">");
-    out_hdr.add_header_line("##FILTER=<ID=LOW_QUALITY,Description=\"Low quality site based on KL divergence\">");
+    bcf_hdr_remove(out_hdr.raw_header(), BCF_HL_FLT, "LOW_QUALITY");
+    out_hdr.add_header_line("##FILTER=<ID=LOW_QUALITY,Description=\"No sample posterior exceeds the QC threshold\">");
+    bcf_hdr_remove(out_hdr.raw_header(), BCF_HL_INFO, "KL");
+    out_hdr.add_header_line("##INFO=<ID=KL,Number=1,Type=Float,Description=\"Histogram KL divergence (natural log) against the site background Beta; diagnostic only, not Phred-scaled\">");
+    bcf_hdr_remove(out_hdr.raw_header(), BCF_HL_GEN, "variant_qc_qual");
+    out_hdr.add_header_line("##variant_qc_qual=\"Strongest original ALT posterior Phred score: -10*log10(1-max_ALT_PP), computed from final-model log odds without a PP threshold; missing if no evaluable ALT. Approximate evidence, not a calibrated joint site-error probability.\"");
     out_hdr.add_header_line("##variant_qc_command=" + _cmdline_string);
 
     const std::string suffix = ngslib::suffix_name(_config.output_vcf);
@@ -1260,6 +1300,7 @@ void VariantQC::_write_vcf(
     static const char* FALSE_STR = "False";
 
     ngslib::VCFRecord rec;
+    std::size_t record_index = 0;
     while (vcf_in.read(rec) >= 0) {
         rec.unpack(ngslib::VCFRecord::UNPACK_ALL);
         std::string chrom = rec.chrom(out_hdr);
@@ -1319,10 +1360,12 @@ void VariantQC::_write_vcf(
             }
         }
 
-        // Set QUAL to KL divergence (rounded)
-        auto kl_it = pos_kl_div.find({chrom, pos});
-        float qual_val = (kl_it != pos_kl_div.end()) ? static_cast<float>(std::round(kl_it->second)) : 0.0f;
-        rec.set_qual(qual_val);
+        const auto& metrics = site_metrics[record_index++];
+        rec.set_qual(std::isfinite(metrics.qual)
+            ? static_cast<float>(metrics.qual) : ngslib::VCFRecord::FLOAT_MISSING);
+        const float kl = std::isfinite(metrics.kl)
+            ? static_cast<float>(metrics.kl) : ngslib::VCFRecord::FLOAT_MISSING;
+        rec.update_info_float(out_hdr, "KL", &kl, 1);
         vcf_out.write(rec);
     }
     vcf_in.close();
